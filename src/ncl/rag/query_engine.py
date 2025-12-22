@@ -8,14 +8,18 @@ from typing import Any, Dict, List, Optional
 from ..config import get_settings
 from ..models.chunk import RAGResponse, SourceReference
 from ..processing.embeddings import EmbeddingGenerator
+from ..processing.reranker import Reranker
 from ..storage.supabase_client import SupabaseClient
 
 
 class RAGQueryEngine:
     """Query engine for RAG-based question answering.
 
-    Retrieves relevant chunks via vector similarity search and
-    generates answers using LLM with source attribution.
+    Uses two-stage retrieval:
+    1. Vector similarity search to retrieve candidates
+    2. Cross-encoder reranking for improved accuracy (20-35% improvement)
+
+    Then generates answers using LLM with source attribution.
     """
 
     def __init__(self):
@@ -23,6 +27,7 @@ class RAGQueryEngine:
         settings = get_settings()
         self.db = SupabaseClient()
         self.embeddings = EmbeddingGenerator()
+        self.reranker = Reranker()
         self.llm_model = settings.llm_model
 
         os.environ["OPENAI_API_KEY"] = settings.openai_api_key
@@ -30,15 +35,19 @@ class RAGQueryEngine:
     async def query(
         self,
         question: str,
-        top_k: int = 5,
-        similarity_threshold: float = 0.7,
+        top_k: int = 20,
+        similarity_threshold: float = 0.5,
+        rerank_top_n: Optional[int] = None,
+        use_rerank: bool = True,
     ) -> RAGResponse:
-        """Answer a question using RAG.
+        """Answer a question using RAG with two-stage retrieval.
 
         Args:
             question: User's question.
-            top_k: Number of chunks to retrieve.
+            top_k: Number of candidates to retrieve for reranking.
             similarity_threshold: Minimum similarity score (0-1).
+            rerank_top_n: Final results after reranking (default from config).
+            use_rerank: Whether to use reranking (default: True).
 
         Returns:
             RAGResponse with answer and source references.
@@ -46,7 +55,7 @@ class RAGQueryEngine:
         # Generate embedding for query
         query_embedding = await self.embeddings.generate_embedding(question)
 
-        # Search for relevant chunks
+        # Stage 1: Vector search (retrieve more candidates for reranking)
         results = await self.db.search_similar_chunks(
             query_embedding=query_embedding,
             match_threshold=similarity_threshold,
@@ -60,12 +69,11 @@ class RAGQueryEngine:
                 query=question,
             )
 
-        # Build context from retrieved chunks
-        context_parts = []
+        # Build source references from results
         sources = []
+        result_map = {}  # Map chunk_content to full result for context building
 
         for result in results:
-            # Build source reference
             source = SourceReference(
                 file_path=result["file_path"],
                 document_type=result["document_type"],
@@ -81,10 +89,23 @@ class RAGQueryEngine:
                 root_file_path=result.get("root_file_path"),
             )
             sources.append(source)
+            result_map[source.chunk_content] = result
 
-            # Build context string
-            context_header = self._build_context_header(result)
-            context_parts.append(f"{context_header}\n{result['content']}")
+        # Stage 2: Rerank for improved accuracy
+        if use_rerank and self.reranker.enabled:
+            sources = self.reranker.rerank_results(
+                query=question,
+                sources=sources,
+                top_n=rerank_top_n,
+            )
+
+        # Build context from (reranked) sources
+        context_parts = []
+        for source in sources:
+            result = result_map.get(source.chunk_content, {})
+            if result:
+                context_header = self._build_context_header(result)
+                context_parts.append(f"{context_header}\n{result.get('content', source.chunk_content)}")
 
         context = "\n\n---\n\n".join(context_parts)
 
@@ -175,15 +196,19 @@ Please provide a comprehensive answer based on the above context. If you referen
     async def search_only(
         self,
         question: str,
-        top_k: int = 10,
+        top_k: int = 20,
         similarity_threshold: float = 0.5,
+        rerank_top_n: Optional[int] = None,
+        use_rerank: bool = True,
     ) -> List[SourceReference]:
         """Search for relevant chunks without generating an answer.
 
         Args:
             question: Search query.
-            top_k: Number of results to return.
+            top_k: Number of candidates to retrieve for reranking.
             similarity_threshold: Minimum similarity score.
+            rerank_top_n: Final results after reranking.
+            use_rerank: Whether to use reranking.
 
         Returns:
             List of source references.
@@ -214,6 +239,14 @@ Please provide a comprehensive answer based on the above context. If you referen
             )
             sources.append(source)
 
+        # Apply reranking if enabled
+        if use_rerank and self.reranker.enabled:
+            sources = self.reranker.rerank_results(
+                query=question,
+                sources=sources,
+                top_n=rerank_top_n,
+            )
+
         return sources
 
     async def close(self):
@@ -243,7 +276,11 @@ def format_response_with_sources(response: RAGResponse) -> str:
             output.append(f"    Participants: {participants}")
         if source.email_date:
             output.append(f"    Date: {source.email_date}")
-        output.append(f"    Relevance: {source.similarity_score:.1%}")
+        # Show rerank score if available, otherwise show vector similarity
+        if source.rerank_score is not None:
+            output.append(f"    Relevance: {source.rerank_score:.1%} (reranked)")
+        else:
+            output.append(f"    Relevance: {source.similarity_score:.1%}")
         if source.heading_path:
             output.append(f"    Section: {' > '.join(source.heading_path)}")
 

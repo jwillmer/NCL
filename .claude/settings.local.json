@@ -3,7 +3,13 @@
     "allow": [
       "Bash(dir:*)",
       "Bash(findstr:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -m pytest:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(.venv/Scripts/python.exe -m pytest:*)",
+      "Bash(uv add:*)",
+      "Bash(uv run python:*)"
     ]
   }
 }

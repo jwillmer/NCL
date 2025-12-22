@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import mimetypes
+import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
 from ..config import get_settings
@@ -31,6 +32,13 @@ class AttachmentProcessor:
         "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
         "text/html": "HTML",
+    }
+
+    # ZIP file MIME types
+    ZIP_FORMATS: Dict[str, str] = {
+        "application/zip": "ZIP",
+        "application/x-zip-compressed": "ZIP",
+        "application/x-zip": "ZIP",
     }
 
     # Mapping of MIME types to DocumentType
@@ -244,3 +252,182 @@ class AttachmentProcessor:
         if result.document:
             return result.document.export_to_markdown()
         return ""
+
+    def is_zip_file(self, file_path: str, content_type: Optional[str] = None) -> bool:
+        """Check if file is a ZIP archive.
+
+        Args:
+            file_path: Path to the file.
+            content_type: MIME type of the file (optional).
+
+        Returns:
+            True if file is a ZIP archive.
+        """
+        if content_type and content_type in self.ZIP_FORMATS:
+            return True
+
+        # Check by extension
+        if file_path.lower().endswith(".zip"):
+            return True
+
+        # Check MIME type from file extension
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if mime_type and mime_type in self.ZIP_FORMATS:
+            return True
+
+        # Try to detect by file magic
+        try:
+            path = Path(file_path)
+            if path.exists():
+                return zipfile.is_zipfile(path)
+        except Exception:
+            pass
+
+        return False
+
+    def extract_zip(
+        self,
+        zip_path: Path,
+        extract_dir: Optional[Path] = None,
+    ) -> List[Tuple[Path, str]]:
+        """Extract files from a ZIP archive.
+
+        Safely extracts ZIP contents, skipping dangerous paths and unsupported files.
+        Returns list of extracted file paths with their MIME types.
+
+        Args:
+            zip_path: Path to the ZIP file.
+            extract_dir: Directory to extract to. If None, extracts to same directory
+                        as ZIP file with _extracted suffix.
+
+        Returns:
+            List of tuples (file_path, content_type) for supported extracted files.
+
+        Raises:
+            ValueError: If ZIP file is invalid or cannot be opened.
+        """
+        if not zip_path.exists():
+            raise FileNotFoundError(f"ZIP file not found: {zip_path}")
+
+        if not zipfile.is_zipfile(zip_path):
+            raise ValueError(f"Not a valid ZIP file: {zip_path}")
+
+        # Create extraction directory
+        if extract_dir is None:
+            extract_dir = zip_path.parent / f"{zip_path.stem}_extracted"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        extracted_files: List[Tuple[Path, str]] = []
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for member in zf.namelist():
+                # Security: Skip dangerous paths
+                if self._is_dangerous_zip_path(member):
+                    continue
+
+                # Skip directories
+                if member.endswith("/"):
+                    continue
+
+                # Skip hidden files and macOS resource forks
+                basename = Path(member).name
+                if basename.startswith(".") or basename.startswith("__MACOSX"):
+                    continue
+
+                # Extract file
+                try:
+                    # Sanitize the path
+                    safe_path = self._sanitize_zip_member_path(member)
+                    target_path = extract_dir / safe_path
+
+                    # Create parent directories
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Extract
+                    with zf.open(member) as src, open(target_path, "wb") as dst:
+                        dst.write(src.read())
+
+                    # Get MIME type
+                    mime_type, _ = mimetypes.guess_type(str(target_path))
+                    content_type = mime_type or "application/octet-stream"
+
+                    # Check if it's a nested ZIP
+                    if self.is_zip_file(str(target_path), content_type):
+                        # Recursively extract nested ZIPs
+                        nested_files = self.extract_zip(target_path)
+                        extracted_files.extend(nested_files)
+                    elif self.is_supported(str(target_path), content_type):
+                        extracted_files.append((target_path, content_type))
+
+                except Exception:
+                    # Skip files that fail to extract
+                    continue
+
+        return extracted_files
+
+    def _is_dangerous_zip_path(self, path: str) -> bool:
+        """Check if ZIP member path is potentially dangerous.
+
+        Args:
+            path: Path within ZIP archive.
+
+        Returns:
+            True if path is dangerous (path traversal, absolute path, etc.).
+        """
+        # Check for path traversal
+        if ".." in path:
+            return True
+
+        # Check for absolute paths
+        if path.startswith("/") or path.startswith("\\"):
+            return True
+
+        # Check for Windows absolute paths (C:, D:, etc.)
+        if len(path) > 1 and path[1] == ":":
+            return True
+
+        return False
+
+    def _sanitize_zip_member_path(self, path: str) -> str:
+        """Sanitize a ZIP member path for safe extraction.
+
+        Args:
+            path: Original path from ZIP archive.
+
+        Returns:
+            Sanitized path safe for filesystem.
+        """
+        # Normalize separators
+        path = path.replace("\\", "/")
+
+        # Remove leading slashes
+        path = path.lstrip("/")
+
+        # Remove any remaining path traversal
+        parts = []
+        for part in path.split("/"):
+            if part and part != "..":
+                # Sanitize individual filename
+                part = self._sanitize_filename(part)
+                if part:
+                    parts.append(part)
+
+        return "/".join(parts)
+
+    def _sanitize_filename(self, filename: str) -> str:
+        """Sanitize a filename for safe filesystem use.
+
+        Args:
+            filename: Original filename.
+
+        Returns:
+            Sanitized filename.
+        """
+        import re
+
+        # Remove null bytes and path separators
+        filename = filename.replace("\x00", "").replace("/", "_").replace("\\", "_")
+        # Remove other problematic characters
+        filename = re.sub(r'[<>:"|?*]', "_", filename)
+        # Limit length
+        return filename[:255]

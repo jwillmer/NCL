@@ -1,6 +1,7 @@
 """Processing layer for NCL."""
 
-from .hierarchy_manager import HierarchyManager
 from .embeddings import EmbeddingGenerator
+from .hierarchy_manager import HierarchyManager
+from .reranker import Reranker
 
-__all__ = ["HierarchyManager", "EmbeddingGenerator"]
+__all__ = ["HierarchyManager", "EmbeddingGenerator", "Reranker"]

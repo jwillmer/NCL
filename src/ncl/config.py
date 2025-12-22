@@ -4,12 +4,22 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application configuration loaded from environment variables."""
+    """Application configuration loaded from environment variables.
+
+    Data Folder Structure:
+        data/
+        ├── source/           # User-provided data (read-only)
+        │   ├── emails/       # EML files (can have subdirectories)
+        │   └── ...           # Users can organize as they wish
+        └── processed/        # NCL-generated data
+            ├── attachments/  # Extracted email attachments
+            └── extracted/    # Extracted ZIP contents
+    """
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -36,11 +46,34 @@ class Settings(BaseSettings):
     chunk_size_tokens: int = Field(default=512, validation_alias="CHUNK_SIZE_TOKENS")
     chunk_overlap_tokens: int = Field(default=50, validation_alias="CHUNK_OVERLAP_TOKENS")
 
-    # File Storage Paths
-    attachments_dir: Path = Field(
-        default=Path("./data/attachments"), validation_alias="ATTACHMENTS_DIR"
+    # File Storage Paths - Source Data (user-provided, read-only)
+    data_source_dir: Path = Field(
+        default=Path("./data/source"), validation_alias="DATA_SOURCE_DIR"
     )
-    eml_source_dir: Path = Field(default=Path("./data/emails"), validation_alias="EML_SOURCE_DIR")
+
+    # File Storage Paths - Processed Data (NCL-generated)
+    data_processed_dir: Path = Field(
+        default=Path("./data/processed"), validation_alias="DATA_PROCESSED_DIR"
+    )
+
+    # Derived paths (computed from base directories)
+    @computed_field
+    @property
+    def eml_source_dir(self) -> Path:
+        """Directory containing source EML files (supports subdirectories)."""
+        return self.data_source_dir
+
+    @computed_field
+    @property
+    def attachments_dir(self) -> Path:
+        """Directory for extracted email attachments."""
+        return self.data_processed_dir / "attachments"
+
+    @computed_field
+    @property
+    def extracted_dir(self) -> Path:
+        """Directory for extracted ZIP contents."""
+        return self.data_processed_dir / "extracted"
 
     # Processing Options
     batch_size: int = Field(default=10, validation_alias="BATCH_SIZE")
@@ -51,6 +84,14 @@ class Settings(BaseSettings):
     enable_picture_description: bool = Field(
         default=True, validation_alias="ENABLE_PICTURE_DESCRIPTION"
     )
+
+    # Reranker Configuration
+    rerank_enabled: bool = Field(default=True, validation_alias="RERANK_ENABLED")
+    rerank_model: str = Field(
+        default="cohere/rerank-english-v3.0", validation_alias="RERANK_MODEL"
+    )
+    rerank_top_n: int = Field(default=5, validation_alias="RERANK_TOP_N")
+    cohere_api_key: Optional[str] = Field(default=None, validation_alias="COHERE_API_KEY")
 
 
 @lru_cache

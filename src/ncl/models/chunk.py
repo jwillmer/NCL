@@ -63,6 +63,7 @@ class SourceReference:
     similarity_score: float
     heading_path: List[str]
     root_file_path: Optional[str] = None
+    rerank_score: Optional[float] = None  # Cross-encoder relevance score
 
 
 @dataclass
