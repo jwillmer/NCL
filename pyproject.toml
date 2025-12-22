@@ -40,6 +40,13 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "copilotkit>=0.1.39",
+    "python-jose[cryptography]>=3.3.0",
+    "slowapi>=0.1.9",
+]
 
 [project.scripts]
 ncl = "ncl.cli:app"

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -73,3 +74,22 @@ def simple_eml_file(temp_dir, simple_eml_content):
     eml_path = temp_dir / "simple_email.eml"
     eml_path.write_bytes(simple_eml_content)
     return eml_path
+
+
+@pytest.fixture
+def real_eml_file():
+    """Path to the real test email with multiple attachments (PDF, ZIP, PNG)."""
+    return Path(__file__).parent / "fixtures" / "test_email.eml"
+
+
+@pytest.fixture
+def mock_settings():
+    """Mock settings for testing without requiring environment variables."""
+    settings = MagicMock()
+    settings.enable_ocr = False
+    settings.enable_picture_description = False
+    settings.embedding_model = "text-embedding-3-small"
+    settings.chunk_size_tokens = 512
+    settings.data_source_dir = Path("./data/emails")
+    settings.attachments_dir = Path("./data/attachments")
+    return settings

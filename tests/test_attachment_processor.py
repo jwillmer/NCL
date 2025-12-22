@@ -18,6 +18,9 @@ def mock_settings():
     settings.enable_picture_description = False
     settings.embedding_model = "text-embedding-3-small"
     settings.chunk_size_tokens = 512
+    settings.zip_max_depth = 3
+    settings.zip_max_files = 100
+    settings.zip_max_total_size_mb = 100
     return settings
 
 
@@ -25,7 +28,10 @@ def mock_settings():
 def processor(mock_settings):
     """Create an AttachmentProcessor with mocked settings."""
     with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
-        return AttachmentProcessor()
+        proc = AttachmentProcessor()
+        # Store mock_settings on processor for use in tests that need runtime patching
+        proc._test_mock_settings = mock_settings
+        yield proc
 
 
 class TestIsZipFile:
@@ -72,7 +78,7 @@ class TestIsZipFile:
 class TestExtractZip:
     """Tests for extract_zip method."""
 
-    def test_extract_simple_zip(self, processor):
+    def test_extract_simple_zip(self, processor, mock_settings):
         """Test extracting a simple ZIP with supported files."""
         with TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -84,8 +90,9 @@ class TestExtractZip:
                 zf.writestr("document.pdf", b"%PDF-1.4 mock content")
                 zf.writestr("image.png", b"\x89PNG mock content")
 
-            # Extract
-            extracted = processor.extract_zip(zip_path)
+            # Extract with patched settings
+            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+                extracted = processor.extract_zip(zip_path)
 
             # Should have extracted 2 files (PDF and PNG are supported)
             assert len(extracted) == 2
@@ -94,7 +101,7 @@ class TestExtractZip:
             for file_path, content_type in extracted:
                 assert file_path.exists()
 
-    def test_extract_zip_with_nested_zip(self, processor):
+    def test_extract_zip_with_nested_zip(self, processor, mock_settings):
         """Test extracting a ZIP containing another ZIP."""
         with TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -110,14 +117,15 @@ class TestExtractZip:
                 zf.write(inner_zip_path, "inner.zip")
                 zf.writestr("top_level.pdf", b"%PDF-1.4 top level content")
 
-            # Extract
-            extracted = processor.extract_zip(outer_zip_path)
+            # Extract with patched settings
+            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+                extracted = processor.extract_zip(outer_zip_path)
 
             # Should have extracted files from both levels
             # 1 from outer (top_level.pdf) + 1 from inner (nested_doc.pdf)
             assert len(extracted) == 2
 
-    def test_extract_zip_skips_hidden_files(self, processor):
+    def test_extract_zip_skips_hidden_files(self, processor, mock_settings):
         """Test that hidden files are skipped during extraction."""
         with TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -128,13 +136,14 @@ class TestExtractZip:
                 zf.writestr("__MACOSX/resource_fork", b"mac stuff")
                 zf.writestr("visible.pdf", b"%PDF-1.4 visible")
 
-            extracted = processor.extract_zip(zip_path)
+            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+                extracted = processor.extract_zip(zip_path)
 
             # Should only have extracted the visible file
             assert len(extracted) == 1
             assert extracted[0][0].name == "visible.pdf"
 
-    def test_extract_zip_skips_path_traversal(self, processor):
+    def test_extract_zip_skips_path_traversal(self, processor, mock_settings):
         """Test that path traversal attacks are prevented."""
         with TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -145,7 +154,8 @@ class TestExtractZip:
                 zf.writestr("../../../etc/passwd", b"malicious content")
                 zf.writestr("safe.pdf", b"%PDF-1.4 safe content")
 
-            extracted = processor.extract_zip(zip_path)
+            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+                extracted = processor.extract_zip(zip_path)
 
             # Should only have extracted the safe file
             assert len(extracted) == 1
@@ -156,7 +166,7 @@ class TestExtractZip:
             for file_path, _ in extracted:
                 assert str(file_path).startswith(str(extract_dir))
 
-    def test_extract_zip_custom_extract_dir(self, processor):
+    def test_extract_zip_custom_extract_dir(self, processor, mock_settings):
         """Test extracting to a custom directory."""
         with TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -167,12 +177,13 @@ class TestExtractZip:
             with zipfile.ZipFile(zip_path, "w") as zf:
                 zf.writestr("document.pdf", b"%PDF-1.4 content")
 
-            extracted = processor.extract_zip(zip_path, extract_dir=custom_dir)
+            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+                extracted = processor.extract_zip(zip_path, extract_dir=custom_dir)
 
             assert len(extracted) == 1
             assert str(extracted[0][0]).startswith(str(custom_dir))
 
-    def test_extract_zip_preserves_directory_structure(self, processor):
+    def test_extract_zip_preserves_directory_structure(self, processor, mock_settings):
         """Test that directory structure is preserved during extraction."""
         with TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -183,7 +194,8 @@ class TestExtractZip:
                 zf.writestr("folder1/subfolder/doc2.pdf", b"%PDF-1.4 doc2")
                 zf.writestr("folder2/doc3.pdf", b"%PDF-1.4 doc3")
 
-            extracted = processor.extract_zip(zip_path)
+            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+                extracted = processor.extract_zip(zip_path)
 
             assert len(extracted) == 3
 
@@ -193,19 +205,21 @@ class TestExtractZip:
             assert any("subfolder" in p and "doc2.pdf" in p for p in paths)
             assert any("folder2" in p and "doc3.pdf" in p for p in paths)
 
-    def test_extract_zip_nonexistent_file(self, processor):
+    def test_extract_zip_nonexistent_file(self, processor, mock_settings):
         """Test extracting a non-existent ZIP file raises error."""
-        with pytest.raises(FileNotFoundError):
-            processor.extract_zip(Path("/nonexistent/path.zip"))
+        with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+            with pytest.raises(FileNotFoundError):
+                processor.extract_zip(Path("/nonexistent/path.zip"))
 
-    def test_extract_zip_invalid_zip(self, processor):
+    def test_extract_zip_invalid_zip(self, processor, mock_settings):
         """Test extracting an invalid ZIP file raises error."""
         with TemporaryDirectory() as tmpdir:
             invalid_path = Path(tmpdir) / "not_a_zip.zip"
             invalid_path.write_text("This is not a ZIP file")
 
-            with pytest.raises(ValueError):
-                processor.extract_zip(invalid_path)
+            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+                with pytest.raises(ValueError):
+                    processor.extract_zip(invalid_path)
 
 
 class TestIsDangerousZipPath:

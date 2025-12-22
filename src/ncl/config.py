@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     supabase_url: str = Field(..., validation_alias="SUPABASE_URL")
     supabase_key: str = Field(..., validation_alias="SUPABASE_KEY")
     supabase_db_url: str = Field(..., validation_alias="SUPABASE_DB_URL")
+    supabase_jwt_secret: Optional[str] = Field(
+        default=None, validation_alias="SUPABASE_JWT_SECRET"
+    )
 
     # OpenAI Configuration
     openai_api_key: str = Field(..., validation_alias="OPENAI_API_KEY")
@@ -109,6 +112,13 @@ class Settings(BaseSettings):
     # Chunk content display truncation (for source references in responses)
     chunk_display_max_chars: int = Field(
         default=500, validation_alias="CHUNK_DISPLAY_MAX_CHARS"
+    )
+
+    # API Configuration
+    api_host: str = Field(default="0.0.0.0", validation_alias="API_HOST")
+    api_port: int = Field(default=8000, validation_alias="API_PORT")
+    cors_origins: str = Field(
+        default="http://localhost:5173", validation_alias="CORS_ORIGINS"
     )
 
 

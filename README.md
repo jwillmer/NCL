@@ -72,14 +72,86 @@ EML Files → Parsing → Chunking → Embedding → Storage
 User Query → Embedding → Vector Search → Reranking → LLM → Answer
 ```
 
+## Web Interface
+
+NCL includes a modern web interface built with React and CopilotKit for conversational document search.
+
+### Quick Start (Web)
+
+```bash
+# 1. Install API dependencies
+uv sync --extra api
+
+# 2. Start the API server
+python -m ncl.api.main
+
+# 3. In another terminal, start the frontend
+cd frontend
+npm install
+npm run dev
+
+# 4. Open http://localhost:5173 in your browser
+```
+
+### Environment Setup
+
+Backend (`.env`):
+```bash
+# Add to existing .env file
+SUPABASE_JWT_SECRET=your-jwt-secret-from-supabase-dashboard
+CORS_ORIGINS=http://localhost:5173
+API_HOST=0.0.0.0
+API_PORT=8000
+```
+
+Frontend (`frontend/.env.local`):
+```bash
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+VITE_API_URL=http://localhost:8000
+```
+
+### Features
+
+- **Chat Interface:** Conversational AI for document Q&A
+- **Authentication:** Supabase Auth (Email, Magic Link, OAuth)
+- **Source Attribution:** View sources with confidence scores
+- **Professional Design:** NCL brand colors and responsive layout
+
+See [frontend/README.md](frontend/README.md) for detailed frontend documentation.
+
+## API Reference
+
+When running the API server, OpenAPI documentation is available at:
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+
 ## Technology Stack
 
 - **CLI:** Typer + Rich
+- **Web API:** FastAPI + CopilotKit
+- **Frontend:** React + TypeScript + TailwindCSS + Radix UI
 - **Document Processing:** Docling
 - **Embeddings:** OpenAI text-embedding-3-small
 - **LLM:** GPT-4o-mini via LiteLLM
 - **Reranking:** Cohere via LiteLLM
 - **Database:** Supabase (PostgreSQL + pgvector)
+- **Authentication:** Supabase Auth
+
+## Testing
+
+```bash
+# Run all tests
+pytest tests/
+
+# Run with coverage
+pytest tests/ --cov=ncl --cov-report=term-missing
+
+# Run specific test file
+pytest tests/test_eml_parser.py
+```
+
+Test fixtures are located in `tests/fixtures/` including a sample email with PDF, ZIP, and PNG attachments.
 
 ## License
 

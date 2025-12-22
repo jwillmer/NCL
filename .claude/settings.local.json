@@ -14,7 +14,11 @@
       "Skill(review-code:*)",
       "Bash(wc:*)",
       "Bash(tree:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Skill(review-proposal)",
+      "Skill(review-proposal:*)",
+      "Bash(python:*)",
+      "Bash(if not exist \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\src\\\\ncl\\\\api\\\\prompts\" mkdir \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\src\\\\ncl\\\\api\\\\prompts\")"
     ]
   }
 }
