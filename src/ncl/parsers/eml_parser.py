@@ -14,6 +14,7 @@ from typing import List, Optional, Set, Tuple
 
 from ..config import get_settings
 from ..models.document import EmailMessage, EmailMetadata, ParsedAttachment, ParsedEmail
+from ..utils import sanitize_filename
 
 
 class EMLParser:
@@ -458,12 +459,7 @@ class EMLParser:
         Returns:
             Sanitized filename safe for filesystem.
         """
-        # Remove null bytes and path separators
-        filename = filename.replace("\x00", "").replace("/", "_").replace("\\", "_")
-        # Remove other problematic characters
-        filename = re.sub(r'[<>:"|?*]', "_", filename)
-        # Limit length
-        return filename[:255]
+        return sanitize_filename(filename)
 
     def html_to_plain_text(self, html: str) -> str:
         """Convert HTML body to plain text (basic conversion).

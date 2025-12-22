@@ -93,6 +93,24 @@ class Settings(BaseSettings):
     rerank_top_n: int = Field(default=5, validation_alias="RERANK_TOP_N")
     cohere_api_key: Optional[str] = Field(default=None, validation_alias="COHERE_API_KEY")
 
+    # ZIP Extraction Limits (DoS protection)
+    zip_max_files: int = Field(default=100, validation_alias="ZIP_MAX_FILES")
+    zip_max_depth: int = Field(default=3, validation_alias="ZIP_MAX_DEPTH")
+    zip_max_total_size_mb: int = Field(default=500, validation_alias="ZIP_MAX_TOTAL_SIZE_MB")
+
+    # Embedding batch size (OpenAI allows up to 2048)
+    embedding_batch_size: int = Field(default=100, validation_alias="EMBEDDING_BATCH_SIZE")
+
+    # Error truncation length for database storage
+    error_message_max_length: int = Field(
+        default=1000, validation_alias="ERROR_MESSAGE_MAX_LENGTH"
+    )
+
+    # Chunk content display truncation (for source references in responses)
+    chunk_display_max_chars: int = Field(
+        default=500, validation_alias="CHUNK_DISPLAY_MAX_CHARS"
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

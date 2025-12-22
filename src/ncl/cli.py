@@ -187,107 +187,16 @@ async def _process_single_email(
 
     # Process attachments
     for attachment in parsed_email.attachments:
-        # Check if it's a ZIP file
-        if attachment_processor.is_zip_file(attachment.saved_path, attachment.content_type):
-            # Extract ZIP and process contained files
-            try:
-                extracted_files = attachment_processor.extract_zip(Path(attachment.saved_path))
-                for extracted_path, extracted_content_type in extracted_files:
-                    # Check if extracted file is supported
-                    if not attachment_processor.is_supported(extracted_path, extracted_content_type):
-                        # Log unsupported file from ZIP
-                        await file_registry.log_unsupported_file(
-                            file_path=extracted_path,
-                            reason="unsupported_format",
-                            source_eml_path=source_eml_path,
-                            source_zip_path=attachment.saved_path,
-                            parent_document_id=email_doc.id,
-                        )
-                        continue
-
-                    # Create document for each extracted file
-                    attach_doc = await hierarchy_manager.create_attachment_document(
-                        parent_doc=email_doc,
-                        attachment_path=extracted_path,
-                        content_type=extracted_content_type,
-                        size_bytes=extracted_path.stat().st_size,
-                        original_filename=extracted_path.name,
-                    )
-
-                    # Process extracted file
-                    try:
-                        attach_chunks = attachment_processor.process_attachment(
-                            extracted_path,
-                            attach_doc.id,
-                            extracted_content_type,
-                        )
-                        email_chunks.extend(attach_chunks)
-                        await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
-                    except Exception as e:
-                        await db.update_document_status(
-                            attach_doc.id,
-                            ProcessingStatus.FAILED,
-                            str(e),
-                        )
-                        # Log processing failure
-                        await file_registry.log_unsupported_file(
-                            file_path=extracted_path,
-                            reason="extraction_failed",
-                            source_eml_path=source_eml_path,
-                            source_zip_path=attachment.saved_path,
-                            parent_document_id=email_doc.id,
-                        )
-            except Exception as e:
-                console.print(f"[yellow]Failed to extract ZIP {attachment.filename}: {e}[/yellow]")
-                # Log corrupted/failed ZIP
-                await file_registry.log_unsupported_file(
-                    file_path=Path(attachment.saved_path),
-                    reason="corrupted",
-                    source_eml_path=source_eml_path,
-                    parent_document_id=email_doc.id,
-                )
-
-        elif attachment_processor.is_supported(attachment.saved_path, attachment.content_type):
-            # Create attachment document
-            attach_doc = await hierarchy_manager.create_attachment_document(
-                parent_doc=email_doc,
-                attachment_path=Path(attachment.saved_path),
-                content_type=attachment.content_type,
-                size_bytes=attachment.size_bytes,
-                original_filename=attachment.filename,
-            )
-
-            # Process and chunk attachment
-            try:
-                attach_chunks = attachment_processor.process_attachment(
-                    Path(attachment.saved_path),
-                    attach_doc.id,
-                    attachment.content_type,
-                )
-                email_chunks.extend(attach_chunks)
-
-                await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
-            except Exception as e:
-                await db.update_document_status(
-                    attach_doc.id,
-                    ProcessingStatus.FAILED,
-                    str(e),
-                )
-                # Log processing failure
-                await file_registry.log_unsupported_file(
-                    file_path=Path(attachment.saved_path),
-                    reason="extraction_failed",
-                    source_eml_path=source_eml_path,
-                    parent_document_id=email_doc.id,
-                )
-        else:
-            # Log unsupported attachment format
-            await file_registry.log_unsupported_file(
-                file_path=Path(attachment.saved_path),
-                reason="unsupported_format",
-                source_eml_path=source_eml_path,
-                parent_document_id=email_doc.id,
-            )
+        attachment_chunks = await _process_attachment(
+            attachment=attachment,
+            email_doc=email_doc,
+            source_eml_path=source_eml_path,
+            attachment_processor=attachment_processor,
+            hierarchy_manager=hierarchy_manager,
+            db=db,
+            file_registry=file_registry,
+        )
+        email_chunks.extend(attachment_chunks)
 
     # Generate embeddings for all chunks
     if email_chunks:
@@ -297,6 +206,169 @@ async def _process_single_email(
     # Mark email as completed
     await db.update_document_status(email_doc.id, ProcessingStatus.COMPLETED)
     await tracker.mark_completed(eml_path)
+
+
+async def _process_attachment(
+    attachment,
+    email_doc,
+    source_eml_path: str,
+    attachment_processor: AttachmentProcessor,
+    hierarchy_manager: HierarchyManager,
+    db: SupabaseClient,
+    file_registry: FileRegistry,
+) -> list[Chunk]:
+    """Process a single attachment and return its chunks.
+
+    Handles ZIP files, supported formats, and logs unsupported files.
+    """
+    chunks: list[Chunk] = []
+
+    # Check if it's a ZIP file
+    if attachment_processor.is_zip_file(attachment.saved_path, attachment.content_type):
+        chunks.extend(
+            await _process_zip_attachment(
+                attachment=attachment,
+                email_doc=email_doc,
+                source_eml_path=source_eml_path,
+                attachment_processor=attachment_processor,
+                hierarchy_manager=hierarchy_manager,
+                db=db,
+                file_registry=file_registry,
+            )
+        )
+
+    elif attachment_processor.is_supported(attachment.saved_path, attachment.content_type):
+        chunks.extend(
+            await _process_regular_attachment(
+                attachment=attachment,
+                email_doc=email_doc,
+                source_eml_path=source_eml_path,
+                attachment_processor=attachment_processor,
+                hierarchy_manager=hierarchy_manager,
+                db=db,
+                file_registry=file_registry,
+            )
+        )
+    else:
+        # Log unsupported attachment format
+        await file_registry.log_unsupported_file(
+            file_path=Path(attachment.saved_path),
+            reason="unsupported_format",
+            source_eml_path=source_eml_path,
+            parent_document_id=email_doc.id,
+        )
+
+    return chunks
+
+
+async def _process_zip_attachment(
+    attachment,
+    email_doc,
+    source_eml_path: str,
+    attachment_processor: AttachmentProcessor,
+    hierarchy_manager: HierarchyManager,
+    db: SupabaseClient,
+    file_registry: FileRegistry,
+) -> list[Chunk]:
+    """Extract and process files from a ZIP attachment."""
+    chunks: list[Chunk] = []
+
+    try:
+        extracted_files = attachment_processor.extract_zip(Path(attachment.saved_path))
+        for extracted_path, extracted_content_type in extracted_files:
+            # Check if extracted file is supported
+            if not attachment_processor.is_supported(extracted_path, extracted_content_type):
+                await file_registry.log_unsupported_file(
+                    file_path=extracted_path,
+                    reason="unsupported_format",
+                    source_eml_path=source_eml_path,
+                    source_zip_path=attachment.saved_path,
+                    parent_document_id=email_doc.id,
+                )
+                continue
+
+            # Create document for each extracted file
+            attach_doc = await hierarchy_manager.create_attachment_document(
+                parent_doc=email_doc,
+                attachment_path=extracted_path,
+                content_type=extracted_content_type,
+                size_bytes=extracted_path.stat().st_size,
+                original_filename=extracted_path.name,
+            )
+
+            # Process extracted file
+            try:
+                attach_chunks = attachment_processor.process_attachment(
+                    extracted_path,
+                    attach_doc.id,
+                    extracted_content_type,
+                )
+                chunks.extend(attach_chunks)
+                await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+            except Exception as e:
+                await db.update_document_status(
+                    attach_doc.id, ProcessingStatus.FAILED, str(e)
+                )
+                await file_registry.log_unsupported_file(
+                    file_path=extracted_path,
+                    reason="extraction_failed",
+                    source_eml_path=source_eml_path,
+                    source_zip_path=attachment.saved_path,
+                    parent_document_id=email_doc.id,
+                )
+
+    except Exception as e:
+        console.print(f"[yellow]Failed to extract ZIP {attachment.filename}: {e}[/yellow]")
+        await file_registry.log_unsupported_file(
+            file_path=Path(attachment.saved_path),
+            reason="corrupted",
+            source_eml_path=source_eml_path,
+            parent_document_id=email_doc.id,
+        )
+
+    return chunks
+
+
+async def _process_regular_attachment(
+    attachment,
+    email_doc,
+    source_eml_path: str,
+    attachment_processor: AttachmentProcessor,
+    hierarchy_manager: HierarchyManager,
+    db: SupabaseClient,
+    file_registry: FileRegistry,
+) -> list[Chunk]:
+    """Process a regular (non-ZIP) attachment."""
+    chunks: list[Chunk] = []
+
+    # Create attachment document
+    attach_doc = await hierarchy_manager.create_attachment_document(
+        parent_doc=email_doc,
+        attachment_path=Path(attachment.saved_path),
+        content_type=attachment.content_type,
+        size_bytes=attachment.size_bytes,
+        original_filename=attachment.filename,
+    )
+
+    # Process and chunk attachment
+    try:
+        attach_chunks = attachment_processor.process_attachment(
+            Path(attachment.saved_path),
+            attach_doc.id,
+            attachment.content_type,
+        )
+        chunks.extend(attach_chunks)
+        await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+    except Exception as e:
+        await db.update_document_status(attach_doc.id, ProcessingStatus.FAILED, str(e))
+        await file_registry.log_unsupported_file(
+            file_path=Path(attachment.saved_path),
+            reason="extraction_failed",
+            source_eml_path=source_eml_path,
+            parent_document_id=email_doc.id,
+        )
+
+    return chunks
 
 
 def _show_stats(stats: dict):

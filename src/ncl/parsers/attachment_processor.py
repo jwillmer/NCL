@@ -11,6 +11,13 @@ from uuid import UUID
 from ..config import get_settings
 from ..models.chunk import Chunk
 from ..models.document import DocumentType
+from ..utils import sanitize_filename
+
+
+class ZipExtractionError(Exception):
+    """Raised when ZIP extraction fails due to limits or security checks."""
+
+    pass
 
 
 class AttachmentProcessor:
@@ -289,8 +296,11 @@ class AttachmentProcessor:
         self,
         zip_path: Path,
         extract_dir: Optional[Path] = None,
+        _depth: int = 0,
+        _file_count: int = 0,
+        _total_size: int = 0,
     ) -> List[Tuple[Path, str]]:
-        """Extract files from a ZIP archive.
+        """Extract files from a ZIP archive with resource limits.
 
         Safely extracts ZIP contents, skipping dangerous paths and unsupported files.
         Returns list of extracted file paths with their MIME types.
@@ -299,13 +309,26 @@ class AttachmentProcessor:
             zip_path: Path to the ZIP file.
             extract_dir: Directory to extract to. If None, extracts to same directory
                         as ZIP file with _extracted suffix.
+            _depth: Internal parameter for tracking nested ZIP depth.
+            _file_count: Internal parameter for tracking total extracted files.
+            _total_size: Internal parameter for tracking total extracted size.
 
         Returns:
             List of tuples (file_path, content_type) for supported extracted files.
 
         Raises:
+            FileNotFoundError: If ZIP file doesn't exist.
             ValueError: If ZIP file is invalid or cannot be opened.
+            ZipExtractionError: If extraction limits are exceeded.
         """
+        settings = get_settings()
+
+        # Check depth limit
+        if _depth > settings.zip_max_depth:
+            raise ZipExtractionError(
+                f"ZIP nesting depth {_depth} exceeds limit of {settings.zip_max_depth}"
+            )
+
         if not zip_path.exists():
             raise FileNotFoundError(f"ZIP file not found: {zip_path}")
 
@@ -318,9 +341,16 @@ class AttachmentProcessor:
         extract_dir.mkdir(parents=True, exist_ok=True)
 
         extracted_files: List[Tuple[Path, str]] = []
+        max_total_bytes = settings.zip_max_total_size_mb * 1024 * 1024
 
         with zipfile.ZipFile(zip_path, "r") as zf:
             for member in zf.namelist():
+                # Check file count limit
+                if _file_count >= settings.zip_max_files:
+                    raise ZipExtractionError(
+                        f"ZIP extraction file count {_file_count} exceeds limit of {settings.zip_max_files}"
+                    )
+
                 # Security: Skip dangerous paths
                 if self._is_dangerous_zip_path(member):
                     continue
@@ -333,6 +363,13 @@ class AttachmentProcessor:
                 basename = Path(member).name
                 if basename.startswith(".") or basename.startswith("__MACOSX"):
                     continue
+
+                # Check compressed size before extraction
+                info = zf.getinfo(member)
+                if _total_size + info.file_size > max_total_bytes:
+                    raise ZipExtractionError(
+                        f"ZIP extraction would exceed size limit of {settings.zip_max_total_size_mb}MB"
+                    )
 
                 # Extract file
                 try:
@@ -347,20 +384,33 @@ class AttachmentProcessor:
                     with zf.open(member) as src, open(target_path, "wb") as dst:
                         dst.write(src.read())
 
+                    _file_count += 1
+                    _total_size += info.file_size
+
                     # Get MIME type
                     mime_type, _ = mimetypes.guess_type(str(target_path))
                     content_type = mime_type or "application/octet-stream"
 
                     # Check if it's a nested ZIP
                     if self.is_zip_file(str(target_path), content_type):
-                        # Recursively extract nested ZIPs
-                        nested_files = self.extract_zip(target_path)
+                        # Recursively extract nested ZIPs with updated counters
+                        nested_files = self.extract_zip(
+                            target_path,
+                            _depth=_depth + 1,
+                            _file_count=_file_count,
+                            _total_size=_total_size,
+                        )
                         extracted_files.extend(nested_files)
+                        # Update counters from nested extraction
+                        _file_count += len(nested_files)
                     elif self.is_supported(str(target_path), content_type):
                         extracted_files.append((target_path, content_type))
 
+                except ZipExtractionError:
+                    # Re-raise limit errors
+                    raise
                 except Exception:
-                    # Skip files that fail to extract
+                    # Skip files that fail to extract for other reasons
                     continue
 
         return extracted_files
@@ -407,27 +457,9 @@ class AttachmentProcessor:
         parts = []
         for part in path.split("/"):
             if part and part != "..":
-                # Sanitize individual filename
-                part = self._sanitize_filename(part)
+                # Sanitize individual filename using shared utility
+                part = sanitize_filename(part)
                 if part:
                     parts.append(part)
 
         return "/".join(parts)
-
-    def _sanitize_filename(self, filename: str) -> str:
-        """Sanitize a filename for safe filesystem use.
-
-        Args:
-            filename: Original filename.
-
-        Returns:
-            Sanitized filename.
-        """
-        import re
-
-        # Remove null bytes and path separators
-        filename = filename.replace("\x00", "").replace("/", "_").replace("\\", "_")
-        # Remove other problematic characters
-        filename = re.sub(r'[<>:"|?*]', "_", filename)
-        # Limit length
-        return filename[:255]

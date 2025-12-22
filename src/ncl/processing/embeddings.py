@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Callable, List, Optional
 
 from ..config import get_settings
@@ -13,6 +12,7 @@ class EmbeddingGenerator:
     """Generate embeddings using OpenAI via LiteLLM.
 
     Supports batch processing with configurable batch sizes for efficiency.
+    API keys are initialized via ncl.__init__ at module load.
     """
 
     def __init__(self):
@@ -21,10 +21,7 @@ class EmbeddingGenerator:
         self.model = settings.embedding_model
         self.dimensions = settings.embedding_dimensions
         self.max_concurrent = settings.max_concurrent_embeddings
-        self.batch_size = 100  # OpenAI allows up to 2048 inputs per request
-
-        # Ensure API key is set for LiteLLM
-        os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+        self.batch_size = settings.embedding_batch_size
 
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a single text.

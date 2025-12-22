@@ -124,12 +124,15 @@ class TestRerankerInit:
 
             assert reranker.enabled is False
 
-    def test_init_sets_cohere_api_key(self, mock_settings):
-        """Test that Cohere API key is set in environment."""
+    def test_init_does_not_set_cohere_api_key(self, mock_settings):
+        """Test that Reranker no longer sets API key (done at module init)."""
         with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
             with patch.dict("os.environ", {}, clear=False) as env:
+                # Clear any existing key
+                env.pop("COHERE_API_KEY", None)
                 Reranker()
-                assert env.get("COHERE_API_KEY") == "test-api-key"
+                # Reranker should NOT set the key - it's done in ncl.__init__
+                assert "COHERE_API_KEY" not in env or env.get("COHERE_API_KEY") != "test-api-key"
 
     def test_init_without_cohere_api_key(self, mock_settings):
         """Test initialization without Cohere API key."""

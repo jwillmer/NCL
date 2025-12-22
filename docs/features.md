@@ -82,6 +82,18 @@ NCL automatically extracts and processes ZIP attachments.
 - Directory structure preservation
 - Only extracts supported file types
 
+**Security Limits (DoS Protection):**
+
+NCL enforces resource limits to prevent denial-of-service attacks from malicious ZIP files:
+
+| Limit | Default | Environment Variable | Description |
+|-------|---------|---------------------|-------------|
+| Max Files | 100 | `ZIP_MAX_FILES` | Maximum files to extract from a single ZIP |
+| Max Depth | 3 | `ZIP_MAX_DEPTH` | Maximum nested ZIP depth (zip-in-zip) |
+| Max Size | 500 MB | `ZIP_MAX_TOTAL_SIZE_MB` | Maximum total extracted size |
+
+When limits are exceeded, extraction stops and a `ZipExtractionError` is raised. The email is still processed, but the offending ZIP is logged as failed.
+
 **Example Processing:**
 ```
 email.eml
@@ -91,7 +103,7 @@ email.eml
     │   ├── chart1.png     → Processed with AI description
     │   └── chart2.png     → Processed with AI description
     ├── data.xlsx          → Processed
-    └── nested.zip         → Recursively extracted
+    └── nested.zip         → Recursively extracted (depth 2)
         └── more_docs.pdf  → Processed
 ```
 

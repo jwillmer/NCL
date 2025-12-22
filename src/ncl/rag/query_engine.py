@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, List, Optional
 
 from ..config import get_settings
@@ -20,6 +19,7 @@ class RAGQueryEngine:
     2. Cross-encoder reranking for improved accuracy (20-35% improvement)
 
     Then generates answers using LLM with source attribution.
+    API keys are initialized via ncl.__init__ at module load.
     """
 
     def __init__(self):
@@ -29,8 +29,7 @@ class RAGQueryEngine:
         self.embeddings = EmbeddingGenerator()
         self.reranker = Reranker()
         self.llm_model = settings.llm_model
-
-        os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+        self.chunk_display_max_chars = settings.chunk_display_max_chars
 
     async def query(
         self,
@@ -83,7 +82,7 @@ class RAGQueryEngine:
                 email_date=(
                     result["email_date"].isoformat() if result.get("email_date") else None
                 ),
-                chunk_content=result["content"][:500],  # Truncate for display
+                chunk_content=result["content"][: self.chunk_display_max_chars],
                 similarity_score=result["similarity"],
                 heading_path=result.get("heading_path") or [],
                 root_file_path=result.get("root_file_path"),
@@ -232,7 +231,7 @@ Please provide a comprehensive answer based on the above context. If you referen
                 email_date=(
                     result["email_date"].isoformat() if result.get("email_date") else None
                 ),
-                chunk_content=result["content"][:500],
+                chunk_content=result["content"][: self.chunk_display_max_chars],
                 similarity_score=result["similarity"],
                 heading_path=result.get("heading_path") or [],
                 root_file_path=result.get("root_file_path"),

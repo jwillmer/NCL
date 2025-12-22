@@ -6,7 +6,6 @@ query+document pairs together for deeper semantic understanding.
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, List, Optional
 
 from litellm import rerank
@@ -25,6 +24,8 @@ class Reranker:
     - Azure AI: azure_ai/cohere-rerank-v3.5
     - AWS Bedrock: bedrock/rerank
     - Infinity (self-hosted): infinity/<model>
+
+    API keys are initialized via ncl.__init__ at module load.
     """
 
     def __init__(self):
@@ -33,10 +34,6 @@ class Reranker:
         self.enabled = settings.rerank_enabled
         self.model = settings.rerank_model
         self.top_n = settings.rerank_top_n
-
-        # Set provider API keys
-        if settings.cohere_api_key:
-            os.environ["COHERE_API_KEY"] = settings.cohere_api_key
 
     def rerank_results(
         self,

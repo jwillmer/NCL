@@ -9,7 +9,12 @@
       "Bash(uv run pytest:*)",
       "Bash(.venv/Scripts/python.exe -m pytest:*)",
       "Bash(uv add:*)",
-      "Bash(uv run python:*)"
+      "Bash(uv run python:*)",
+      "Skill(review-code)",
+      "Skill(review-code:*)",
+      "Bash(wc:*)",
+      "Bash(tree:*)",
+      "Bash(cat:*)"
     ]
   }
 }
