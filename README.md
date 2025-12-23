@@ -17,9 +17,32 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 ```bash
 # Using uv (recommended)
 uv sync
+```
 
-# Or using pip
-pip install -e .
+> **Note:** First run will download PyTorch (~2GB) for OCR support via EasyOCR. Set `ENABLE_OCR=false` in `.env` to disable OCR and skip this download.
+
+## Running the CLI
+
+After installation, use `uv run` to execute CLI commands:
+
+```bash
+uv run ncl --help
+```
+
+Alternatively, activate the virtual environment to use `ncl` directly:
+
+```bash
+# Linux/macOS
+source .venv/bin/activate
+
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+# Windows (Command Prompt)
+.venv\Scripts\activate.bat
+
+# Now you can use ncl directly
+ncl --help
 ```
 
 ## Quick Start
@@ -37,13 +60,13 @@ cp .env.template .env
 #    (see migrations/001_initial_schema.sql)
 
 # 4. Ingest emails
-ncl ingest --source ./data/emails
+uv run ncl ingest --source ./data/emails
 
 # 5. Query the system
-ncl query "What did John say about the project deadline?"
+uv run ncl query "What did John say about the project deadline?"
 
 # 6. Search without generating answer
-ncl search "budget allocation" --top-k 10
+uv run ncl search "budget allocation" --top-k 10
 ```
 
 ## Documentation
@@ -58,11 +81,40 @@ See the [docs/](docs/) folder for detailed documentation:
 
 | Command | Description |
 |---------|-------------|
-| `ncl ingest` | Process EML files into the RAG system |
-| `ncl query` | Ask questions with AI-generated answers |
-| `ncl search` | Search without generating an answer |
-| `ncl stats` | View processing statistics |
-| `ncl reset-stale` | Reset files stuck in processing |
+| `uv run ncl ingest` | Process EML files into the RAG system |
+| `uv run ncl query` | Ask questions with AI-generated answers |
+| `uv run ncl search` | Search without generating an answer |
+| `uv run ncl stats` | View processing statistics |
+| `uv run ncl reset-stale` | Reset files stuck in processing |
+| `uv run ncl clean` | Delete all data (database + processed files) |
+
+### Ingest Options
+
+```bash
+# Verbose mode - show detailed processing info
+uv run ncl ingest --source ./data/emails --verbose
+
+# Retry failed files
+uv run ncl ingest --retry-failed
+
+# Process without resuming from previous state
+uv run ncl ingest --no-resume
+```
+
+### Clean Command
+
+Delete all data from the database and local processed files. Useful for testing:
+
+```bash
+# Clean all data (prompts for confirmation)
+uv run ncl clean
+
+# Skip confirmation prompt
+uv run ncl clean --yes
+
+# Clean with verbose output (shows per-table counts)
+uv run ncl clean --verbose
+```
 
 ## Architecture Overview
 
@@ -83,7 +135,7 @@ NCL includes a modern web interface built with React and CopilotKit for conversa
 uv sync --extra api
 
 # 2. Start the API server
-python -m ncl.api.main
+uv run python -m ncl.api.main
 
 # 3. In another terminal, start the frontend
 cd frontend
@@ -142,13 +194,13 @@ When running the API server, OpenAPI documentation is available at:
 
 ```bash
 # Run all tests
-pytest tests/
+uv run pytest tests/
 
 # Run with coverage
-pytest tests/ --cov=ncl --cov-report=term-missing
+uv run pytest tests/ --cov=ncl --cov-report=term-missing
 
 # Run specific test file
-pytest tests/test_eml_parser.py
+uv run pytest tests/test_eml_parser.py
 ```
 
 Test fixtures are located in `tests/fixtures/` including a sample email with PDF, ZIP, and PNG attachments.

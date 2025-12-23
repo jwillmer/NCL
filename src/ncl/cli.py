@@ -35,6 +35,15 @@ app = typer.Typer(
 )
 console = Console()
 
+# Module-level verbose flag
+_verbose = False
+
+
+def vprint(msg: str):
+    """Print verbose output if enabled."""
+    if _verbose:
+        console.print(f"[dim]{msg}[/dim]")
+
 
 @app.command()
 def ingest(
@@ -60,8 +69,16 @@ def ingest(
         "--retry-failed",
         help="Retry previously failed files",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output with detailed processing info",
+    ),
 ):
     """Ingest EML files and their attachments into the RAG system."""
+    global _verbose
+    _verbose = verbose
     asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed))
 
 
@@ -99,6 +116,8 @@ async def _ingest(
         else:
             files = list(source_dir.glob("**/*.eml"))
             console.print(f"[green]Found {len(files)} total EML files[/green]")
+
+        vprint(f"Source directory: {source_dir}")
 
         if not files:
             console.print("[green]No files to process![/green]")
@@ -160,12 +179,15 @@ async def _process_single_email(
     # Check if already processed
     existing = await db.get_document_by_hash(file_hash)
     if existing and existing.status == ProcessingStatus.COMPLETED:
+        vprint(f"Skipping (already processed): {eml_path}")
         return
 
     await tracker.mark_started(eml_path, file_hash)
+    vprint(f"Processing: {eml_path}")
 
     # Parse email
     parsed_email = eml_parser.parse_file(eml_path)
+    vprint(f"  Parsed: \"{parsed_email.metadata.subject}\" - {len(parsed_email.attachments)} attachments")
 
     # Create email document in hierarchy
     email_doc = await hierarchy_manager.create_email_document(eml_path, parsed_email)
@@ -175,6 +197,7 @@ async def _process_single_email(
     body_text = eml_parser.get_body_text(parsed_email)
 
     if body_text:
+        vprint(f"  Email body: 1 chunk")
         email_chunks.append(
             Chunk(
                 document_id=email_doc.id,
@@ -200,8 +223,10 @@ async def _process_single_email(
 
     # Generate embeddings for all chunks
     if email_chunks:
+        vprint(f"  Generating embeddings for {len(email_chunks)} chunks...")
         email_chunks = await embeddings.embed_chunks(email_chunks)
         await db.insert_chunks(email_chunks)
+        vprint(f"  Inserted {len(email_chunks)} chunks to database")
 
     # Mark email as completed
     await db.update_document_status(email_doc.id, ProcessingStatus.COMPLETED)
@@ -222,6 +247,11 @@ async def _process_attachment(
     Handles ZIP files, supported formats, and logs unsupported files.
     """
     chunks: list[Chunk] = []
+
+    # Format size for display
+    size_kb = attachment.size_bytes / 1024 if attachment.size_bytes else 0
+    size_str = f"{size_kb:.0f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
+    vprint(f"  Attachment: {attachment.filename} ({attachment.content_type}, {size_str})")
 
     # Check if it's a ZIP file
     if attachment_processor.is_zip_file(attachment.saved_path, attachment.content_type):
@@ -251,6 +281,7 @@ async def _process_attachment(
         )
     else:
         # Log unsupported attachment format
+        vprint(f"    Unsupported format (skipped)")
         await file_registry.log_unsupported_file(
             file_path=Path(attachment.saved_path),
             reason="unsupported_format",
@@ -298,11 +329,19 @@ async def _process_zip_attachment(
 
             # Process extracted file
             try:
-                attach_chunks = attachment_processor.process_attachment(
-                    extracted_path,
-                    attach_doc.id,
-                    extracted_content_type,
-                )
+                # Images from ZIPs use Vision API without classification
+                if attachment_processor.is_image_format(extracted_content_type):
+                    attach_chunks = await attachment_processor.process_document_image(
+                        extracted_path,
+                        attach_doc.id,
+                    )
+                else:
+                    # Non-image files use Docling
+                    attach_chunks = attachment_processor.process_attachment(
+                        extracted_path,
+                        attach_doc.id,
+                        extracted_content_type,
+                    )
                 chunks.extend(attach_chunks)
                 await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
             except Exception as e:
@@ -341,6 +380,9 @@ async def _process_regular_attachment(
     """Process a regular (non-ZIP) attachment."""
     chunks: list[Chunk] = []
 
+    # Check if this is an image that needs Vision API processing
+    is_email_image = attachment_processor.is_image_format(attachment.content_type)
+
     # Create attachment document
     attach_doc = await hierarchy_manager.create_attachment_document(
         parent_doc=email_doc,
@@ -352,14 +394,42 @@ async def _process_regular_attachment(
 
     # Process and chunk attachment
     try:
-        attach_chunks = attachment_processor.process_attachment(
-            Path(attachment.saved_path),
-            attach_doc.id,
-            attachment.content_type,
-        )
-        chunks.extend(attach_chunks)
-        await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+        if is_email_image:
+            # Use Vision API with classification for email images
+            attach_chunks, should_skip = await attachment_processor.process_email_image(
+                Path(attachment.saved_path),
+                attach_doc.id,
+                attachment.content_type,
+            )
+            if should_skip:
+                vprint(f"    Image classified as: non-content (skipped)")
+                # Log as skipped (logo/banner/signature)
+                await file_registry.log_unsupported_file(
+                    file_path=Path(attachment.saved_path),
+                    reason="classified_as_non_content",
+                    source_eml_path=source_eml_path,
+                    parent_document_id=email_doc.id,
+                )
+                await db.update_document_status(
+                    attach_doc.id, ProcessingStatus.COMPLETED, "Skipped: non-content image"
+                )
+            else:
+                vprint(f"    Image classified as: meaningful")
+                vprint(f"    Created {len(attach_chunks)} chunk(s)")
+                chunks.extend(attach_chunks)
+                await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+        else:
+            # Use Docling for non-image attachments (PDF, DOCX, etc.)
+            attach_chunks = attachment_processor.process_attachment(
+                Path(attachment.saved_path),
+                attach_doc.id,
+                attachment.content_type,
+            )
+            vprint(f"    Created {len(attach_chunks)} chunk(s)")
+            chunks.extend(attach_chunks)
+            await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
     except Exception as e:
+        vprint(f"    Error: {e}")
         await db.update_document_status(attach_doc.id, ProcessingStatus.FAILED, str(e))
         await file_registry.log_unsupported_file(
             file_path=Path(attachment.saved_path),
@@ -557,6 +627,88 @@ async def _reset_stale(max_age: int):
     try:
         await tracker.reset_stale_processing(max_age)
         console.print(f"[green]Reset stale processing entries older than {max_age} minutes[/green]")
+    finally:
+        await db.close()
+
+
+@app.command()
+def clean(
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation prompt",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed deletion info",
+    ),
+):
+    """Delete all data from database and local processed files. Useful for testing."""
+    global _verbose
+    _verbose = verbose
+
+    console.print("[yellow]⚠️  This will delete ALL data from the database and processed files![/yellow]")
+
+    if not yes:
+        confirm = typer.confirm("Are you sure you want to continue?")
+        if not confirm:
+            console.print("[dim]Cancelled[/dim]")
+            raise typer.Exit(0)
+
+    asyncio.run(_clean())
+
+
+async def _clean():
+    """Async implementation of clean command."""
+    import shutil
+
+    settings = get_settings()
+    db = SupabaseClient()
+
+    try:
+        # Delete from database
+        vprint("Deleting database records...")
+        counts = await db.delete_all_data()
+
+        # Show database deletion results
+        total_db_records = sum(counts.values())
+        if total_db_records > 0:
+            console.print(f"[green]Deleted {total_db_records} database records:[/green]")
+            for table, count in counts.items():
+                if count > 0:
+                    vprint(f"  {table}: {count}")
+        else:
+            console.print("[dim]No database records to delete[/dim]")
+
+        # Delete local processed files
+        processed_dir = settings.data_processed_dir
+        files_deleted = 0
+
+        if processed_dir.exists():
+            vprint(f"Cleaning {processed_dir}...")
+            for item in processed_dir.iterdir():
+                if item.is_dir():
+                    file_count = sum(1 for _ in item.rglob("*") if _.is_file())
+                    files_deleted += file_count
+                    shutil.rmtree(item)
+                    vprint(f"  Deleted {item.name}/ ({file_count} files)")
+                elif item.is_file():
+                    item.unlink()
+                    files_deleted += 1
+                    vprint(f"  Deleted {item.name}")
+
+            if files_deleted > 0:
+                console.print(f"[green]Deleted {files_deleted} local files[/green]")
+            else:
+                console.print("[dim]No local files to delete[/dim]")
+        else:
+            console.print("[dim]Processed directory does not exist[/dim]")
+
+        console.print("[green]✓ Clean complete[/green]")
+
     finally:
         await db.close()
 

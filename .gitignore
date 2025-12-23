@@ -56,3 +56,4 @@ logs/
 .DS_Store
 Thumbs.db
 /frontend/node_modules
+/data/processed

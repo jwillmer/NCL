@@ -18,7 +18,8 @@
       "Skill(review-proposal)",
       "Skill(review-proposal:*)",
       "Bash(python:*)",
-      "Bash(if not exist \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\src\\\\ncl\\\\api\\\\prompts\" mkdir \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\src\\\\ncl\\\\api\\\\prompts\")"
+      "Bash(if not exist \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\src\\\\ncl\\\\api\\\\prompts\" mkdir \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\src\\\\ncl\\\\api\\\\prompts\")",
+      "Bash(del \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\migrations\\\\002_file_registry.sql\")"
     ]
   }
 }

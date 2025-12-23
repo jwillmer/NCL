@@ -13,7 +13,6 @@ from ..models.document import (
     DocumentType,
     ParsedEmail,
 )
-from ..parsers.attachment_processor import AttachmentProcessor
 from ..storage.supabase_client import SupabaseClient
 
 
@@ -104,6 +103,9 @@ class HierarchyManager:
         Returns:
             Created Document representing the attachment.
         """
+        # Lazy import to avoid circular dependency
+        from ..parsers.attachment_processor import AttachmentProcessor
+
         processor = AttachmentProcessor()
 
         file_hash = self.compute_file_hash(attachment_path)

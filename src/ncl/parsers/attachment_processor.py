@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import zipfile
 from pathlib import Path
@@ -11,7 +12,10 @@ from uuid import UUID
 from ..config import get_settings
 from ..models.chunk import Chunk
 from ..models.document import DocumentType
+from ..processing.image_processor import ImageProcessor
 from ..utils import sanitize_filename
+
+logger = logging.getLogger(__name__)
 
 
 class ZipExtractionError(Exception):
@@ -61,6 +65,8 @@ class AttachmentProcessor:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": DocumentType.ATTACHMENT_XLSX,
     }
 
+    # Image MIME types - delegated to ImageProcessor for single source of truth
+
     def __init__(self):
         """Initialize the attachment processor."""
         settings = get_settings()
@@ -68,6 +74,18 @@ class AttachmentProcessor:
         self.enable_picture_description = settings.enable_picture_description
         self._converter = None
         self._chunker = None
+        self._image_processor = None
+
+    @property
+    def image_processor(self) -> ImageProcessor:
+        """Lazy initialization of ImageProcessor."""
+        if self._image_processor is None:
+            self._image_processor = ImageProcessor()
+        return self._image_processor
+
+    def is_image_format(self, content_type: Optional[str]) -> bool:
+        """Check if content type is an image format supported by Vision API."""
+        return self.image_processor.is_supported(content_type)
 
     @property
     def converter(self):
@@ -120,14 +138,24 @@ class AttachmentProcessor:
     def chunker(self):
         """Lazy initialization of HybridChunker with OpenAI tokenizer."""
         if self._chunker is None:
+            import tiktoken
             from docling_core.transforms.chunker import HybridChunker
             from docling_core.transforms.chunker.tokenizer.openai import OpenAITokenizer
 
             settings = get_settings()
 
-            # Use OpenAI tokenizer matching the embedding model
+            # Use tiktoken encoding for OpenAI embedding model
+            # Map embedding model names to their base models for tiktoken
+            model_name = settings.embedding_model
+            if model_name.startswith("text-embedding-"):
+                # text-embedding-3-small/large use cl100k_base encoding
+                encoding = tiktoken.get_encoding("cl100k_base")
+            else:
+                # Try to get encoding for model directly
+                encoding = tiktoken.encoding_for_model(model_name)
+
             tokenizer = OpenAITokenizer(
-                model=settings.embedding_model,
+                tokenizer=encoding,
                 max_tokens=settings.chunk_size_tokens,
             )
 
@@ -245,6 +273,105 @@ class AttachmentProcessor:
                     if hasattr(prov, "page"):
                         return prov.page
         return None
+
+    async def process_email_image(
+        self,
+        file_path: Path,
+        document_id: UUID,
+        content_type: Optional[str] = None,
+    ) -> tuple[List[Chunk], bool]:
+        """Process a standalone image from an email with classification.
+
+        This method is used for images directly attached to emails (not inside
+        PDFs or ZIPs). It classifies the image first to filter out logos,
+        banners, and signatures, then describes meaningful images.
+
+        Args:
+            file_path: Path to the image file.
+            document_id: UUID of the parent document record.
+            content_type: MIME type of the file (optional).
+
+        Returns:
+            Tuple of (list of Chunk objects, should_skip boolean).
+            If should_skip is True, the image was classified as non-meaningful.
+        """
+        if not file_path.exists():
+            raise FileNotFoundError(f"Image not found: {file_path}")
+
+        # Classify and describe using Vision API
+        result = await self.image_processor.classify_and_describe(file_path)
+
+        if result.should_skip:
+            logger.info(
+                f"Skipping image {file_path.name}: {result.skip_reason}"
+            )
+            return [], True
+
+        # If meaningful but no description (API error), try describe-only
+        description = result.description
+        if not description:
+            description = await self.image_processor.describe_only(file_path)
+
+        if not description:
+            logger.warning(f"Could not get description for image {file_path}")
+            return [], False
+
+        # Create a single chunk with the image description
+        chunk = Chunk(
+            document_id=document_id,
+            content=description,
+            chunk_index=0,
+            heading_path=["Image"],
+            section_title=file_path.name,
+            metadata={
+                "source_file": str(file_path),
+                "type": "image_description",
+                "classification": result.classification.value,
+            },
+        )
+
+        return [chunk], False
+
+    async def process_document_image(
+        self,
+        file_path: Path,
+        document_id: UUID,
+    ) -> List[Chunk]:
+        """Process an image from inside a PDF/ZIP (no classification needed).
+
+        This method is used for images extracted from documents where we
+        assume all images are meaningful content.
+
+        Args:
+            file_path: Path to the image file.
+            document_id: UUID of the parent document record.
+
+        Returns:
+            List of Chunk objects with image description.
+        """
+        if not file_path.exists():
+            raise FileNotFoundError(f"Image not found: {file_path}")
+
+        # Describe directly without classification
+        description = await self.image_processor.describe_only(file_path)
+
+        if not description:
+            logger.warning(f"Could not get description for image {file_path}")
+            return []
+
+        chunk = Chunk(
+            document_id=document_id,
+            content=description,
+            chunk_index=0,
+            heading_path=["Image"],
+            section_title=file_path.name,
+            metadata={
+                "source_file": str(file_path),
+                "type": "image_description",
+            },
+        )
+
+        return [chunk]
 
     def extract_text_only(self, file_path: Path) -> str:
         """Extract full text from attachment without chunking.

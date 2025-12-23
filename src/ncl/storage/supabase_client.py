@@ -41,11 +41,15 @@ class SupabaseClient:
             import asyncpg
             from pgvector.asyncpg import register_vector
 
+            async def init_connection(conn):
+                # Register vector type with the extensions schema where pgvector is installed
+                await register_vector(conn, schema="extensions")
+
             self._pool = await asyncpg.create_pool(
                 self.db_url,
                 min_size=2,
                 max_size=10,
-                init=register_vector,
+                init=init_connection,
             )
         return self._pool
 
@@ -294,6 +298,66 @@ class SupabaseClient:
             )
 
         return [dict(row) for row in rows]
+
+    # ==================== Cleanup Operations ====================
+
+    async def delete_all_data(self) -> Dict[str, int]:
+        """Delete all data from all tables.
+
+        Deletes in correct order to respect foreign key constraints.
+
+        Returns:
+            Dictionary with table names and deleted row counts.
+        """
+        counts: Dict[str, int] = {}
+
+        # Delete in order respecting foreign keys
+        # unsupported_files has FK to documents
+        result = (
+            self.client.table("unsupported_files")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        counts["unsupported_files"] = len(result.data) if result.data else 0
+
+        # chunks has FK to documents (will also be deleted by CASCADE, but explicit is clearer)
+        result = (
+            self.client.table("chunks")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        counts["chunks"] = len(result.data) if result.data else 0
+
+        # file_registry has FK to documents
+        result = (
+            self.client.table("file_registry")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        counts["file_registry"] = len(result.data) if result.data else 0
+
+        # processing_log has no FK
+        result = (
+            self.client.table("processing_log")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        counts["processing_log"] = len(result.data) if result.data else 0
+
+        # documents is the main table (CASCADE will handle any remaining children)
+        result = (
+            self.client.table("documents")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        counts["documents"] = len(result.data) if result.data else 0
+
+        return counts
 
     # ==================== Helper Methods ====================
 
