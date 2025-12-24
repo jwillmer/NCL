@@ -8,7 +8,6 @@
 
 -- Drop tables first (CASCADE handles triggers and dependent objects)
 DROP TABLE IF EXISTS unsupported_files CASCADE;
-DROP TABLE IF EXISTS file_registry CASCADE;
 DROP TABLE IF EXISTS chunks CASCADE;
 DROP TABLE IF EXISTS processing_log CASCADE;
 DROP TABLE IF EXISTS documents CASCADE;
@@ -17,8 +16,6 @@ DROP TABLE IF EXISTS documents CASCADE;
 DROP FUNCTION IF EXISTS match_chunks(extensions.vector(1536), FLOAT, INT);
 DROP FUNCTION IF EXISTS get_document_ancestry(UUID);
 DROP FUNCTION IF EXISTS update_updated_at_column();
-DROP FUNCTION IF EXISTS file_needs_processing(TEXT, TEXT);
-DROP FUNCTION IF EXISTS get_file_registry_stats();
 
 -- Drop custom types
 DROP TYPE IF EXISTS document_type CASCADE;
@@ -41,6 +38,12 @@ CREATE TYPE document_type AS ENUM (
     'attachment_docx',
     'attachment_pptx',
     'attachment_xlsx',
+    -- Legacy formats (via LlamaParse)
+    'attachment_doc',
+    'attachment_xls',
+    'attachment_ppt',
+    'attachment_csv',
+    'attachment_rtf',
     'attachment_other'
 );
 
@@ -166,54 +169,6 @@ CREATE INDEX idx_processing_log_status ON processing_log(status);
 CREATE INDEX idx_processing_log_file_hash ON processing_log(file_hash);
 
 -- ============================================
--- FILE REGISTRY TABLE
--- Quick lookup for processed files to avoid reprocessing
--- Supports subdirectories and growing data folders
--- ============================================
-CREATE TABLE file_registry (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    -- File identification
-    file_path TEXT NOT NULL,              -- Relative path from source root
-    file_hash TEXT NOT NULL,              -- SHA-256 hash for content deduplication
-    file_name TEXT NOT NULL,              -- Original filename
-    file_size_bytes BIGINT NOT NULL,      -- File size for quick comparison
-
-    -- Source tracking
-    source_type TEXT NOT NULL,            -- 'eml', 'attachment', 'zip_extracted'
-    parent_file_id UUID REFERENCES file_registry(id),  -- For attachments/extracted files
-    root_eml_id UUID REFERENCES file_registry(id),     -- Always points to source EML
-
-    -- Content type
-    mime_type TEXT,
-    is_supported BOOLEAN NOT NULL DEFAULT true,
-
-    -- Processing status
-    status processing_status NOT NULL DEFAULT 'pending',
-    document_id UUID REFERENCES documents(id),  -- Link to processed document
-    error_message TEXT,
-    attempts INTEGER NOT NULL DEFAULT 0,
-
-    -- Timestamps
-    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_processed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    -- Unique constraint on path + hash (same file, same content = same record)
-    UNIQUE(file_path, file_hash)
-);
-
--- Indexes for file registry
-CREATE INDEX idx_file_registry_hash ON file_registry(file_hash);
-CREATE INDEX idx_file_registry_status ON file_registry(status);
-CREATE INDEX idx_file_registry_source_type ON file_registry(source_type);
-CREATE INDEX idx_file_registry_parent ON file_registry(parent_file_id);
-CREATE INDEX idx_file_registry_root_eml ON file_registry(root_eml_id);
-CREATE INDEX idx_file_registry_is_supported ON file_registry(is_supported);
-CREATE INDEX idx_file_registry_path ON file_registry(file_path);
-
--- ============================================
 -- UNSUPPORTED FILES TABLE
 -- Track files we cannot process for visibility
 -- ============================================
@@ -329,73 +284,11 @@ AS $$
 $$;
 
 -- ============================================
--- HELPER FUNCTION: Check if file needs processing
--- ============================================
-CREATE OR REPLACE FUNCTION file_needs_processing(
-    p_file_path TEXT,
-    p_file_hash TEXT
-)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    existing_status processing_status;
-BEGIN
-    SELECT status INTO existing_status
-    FROM file_registry
-    WHERE file_path = p_file_path AND file_hash = p_file_hash
-    LIMIT 1;
-
-    -- File needs processing if:
-    -- 1. Not in registry at all
-    -- 2. Status is 'pending' or 'failed' (retry)
-    IF existing_status IS NULL THEN
-        RETURN true;
-    ELSIF existing_status IN ('pending', 'failed') THEN
-        RETURN true;
-    ELSE
-        RETURN false;
-    END IF;
-END;
-$$;
-
--- ============================================
--- HELPER FUNCTION: Get processing statistics
--- ============================================
-CREATE OR REPLACE FUNCTION get_file_registry_stats()
-RETURNS TABLE (
-    total_files BIGINT,
-    pending_files BIGINT,
-    processing_files BIGINT,
-    completed_files BIGINT,
-    failed_files BIGINT,
-    unsupported_files BIGINT,
-    eml_files BIGINT,
-    attachment_files BIGINT,
-    zip_extracted_files BIGINT
-)
-LANGUAGE SQL
-AS $$
-    SELECT
-        COUNT(*) AS total_files,
-        COUNT(*) FILTER (WHERE status = 'pending') AS pending_files,
-        COUNT(*) FILTER (WHERE status = 'processing') AS processing_files,
-        COUNT(*) FILTER (WHERE status = 'completed') AS completed_files,
-        COUNT(*) FILTER (WHERE status = 'failed') AS failed_files,
-        COUNT(*) FILTER (WHERE is_supported = false) AS unsupported_files,
-        COUNT(*) FILTER (WHERE source_type = 'eml') AS eml_files,
-        COUNT(*) FILTER (WHERE source_type = 'attachment') AS attachment_files,
-        COUNT(*) FILTER (WHERE source_type = 'zip_extracted') AS zip_extracted_files
-    FROM file_registry;
-$$;
-
--- ============================================
 -- ROW LEVEL SECURITY
 -- ============================================
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE processing_log ENABLE ROW LEVEL SECURITY;
-ALTER TABLE file_registry ENABLE ROW LEVEL SECURITY;
 ALTER TABLE unsupported_files ENABLE ROW LEVEL SECURITY;
 
 -- Default policy: allow all for service role (adjust for multi-tenant if needed)
@@ -404,8 +297,6 @@ CREATE POLICY "Service role full access to documents" ON documents
 CREATE POLICY "Service role full access to chunks" ON chunks
     FOR ALL USING (true);
 CREATE POLICY "Service role full access to processing_log" ON processing_log
-    FOR ALL USING (true);
-CREATE POLICY "Service role full access to file_registry" ON file_registry
     FOR ALL USING (true);
 CREATE POLICY "Service role full access to unsupported_files" ON unsupported_files
     FOR ALL USING (true);
@@ -428,10 +319,5 @@ CREATE TRIGGER update_documents_updated_at
 
 CREATE TRIGGER update_processing_log_updated_at
     BEFORE UPDATE ON processing_log
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_file_registry_updated_at
-    BEFORE UPDATE ON file_registry
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();

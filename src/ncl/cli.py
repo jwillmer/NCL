@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import sys
+
+import nest_asyncio
+
+# Apply nest_asyncio to allow nested event loops (required for LlamaParse)
+nest_asyncio.apply()
 from pathlib import Path
 from typing import Optional
 
@@ -25,7 +33,7 @@ from .parsers.eml_parser import EMLParser
 from .processing.embeddings import EmbeddingGenerator
 from .processing.hierarchy_manager import HierarchyManager
 from .rag.query_engine import RAGQueryEngine, format_response_with_sources
-from .storage.file_registry import FileRegistry
+from .storage.unsupported_file_logger import UnsupportedFileLogger
 from .storage.progress_tracker import ProgressTracker
 from .storage.supabase_client import SupabaseClient
 
@@ -38,11 +46,51 @@ console = Console()
 # Module-level verbose flag
 _verbose = False
 
+# Flag to track if shutdown was requested
+_shutdown_requested = False
+
+
+def _handle_interrupt(signum, frame):
+    """Handle Ctrl+C gracefully."""
+    global _shutdown_requested
+    if _shutdown_requested:
+        # Second Ctrl+C - force exit
+        console.print("\n[red]Force exiting...[/red]")
+        sys.exit(1)
+    _shutdown_requested = True
+    console.print("\n[yellow]Interrupted! Cleaning up... (press Ctrl+C again to force exit)[/yellow]")
+    raise KeyboardInterrupt
+
 
 def vprint(msg: str):
     """Print verbose output if enabled."""
     if _verbose:
         console.print(f"[dim]{msg}[/dim]")
+
+
+def _get_format_name(content_type: str) -> str:
+    """Get human-readable format name from MIME type."""
+    format_map = {
+        "application/pdf": "PDF",
+        "image/png": "PNG",
+        "image/jpeg": "JPEG",
+        "image/jpg": "JPEG",
+        "image/tiff": "TIFF",
+        "image/bmp": "BMP",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
+        "application/msword": "DOC",
+        "application/vnd.ms-excel": "XLS",
+        "application/vnd.ms-powerpoint": "PPT",
+        "text/csv": "CSV",
+        "application/rtf": "RTF",
+        "text/rtf": "RTF",
+        "text/html": "HTML",
+        "application/zip": "ZIP",
+        "application/x-zip-compressed": "ZIP",
+    }
+    return format_map.get(content_type, content_type.split("/")[-1].upper())
 
 
 @app.command()
@@ -77,9 +125,22 @@ def ingest(
     ),
 ):
     """Ingest EML files and their attachments into the RAG system."""
-    global _verbose
+    global _verbose, _shutdown_requested
     _verbose = verbose
-    asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed))
+    _shutdown_requested = False
+
+    # Set up signal handler for Ctrl+C
+    original_handler = signal.signal(signal.SIGINT, _handle_interrupt)
+
+    try:
+        asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed))
+    except KeyboardInterrupt:
+        console.print("[yellow]Processing stopped by user[/yellow]")
+    finally:
+        # Restore original signal handler
+        signal.signal(signal.SIGINT, original_handler)
+        # Force exit to clean up any lingering async resources (e.g., httpx clients from Agents SDK)
+        os._exit(0)
 
 
 async def _ingest(
@@ -89,6 +150,8 @@ async def _ingest(
     retry_failed: bool,
 ):
     """Async implementation of ingest command."""
+    global _shutdown_requested
+
     settings = get_settings()
     source_dir = source_dir or settings.eml_source_dir
 
@@ -99,7 +162,7 @@ async def _ingest(
     # Initialize components
     db = SupabaseClient()
     tracker = ProgressTracker(db)
-    file_registry = FileRegistry(db)
+    unsupported_logger = UnsupportedFileLogger(db)
     eml_parser = EMLParser()
     attachment_processor = AttachmentProcessor()
     hierarchy_manager = HierarchyManager(db)
@@ -123,8 +186,7 @@ async def _ingest(
             console.print("[green]No files to process![/green]")
             return
 
-        # Estimate cost
-        console.print(f"[dim]Estimated embedding cost: ~${len(files) * 0.001:.2f}[/dim]")
+        processed_count = 0
 
         # Process files with progress tracking
         with Progress(
@@ -137,6 +199,11 @@ async def _ingest(
             task = progress.add_task("Processing emails...", total=len(files))
 
             for file_path in files:
+                # Check if shutdown was requested
+                if _shutdown_requested:
+                    console.print(f"[yellow]Stopping after {processed_count} files[/yellow]")
+                    break
+
                 try:
                     await _process_single_email(
                         file_path,
@@ -146,9 +213,13 @@ async def _ingest(
                         embeddings,
                         db,
                         tracker,
-                        file_registry,
+                        unsupported_logger,
                     )
+                    processed_count += 1
                     progress.update(task, advance=1)
+                except KeyboardInterrupt:
+                    console.print(f"[yellow]Stopping after {processed_count} files[/yellow]")
+                    break
                 except Exception as e:
                     console.print(f"[red]Error processing {file_path}: {e}[/red]")
                     await tracker.mark_failed(file_path, str(e))
@@ -170,7 +241,7 @@ async def _process_single_email(
     embeddings: EmbeddingGenerator,
     db: SupabaseClient,
     tracker: ProgressTracker,
-    file_registry: FileRegistry,
+    unsupported_logger: UnsupportedFileLogger,
 ):
     """Process a single EML file with all its attachments."""
     file_hash = tracker.compute_file_hash(eml_path)
@@ -209,6 +280,7 @@ async def _process_single_email(
         )
 
     # Process attachments
+    attachment_chunk_count = 0
     for attachment in parsed_email.attachments:
         attachment_chunks = await _process_attachment(
             attachment=attachment,
@@ -217,9 +289,18 @@ async def _process_single_email(
             attachment_processor=attachment_processor,
             hierarchy_manager=hierarchy_manager,
             db=db,
-            file_registry=file_registry,
+            unsupported_logger=unsupported_logger,
         )
+        attachment_chunk_count += len(attachment_chunks)
         email_chunks.extend(attachment_chunks)
+
+    # Summary of attachments processed
+    if parsed_email.attachments:
+        body_chunks = 1 if body_text else 0
+        vprint(
+            f"  Summary: {len(parsed_email.attachments)} attachments -> "
+            f"{attachment_chunk_count} chunks (+ {body_chunks} email body)"
+        )
 
     # Generate embeddings for all chunks
     if email_chunks:
@@ -240,21 +321,56 @@ async def _process_attachment(
     attachment_processor: AttachmentProcessor,
     hierarchy_manager: HierarchyManager,
     db: SupabaseClient,
-    file_registry: FileRegistry,
+    unsupported_logger: UnsupportedFileLogger,
 ) -> list[Chunk]:
     """Process a single attachment and return its chunks.
 
-    Handles ZIP files, supported formats, and logs unsupported files.
+    Uses preprocessor for routing decisions.
     """
     chunks: list[Chunk] = []
+    file_path = Path(attachment.saved_path)
 
     # Format size for display
     size_kb = attachment.size_bytes / 1024 if attachment.size_bytes else 0
     size_str = f"{size_kb:.0f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
-    vprint(f"  Attachment: {attachment.filename} ({attachment.content_type}, {size_str})")
+    format_name = _get_format_name(attachment.content_type or "unknown")
 
-    # Check if it's a ZIP file
-    if attachment_processor.is_zip_file(attachment.saved_path, attachment.content_type):
+    # Preprocess to get routing decision (classify_images=True for email-level attachments)
+    result = await attachment_processor.preprocess(
+        file_path, attachment.content_type, classify_images=True
+    )
+
+    # Determine processor type for display
+    if result.is_zip:
+        processor = "ZIP"
+    elif result.is_image:
+        processor = "Vision"
+    elif result.parser_name:
+        processor = result.parser_name.capitalize()
+    else:
+        processor = "unsupported"
+
+    vprint(f"  Attachment: {attachment.filename} ({format_name}, {size_str}) [{processor}]")
+
+    # Handle based on preprocess result
+    if not result.should_process:
+        # Log skipped file
+        reason = result.skip_reason or "unsupported_format"
+        if "non_content" in reason.lower() or result.is_image:
+            vprint(f"    -> Skipped: non-content image (logo/banner/signature)")
+            reason = "classified_as_non_content"
+        else:
+            vprint(f"    -> Skipped: {reason}")
+        await unsupported_logger.log_unsupported_file(
+            file_path=file_path,
+            reason=reason,
+            source_eml_path=source_eml_path,
+            parent_document_id=email_doc.id,
+        )
+        return chunks
+
+    # Handle ZIP files
+    if result.is_zip:
         chunks.extend(
             await _process_zip_attachment(
                 attachment=attachment,
@@ -263,28 +379,54 @@ async def _process_attachment(
                 attachment_processor=attachment_processor,
                 hierarchy_manager=hierarchy_manager,
                 db=db,
-                file_registry=file_registry,
+                unsupported_logger=unsupported_logger,
             )
         )
+        return chunks
 
-    elif attachment_processor.is_supported(attachment.saved_path, attachment.content_type):
-        chunks.extend(
-            await _process_regular_attachment(
-                attachment=attachment,
-                email_doc=email_doc,
-                source_eml_path=source_eml_path,
-                attachment_processor=attachment_processor,
-                hierarchy_manager=hierarchy_manager,
-                db=db,
-                file_registry=file_registry,
+    # Create attachment document for non-ZIP files
+    attach_doc = await hierarchy_manager.create_attachment_document(
+        parent_doc=email_doc,
+        attachment_path=file_path,
+        content_type=attachment.content_type,
+        size_bytes=attachment.size_bytes,
+        original_filename=attachment.filename,
+    )
+
+    try:
+        if result.is_image and result.image_description:
+            # Image was already classified and described during preprocessing
+            chunk = attachment_processor.create_image_chunk(
+                file_path, attach_doc.id, result.image_description, "meaningful"
             )
-        )
-    else:
-        # Log unsupported attachment format
-        vprint(f"    Unsupported format (skipped)")
-        await file_registry.log_unsupported_file(
-            file_path=Path(attachment.saved_path),
-            reason="unsupported_format",
+            chunks.append(chunk)
+            vprint(f"    -> 1 chunk created (image described)")
+            await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+        elif result.is_image:
+            # Image needs description (preprocessing didn't provide one)
+            attach_chunks = await attachment_processor.process_document_image(
+                file_path, attach_doc.id
+            )
+            chunks.extend(attach_chunks)
+            vprint(f"    -> {len(attach_chunks)} chunks created (image described)")
+            await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+        else:
+            # Document - use parser registry
+            attach_chunks = await attachment_processor.process_attachment(
+                file_path, attach_doc.id, attachment.content_type
+            )
+            if attach_chunks:
+                vprint(f"    -> {len(attach_chunks)} chunks created")
+            else:
+                vprint(f"    -> 0 chunks (document has no extractable text)")
+            chunks.extend(attach_chunks)
+            await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+    except Exception as e:
+        vprint(f"    Error: {e}")
+        await db.update_document_status(attach_doc.id, ProcessingStatus.FAILED, str(e))
+        await unsupported_logger.log_unsupported_file(
+            file_path=file_path,
+            reason="extraction_failed",
             source_eml_path=source_eml_path,
             parent_document_id=email_doc.id,
         )
@@ -299,7 +441,7 @@ async def _process_zip_attachment(
     attachment_processor: AttachmentProcessor,
     hierarchy_manager: HierarchyManager,
     db: SupabaseClient,
-    file_registry: FileRegistry,
+    unsupported_logger: UnsupportedFileLogger,
 ) -> list[Chunk]:
     """Extract and process files from a ZIP attachment."""
     chunks: list[Chunk] = []
@@ -307,11 +449,15 @@ async def _process_zip_attachment(
     try:
         extracted_files = attachment_processor.extract_zip(Path(attachment.saved_path))
         for extracted_path, extracted_content_type in extracted_files:
-            # Check if extracted file is supported
-            if not attachment_processor.is_supported(extracted_path, extracted_content_type):
-                await file_registry.log_unsupported_file(
+            # Preprocess extracted file (classify_images=False - trust ZIP contents)
+            result = await attachment_processor.preprocess(
+                extracted_path, extracted_content_type, classify_images=False
+            )
+
+            if not result.should_process:
+                await unsupported_logger.log_unsupported_file(
                     file_path=extracted_path,
-                    reason="unsupported_format",
+                    reason=result.skip_reason or "unsupported_format",
                     source_eml_path=source_eml_path,
                     source_zip_path=attachment.saved_path,
                     parent_document_id=email_doc.id,
@@ -327,20 +473,17 @@ async def _process_zip_attachment(
                 original_filename=extracted_path.name,
             )
 
-            # Process extracted file
+            # Process extracted file based on preprocess result
             try:
-                # Images from ZIPs use Vision API without classification
-                if attachment_processor.is_image_format(extracted_content_type):
+                if result.is_image:
+                    # Images from ZIPs - describe without classification
                     attach_chunks = await attachment_processor.process_document_image(
-                        extracted_path,
-                        attach_doc.id,
+                        extracted_path, attach_doc.id
                     )
                 else:
-                    # Non-image files use Docling
-                    attach_chunks = attachment_processor.process_attachment(
-                        extracted_path,
-                        attach_doc.id,
-                        extracted_content_type,
+                    # Documents - use parser registry
+                    attach_chunks = await attachment_processor.process_attachment(
+                        extracted_path, attach_doc.id, extracted_content_type
                     )
                 chunks.extend(attach_chunks)
                 await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
@@ -348,7 +491,7 @@ async def _process_zip_attachment(
                 await db.update_document_status(
                     attach_doc.id, ProcessingStatus.FAILED, str(e)
                 )
-                await file_registry.log_unsupported_file(
+                await unsupported_logger.log_unsupported_file(
                     file_path=extracted_path,
                     reason="extraction_failed",
                     source_eml_path=source_eml_path,
@@ -358,82 +501,9 @@ async def _process_zip_attachment(
 
     except Exception as e:
         console.print(f"[yellow]Failed to extract ZIP {attachment.filename}: {e}[/yellow]")
-        await file_registry.log_unsupported_file(
+        await unsupported_logger.log_unsupported_file(
             file_path=Path(attachment.saved_path),
             reason="corrupted",
-            source_eml_path=source_eml_path,
-            parent_document_id=email_doc.id,
-        )
-
-    return chunks
-
-
-async def _process_regular_attachment(
-    attachment,
-    email_doc,
-    source_eml_path: str,
-    attachment_processor: AttachmentProcessor,
-    hierarchy_manager: HierarchyManager,
-    db: SupabaseClient,
-    file_registry: FileRegistry,
-) -> list[Chunk]:
-    """Process a regular (non-ZIP) attachment."""
-    chunks: list[Chunk] = []
-
-    # Check if this is an image that needs Vision API processing
-    is_email_image = attachment_processor.is_image_format(attachment.content_type)
-
-    # Create attachment document
-    attach_doc = await hierarchy_manager.create_attachment_document(
-        parent_doc=email_doc,
-        attachment_path=Path(attachment.saved_path),
-        content_type=attachment.content_type,
-        size_bytes=attachment.size_bytes,
-        original_filename=attachment.filename,
-    )
-
-    # Process and chunk attachment
-    try:
-        if is_email_image:
-            # Use Vision API with classification for email images
-            attach_chunks, should_skip = await attachment_processor.process_email_image(
-                Path(attachment.saved_path),
-                attach_doc.id,
-                attachment.content_type,
-            )
-            if should_skip:
-                vprint(f"    Image classified as: non-content (skipped)")
-                # Log as skipped (logo/banner/signature)
-                await file_registry.log_unsupported_file(
-                    file_path=Path(attachment.saved_path),
-                    reason="classified_as_non_content",
-                    source_eml_path=source_eml_path,
-                    parent_document_id=email_doc.id,
-                )
-                await db.update_document_status(
-                    attach_doc.id, ProcessingStatus.COMPLETED, "Skipped: non-content image"
-                )
-            else:
-                vprint(f"    Image classified as: meaningful")
-                vprint(f"    Created {len(attach_chunks)} chunk(s)")
-                chunks.extend(attach_chunks)
-                await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
-        else:
-            # Use Docling for non-image attachments (PDF, DOCX, etc.)
-            attach_chunks = attachment_processor.process_attachment(
-                Path(attachment.saved_path),
-                attach_doc.id,
-                attachment.content_type,
-            )
-            vprint(f"    Created {len(attach_chunks)} chunk(s)")
-            chunks.extend(attach_chunks)
-            await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
-    except Exception as e:
-        vprint(f"    Error: {e}")
-        await db.update_document_status(attach_doc.id, ProcessingStatus.FAILED, str(e))
-        await file_registry.log_unsupported_file(
-            file_path=Path(attachment.saved_path),
-            reason="extraction_failed",
             source_eml_path=source_eml_path,
             parent_document_id=email_doc.id,
         )
@@ -571,7 +641,7 @@ async def _show_processing_stats():
     """Async implementation of stats command."""
     db = SupabaseClient()
     tracker = ProgressTracker(db)
-    file_registry = FileRegistry(db)
+    unsupported_logger = UnsupportedFileLogger(db)
 
     try:
         # Show processing stats
@@ -579,7 +649,7 @@ async def _show_processing_stats():
         _show_stats(stats)
 
         # Show unsupported files stats
-        unsupported_stats = await file_registry.get_unsupported_files_stats()
+        unsupported_stats = await unsupported_logger.get_unsupported_files_stats()
         if unsupported_stats.get("total", 0) > 0:
             console.print()  # Empty line separator
 

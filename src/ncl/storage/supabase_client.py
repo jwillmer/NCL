@@ -330,15 +330,6 @@ class SupabaseClient:
         )
         counts["chunks"] = len(result.data) if result.data else 0
 
-        # file_registry has FK to documents
-        result = (
-            self.client.table("file_registry")
-            .delete()
-            .neq("id", "00000000-0000-0000-0000-000000000000")
-            .execute()
-        )
-        counts["file_registry"] = len(result.data) if result.data else 0
-
         # processing_log has no FK
         result = (
             self.client.table("processing_log")

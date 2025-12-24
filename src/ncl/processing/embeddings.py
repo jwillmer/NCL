@@ -131,27 +131,3 @@ class EmbeddingGenerator:
 
         return embedded_chunks
 
-    def estimate_tokens(self, text: str) -> int:
-        """Estimate token count for text (rough approximation).
-
-        Args:
-            text: Text to estimate.
-
-        Returns:
-            Estimated token count.
-        """
-        # Rough approximation: ~4 characters per token for English
-        return len(text) // 4
-
-    def estimate_cost(self, chunks: List[Chunk]) -> float:
-        """Estimate embedding cost for chunks.
-
-        Args:
-            chunks: List of chunks to estimate.
-
-        Returns:
-            Estimated cost in USD.
-        """
-        # OpenAI text-embedding-3-small pricing: $0.00002 per 1K tokens
-        total_tokens = sum(self.estimate_tokens(chunk.content) for chunk in chunks)
-        return (total_tokens / 1000) * 0.00002

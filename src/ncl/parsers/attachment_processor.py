@@ -1,4 +1,4 @@
-"""Attachment processor using Docling for document conversion and chunking."""
+"""Attachment processor using parser plugins for document conversion and chunking."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from ..models.chunk import Chunk
 from ..models.document import DocumentType
 from ..processing.image_processor import ImageProcessor
 from ..utils import sanitize_filename
+from .chunker import DocumentChunker
+from .preprocessor import DocumentPreprocessor, PreprocessResult
+from .registry import ParserRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -25,32 +28,11 @@ class ZipExtractionError(Exception):
 
 
 class AttachmentProcessor:
-    """Process attachments using Docling for text extraction and chunking.
+    """Process attachments using parser plugins for text extraction and chunking.
 
-    Supports PDF, images (with OCR), DOCX, PPTX, XLSX, and HTML files.
-    Uses HierarchicalChunker to preserve document structure.
+    Uses the parser registry to find appropriate parsers for different file types.
+    LlamaParse is the default parser for all document types.
     """
-
-    # Mapping of MIME types to Docling InputFormat
-    SUPPORTED_FORMATS: Dict[str, str] = {
-        "application/pdf": "PDF",
-        "image/png": "IMAGE",
-        "image/jpeg": "IMAGE",
-        "image/jpg": "IMAGE",
-        "image/tiff": "IMAGE",
-        "image/bmp": "IMAGE",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
-        "text/html": "HTML",
-    }
-
-    # ZIP file MIME types
-    ZIP_FORMATS: Dict[str, str] = {
-        "application/zip": "ZIP",
-        "application/x-zip-compressed": "ZIP",
-        "application/x-zip": "ZIP",
-    }
 
     # Mapping of MIME types to DocumentType
     MIME_TO_DOC_TYPE: Dict[str, DocumentType] = {
@@ -63,18 +45,50 @@ class AttachmentProcessor:
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": DocumentType.ATTACHMENT_DOCX,
         "application/vnd.openxmlformats-officedocument.presentationml.presentation": DocumentType.ATTACHMENT_PPTX,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": DocumentType.ATTACHMENT_XLSX,
+        "application/msword": DocumentType.ATTACHMENT_DOC,
+        "application/vnd.ms-excel": DocumentType.ATTACHMENT_XLS,
+        "application/vnd.ms-powerpoint": DocumentType.ATTACHMENT_PPT,
+        "text/csv": DocumentType.ATTACHMENT_CSV,
+        "application/rtf": DocumentType.ATTACHMENT_RTF,
+        "text/rtf": DocumentType.ATTACHMENT_RTF,
     }
 
-    # Image MIME types - delegated to ImageProcessor for single source of truth
+    # ZIP file MIME types
+    ZIP_FORMATS: Dict[str, str] = {
+        "application/zip": "ZIP",
+        "application/x-zip-compressed": "ZIP",
+        "application/x-zip": "ZIP",
+    }
+
+    # Office formats that are technically ZIP files but should NOT be treated as ZIPs
+    OFFICE_ZIP_FORMATS: set = {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.oasis.opendocument.presentation",
+        "application/epub+zip",
+        "application/java-archive",
+    }
+
+    # Extensions that are ZIP-based but should be processed as documents
+    OFFICE_ZIP_EXTENSIONS: set = {
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".epub",
+        ".jar",
+    }
 
     def __init__(self):
         """Initialize the attachment processor."""
-        settings = get_settings()
-        self.enable_ocr = settings.enable_ocr
-        self.enable_picture_description = settings.enable_picture_description
-        self._converter = None
-        self._chunker = None
-        self._image_processor = None
+        self._image_processor: Optional[ImageProcessor] = None
+        self._chunker: Optional[DocumentChunker] = None
+        self._preprocessor: Optional[DocumentPreprocessor] = None
 
     @property
     def image_processor(self) -> ImageProcessor:
@@ -83,91 +97,48 @@ class AttachmentProcessor:
             self._image_processor = ImageProcessor()
         return self._image_processor
 
+    @property
+    def chunker(self) -> DocumentChunker:
+        """Lazy initialization of DocumentChunker."""
+        if self._chunker is None:
+            self._chunker = DocumentChunker()
+        return self._chunker
+
+    @property
+    def preprocessor(self) -> DocumentPreprocessor:
+        """Lazy initialization of DocumentPreprocessor."""
+        if self._preprocessor is None:
+            self._preprocessor = DocumentPreprocessor()
+        return self._preprocessor
+
+    async def preprocess(
+        self,
+        file_path: Path,
+        content_type: Optional[str] = None,
+        classify_images: bool = True,
+    ) -> PreprocessResult:
+        """Preprocess a file to determine how it should be handled.
+
+        This is the main entry point for determining file routing.
+        For email-level images, set classify_images=True to filter logos/banners.
+        For images from ZIPs/documents, set classify_images=False.
+
+        Args:
+            file_path: Path to the file.
+            content_type: Optional MIME type.
+            classify_images: Whether to classify images (filter logos, etc.)
+
+        Returns:
+            PreprocessResult with routing decision and optional image description.
+        """
+        return await self.preprocessor.preprocess(file_path, content_type, classify_images)
+
     def is_image_format(self, content_type: Optional[str]) -> bool:
         """Check if content type is an image format supported by Vision API."""
         return self.image_processor.is_supported(content_type)
 
-    @property
-    def converter(self):
-        """Lazy initialization of DocumentConverter."""
-        if self._converter is None:
-            from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import (
-                EasyOcrOptions,
-                PdfPipelineOptions,
-                smolvlm_picture_description,
-            )
-            from docling.document_converter import DocumentConverter, PdfFormatOption
-
-            pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = self.enable_ocr
-            pipeline_options.do_table_structure = True
-
-            if self.enable_ocr:
-                pipeline_options.ocr_options = EasyOcrOptions(
-                    lang=["en"],
-                )
-
-            # Enable picture description using SmolVLM model
-            if self.enable_picture_description:
-                pipeline_options.do_picture_description = True
-                pipeline_options.picture_description_options = smolvlm_picture_description
-                pipeline_options.picture_description_options.prompt = (
-                    "Describe this image in detail. Include any text, diagrams, "
-                    "charts, or visual elements. Be precise and thorough."
-                )
-                pipeline_options.generate_picture_images = True
-                pipeline_options.images_scale = 2.0
-
-            self._converter = DocumentConverter(
-                allowed_formats=[
-                    InputFormat.PDF,
-                    InputFormat.IMAGE,
-                    InputFormat.DOCX,
-                    InputFormat.PPTX,
-                    InputFormat.XLSX,
-                    InputFormat.HTML,
-                ],
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
-                },
-            )
-        return self._converter
-
-    @property
-    def chunker(self):
-        """Lazy initialization of HybridChunker with OpenAI tokenizer."""
-        if self._chunker is None:
-            import tiktoken
-            from docling_core.transforms.chunker import HybridChunker
-            from docling_core.transforms.chunker.tokenizer.openai import OpenAITokenizer
-
-            settings = get_settings()
-
-            # Use tiktoken encoding for OpenAI embedding model
-            # Map embedding model names to their base models for tiktoken
-            model_name = settings.embedding_model
-            if model_name.startswith("text-embedding-"):
-                # text-embedding-3-small/large use cl100k_base encoding
-                encoding = tiktoken.get_encoding("cl100k_base")
-            else:
-                # Try to get encoding for model directly
-                encoding = tiktoken.encoding_for_model(model_name)
-
-            tokenizer = OpenAITokenizer(
-                tokenizer=encoding,
-                max_tokens=settings.chunk_size_tokens,
-            )
-
-            self._chunker = HybridChunker(
-                tokenizer=tokenizer,
-                max_tokens=settings.chunk_size_tokens,
-                merge_peers=True,  # Merge undersized chunks with same metadata
-            )
-        return self._chunker
-
     def is_supported(self, file_path: str, content_type: Optional[str] = None) -> bool:
-        """Check if file format is supported by Docling.
+        """Check if file format is supported by any registered parser.
 
         Args:
             file_path: Path to the file.
@@ -176,11 +147,8 @@ class AttachmentProcessor:
         Returns:
             True if format is supported.
         """
-        if content_type and content_type in self.SUPPORTED_FORMATS:
-            return True
-
-        mime_type, _ = mimetypes.guess_type(file_path)
-        return mime_type in self.SUPPORTED_FORMATS if mime_type else False
+        parser = ParserRegistry.get_parser_for_file(Path(file_path), content_type)
+        return parser is not None
 
     def get_document_type(self, content_type: str) -> DocumentType:
         """Get DocumentType from MIME type.
@@ -193,13 +161,15 @@ class AttachmentProcessor:
         """
         return self.MIME_TO_DOC_TYPE.get(content_type, DocumentType.ATTACHMENT_OTHER)
 
-    def process_attachment(
+    async def process_attachment(
         self,
         file_path: Path,
         document_id: UUID,
         content_type: Optional[str] = None,
     ) -> List[Chunk]:
         """Process an attachment file and return chunks.
+
+        Uses parser registry to find appropriate parser, then chunks result.
 
         Args:
             file_path: Path to the attachment file.
@@ -211,126 +181,78 @@ class AttachmentProcessor:
 
         Raises:
             FileNotFoundError: If the attachment file doesn't exist.
-            ValueError: If document conversion fails.
+            ValueError: If no parser available or parsing fails.
         """
         if not file_path.exists():
             raise FileNotFoundError(f"Attachment not found: {file_path}")
 
-        # Convert document using Docling
-        result = self.converter.convert(str(file_path))
+        # Get appropriate parser from registry
+        parser = ParserRegistry.get_parser_for_file(file_path, content_type)
 
-        if not result.document:
-            raise ValueError(f"Failed to convert {file_path}: no document produced")
+        if not parser:
+            raise ValueError(f"No parser available for {file_path}")
 
-        # Apply hierarchical chunking
-        docling_chunks = list(self.chunker.chunk(result.document))
+        # Parse document to markdown text
+        logger.info(f"Processing {file_path.name} with {parser.name} parser")
+        text = await parser.parse(file_path)
 
-        # Convert to our Chunk model
-        chunks = []
-        for idx, dc in enumerate(docling_chunks):
-            # Extract heading path from chunk metadata
-            heading_path = []
-            if hasattr(dc, "meta") and dc.meta and hasattr(dc.meta, "headings"):
-                heading_path = dc.meta.headings or []
+        if not text or not text.strip():
+            logger.warning(f"No text extracted from {file_path.name}")
+            return []
 
-            chunk = Chunk(
-                document_id=document_id,
-                content=dc.text,
-                chunk_index=idx,
-                heading_path=heading_path,
-                section_title=heading_path[-1] if heading_path else None,
-                page_number=self._extract_page_number(dc),
-                metadata={
-                    "source_file": str(file_path),
-                    "doc_items_count": (
-                        len(dc.meta.doc_items)
-                        if hasattr(dc, "meta") and dc.meta and hasattr(dc.meta, "doc_items")
-                        else 0
-                    ),
-                },
-            )
-            chunks.append(chunk)
+        text_len = len(text.strip())
+        logger.info(f"Extracted {text_len} chars from {file_path.name}")
 
+        if text_len < 50:
+            logger.warning(f"Very little text from {file_path.name}: {repr(text.strip()[:100])}")
+
+        # Chunk the text using LangChain
+        chunks = self.chunker.chunk_text(
+            text=text,
+            document_id=document_id,
+            source_file=str(file_path),
+            is_markdown=True,
+            metadata={"parser": parser.name},
+        )
+
+        logger.info(f"Created {len(chunks)} chunks from {file_path.name}")
         return chunks
 
-    def _extract_page_number(self, chunk) -> Optional[int]:
-        """Extract page number from chunk metadata if available.
-
-        Args:
-            chunk: Docling chunk object.
-
-        Returns:
-            Page number or None.
-        """
-        if not hasattr(chunk, "meta") or not chunk.meta:
-            return None
-        if not hasattr(chunk.meta, "doc_items") or not chunk.meta.doc_items:
-            return None
-
-        for item in chunk.meta.doc_items:
-            if hasattr(item, "prov") and item.prov:
-                for prov in item.prov:
-                    if hasattr(prov, "page"):
-                        return prov.page
-        return None
-
-    async def process_email_image(
+    def create_image_chunk(
         self,
         file_path: Path,
         document_id: UUID,
-        content_type: Optional[str] = None,
-    ) -> tuple[List[Chunk], bool]:
-        """Process a standalone image from an email with classification.
+        description: str,
+        classification: Optional[str] = None,
+    ) -> Chunk:
+        """Create a chunk from an image description.
 
-        This method is used for images directly attached to emails (not inside
-        PDFs or ZIPs). It classifies the image first to filter out logos,
-        banners, and signatures, then describes meaningful images.
+        Used after preprocessing has already classified and described the image.
 
         Args:
             file_path: Path to the image file.
             document_id: UUID of the parent document record.
-            content_type: MIME type of the file (optional).
+            description: Pre-computed image description.
+            classification: Optional classification value (e.g., "meaningful").
 
         Returns:
-            Tuple of (list of Chunk objects, should_skip boolean).
-            If should_skip is True, the image was classified as non-meaningful.
+            Chunk object with image description.
         """
-        if not file_path.exists():
-            raise FileNotFoundError(f"Image not found: {file_path}")
+        metadata = {
+            "source_file": str(file_path),
+            "type": "image_description",
+        }
+        if classification:
+            metadata["classification"] = classification
 
-        # Classify and describe using Vision API
-        result = await self.image_processor.classify_and_describe(file_path)
-
-        if result.should_skip:
-            logger.info(
-                f"Skipping image {file_path.name}: {result.skip_reason}"
-            )
-            return [], True
-
-        # If meaningful but no description (API error), try describe-only
-        description = result.description
-        if not description:
-            description = await self.image_processor.describe_only(file_path)
-
-        if not description:
-            logger.warning(f"Could not get description for image {file_path}")
-            return [], False
-
-        # Create a single chunk with the image description
-        chunk = Chunk(
+        return Chunk(
             document_id=document_id,
             content=description,
             chunk_index=0,
             heading_path=["Image"],
             section_title=file_path.name,
-            metadata={
-                "source_file": str(file_path),
-                "type": "image_description",
-                "classification": result.classification.value,
-            },
+            metadata=metadata,
         )
-
-        return [chunk], False
 
     async def process_document_image(
         self,
@@ -373,49 +295,45 @@ class AttachmentProcessor:
 
         return [chunk]
 
-    def extract_text_only(self, file_path: Path) -> str:
-        """Extract full text from attachment without chunking.
-
-        Args:
-            file_path: Path to the file.
-
-        Returns:
-            Full text content as markdown.
-        """
-        result = self.converter.convert(str(file_path))
-        if result.document:
-            return result.document.export_to_markdown()
-        return ""
-
     def is_zip_file(self, file_path: str, content_type: Optional[str] = None) -> bool:
-        """Check if file is a ZIP archive.
+        """Check if file is a ZIP archive (excluding Office formats).
+
+        DOCX, XLSX, PPTX and other Office formats are technically ZIP files
+        but should be processed by LlamaParse, not extracted as ZIPs.
 
         Args:
             file_path: Path to the file.
             content_type: MIME type of the file (optional).
 
         Returns:
-            True if file is a ZIP archive.
+            True if file is a ZIP archive that should be extracted.
         """
+        # Exclude Office formats that are technically ZIPs
+        if content_type and content_type in self.OFFICE_ZIP_FORMATS:
+            return False
+
+        # Check extension to exclude Office formats
+        lower_path = file_path.lower()
+        for ext in self.OFFICE_ZIP_EXTENSIONS:
+            if lower_path.endswith(ext):
+                return False
+
+        # Now check if it's actually a ZIP
         if content_type and content_type in self.ZIP_FORMATS:
             return True
 
         # Check by extension
-        if file_path.lower().endswith(".zip"):
+        if lower_path.endswith(".zip"):
             return True
 
         # Check MIME type from file extension
         mime_type, _ = mimetypes.guess_type(file_path)
-        if mime_type and mime_type in self.ZIP_FORMATS:
-            return True
-
-        # Try to detect by file magic
-        try:
-            path = Path(file_path)
-            if path.exists():
-                return zipfile.is_zipfile(path)
-        except Exception:
-            pass
+        if mime_type:
+            # Exclude Office formats detected by MIME type
+            if mime_type in self.OFFICE_ZIP_FORMATS:
+                return False
+            if mime_type in self.ZIP_FORMATS:
+                return True
 
         return False
 
@@ -531,6 +449,9 @@ class AttachmentProcessor:
                         # Update counters from nested extraction
                         _file_count += len(nested_files)
                     elif self.is_supported(str(target_path), content_type):
+                        extracted_files.append((target_path, content_type))
+                    elif self.is_image_format(content_type):
+                        # Images are handled separately
                         extracted_files.append((target_path, content_type))
 
                 except ZipExtractionError:

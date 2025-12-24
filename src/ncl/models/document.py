@@ -19,6 +19,12 @@ class DocumentType(str, Enum):
     ATTACHMENT_DOCX = "attachment_docx"
     ATTACHMENT_PPTX = "attachment_pptx"
     ATTACHMENT_XLSX = "attachment_xlsx"
+    # Legacy formats (via LlamaParse)
+    ATTACHMENT_DOC = "attachment_doc"
+    ATTACHMENT_XLS = "attachment_xls"
+    ATTACHMENT_PPT = "attachment_ppt"
+    ATTACHMENT_CSV = "attachment_csv"
+    ATTACHMENT_RTF = "attachment_rtf"
     ATTACHMENT_OTHER = "attachment_other"
 
 

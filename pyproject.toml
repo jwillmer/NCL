@@ -5,9 +5,11 @@ description = "RAG pipeline for email processing with attachments"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    # Core document processing
-    "docling>=2.0.0",
-    "docling-core[chunking-openai]>=2.0.0",
+    # Document parsing
+    "llama-cloud-services>=0.6.0,<1.0.0",  # LlamaParse for all document types
+    # Text chunking
+    "langchain-text-splitters>=0.0.1",
+    "tiktoken>=0.5.0",  # Token counting for chunker
     # Database and vector storage
     "supabase>=2.0.0",
     "pgvector>=0.2.0",
@@ -28,8 +30,8 @@ dependencies = [
     "anyio>=4.0.0",
     "hf-xet>=1.2.0",
     "openai-agents>=0.6.4",
-    # OCR support for Docling (includes PyTorch)
-    "easyocr>=1.7.0",
+    # Nested async support (required for LlamaParse in async context)
+    "nest-asyncio>=1.6.0",
 ]
 
 [project.optional-dependencies]

@@ -96,6 +96,17 @@ class Settings(BaseSettings):
     rerank_top_n: int = Field(default=5, validation_alias="RERANK_TOP_N")
     cohere_api_key: Optional[str] = Field(default=None, validation_alias="COHERE_API_KEY")
 
+    # LlamaParse Configuration (for legacy formats like .doc, .xls, .ppt)
+    llama_cloud_api_key: Optional[str] = Field(
+        default=None, validation_alias="LLAMA_CLOUD_API_KEY"
+    )
+
+    @computed_field
+    @property
+    def llamaparse_enabled(self) -> bool:
+        """LlamaParse is auto-enabled when API key is set."""
+        return self.llama_cloud_api_key is not None
+
     # ZIP Extraction Limits (DoS protection)
     zip_max_files: int = Field(default=100, validation_alias="ZIP_MAX_FILES")
     zip_max_depth: int = Field(default=3, validation_alias="ZIP_MAX_DEPTH")

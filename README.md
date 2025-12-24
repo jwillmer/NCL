@@ -5,9 +5,10 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 ## Features
 
 - **Email Parsing:** Conversation-aware parsing with participant tracking
-- **Multi-Format Support:** PDF, DOCX, PPTX, XLSX, images with OCR, ZIP archives
-- **Image Understanding:** AI-powered image descriptions with SmolVLM
-- **Semantic Chunking:** Structure-preserving chunks with heading paths
+- **Multi-Format Support:** PDF, DOCX, PPTX, XLSX, images, ZIP archives, legacy formats (DOC, XLS, PPT)
+- **Image Understanding:** AI-powered image classification and descriptions via OpenAI Vision
+- **Document Parsing:** LlamaParse for all document types with high-res OCR and table extraction
+- **Semantic Chunking:** LangChain-based markdown-aware chunking with heading paths
 - **Vector Storage:** Supabase with pgvector for similarity search
 - **Two-Stage Retrieval:** Vector search + cross-encoder reranking (20-35% accuracy improvement)
 - **Source Attribution:** Every answer traces back to source documents
@@ -19,7 +20,7 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 uv sync
 ```
 
-> **Note:** First run will download PyTorch (~2GB) for OCR support via EasyOCR. Set `ENABLE_OCR=false` in `.env` to disable OCR and skip this download.
+> **Note:** LlamaParse handles all document processing (PDFs, Office files) with built-in OCR. Requires `LLAMA_CLOUD_API_KEY`.
 
 ## Running the CLI
 
@@ -55,6 +56,7 @@ cp .env.template .env
 #    - SUPABASE_URL, SUPABASE_KEY, SUPABASE_DB_URL
 #    - OPENAI_API_KEY
 #    - COHERE_API_KEY (for reranking)
+#    - LLAMA_CLOUD_API_KEY (required for document parsing)
 
 # 3. Run database migrations in Supabase
 #    (see migrations/001_initial_schema.sql)
@@ -183,7 +185,9 @@ When running the API server, OpenAPI documentation is available at:
 - **CLI:** Typer + Rich
 - **Web API:** FastAPI + CopilotKit
 - **Frontend:** React + TypeScript + TailwindCSS + Radix UI
-- **Document Processing:** Docling
+- **Document Processing:** LlamaParse (PDFs, Office, legacy formats)
+- **Image Processing:** OpenAI Vision API (classification + description)
+- **Text Chunking:** LangChain text splitters with tiktoken
 - **Embeddings:** OpenAI text-embedding-3-small
 - **LLM:** GPT-4o-mini via LiteLLM
 - **Reranking:** Cohere via LiteLLM
