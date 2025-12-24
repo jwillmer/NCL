@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     max_concurrent_embeddings: int = Field(
         default=5, validation_alias="MAX_CONCURRENT_EMBEDDINGS"
     )
+    max_concurrent_files: int = Field(
+        default=5, validation_alias="MAX_CONCURRENT_FILES"
+    )
     enable_ocr: bool = Field(default=True, validation_alias="ENABLE_OCR")
     enable_picture_description: bool = Field(
         default=True, validation_alias="ENABLE_PICTURE_DESCRIPTION"

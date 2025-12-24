@@ -62,10 +62,47 @@ def _handle_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
-def vprint(msg: str):
-    """Print verbose output if enabled."""
+def vprint(msg: str, file_ctx: str | None = None):
+    """Print verbose output if enabled, with optional file context for concurrent logs."""
     if _verbose:
-        console.print(f"[dim]{msg}[/dim]")
+        if file_ctx:
+            console.print(f"[dim][{file_ctx}] {msg}[/dim]")
+        else:
+            console.print(f"[dim]{msg}[/dim]")
+
+
+# Track processing issues for end-of-run summary
+_processing_issues: list[dict] = []
+
+
+def track_issue(file_ctx: str, attachment: str, error: str):
+    """Track a parsing/processing issue for end summary and print warning."""
+    _processing_issues.append({
+        "email": file_ctx,
+        "attachment": attachment,
+        "error": error
+    })
+    console.print(f"[yellow][{file_ctx}] ⚠ {attachment}: {error}[/yellow]")
+
+
+def _show_issue_summary(issues: list[dict]):
+    """Display summary table of all parsing/processing issues."""
+    if not issues:
+        return
+
+    console.print()
+    table = Table(title=f"⚠ Processing Issues ({len(issues)} total)")
+    table.add_column("Email", style="cyan")
+    table.add_column("Attachment", style="yellow")
+    table.add_column("Error", style="red")
+
+    for issue in issues:
+        error_text = issue["error"]
+        if len(error_text) > 60:
+            error_text = error_text[:60] + "..."
+        table.add_row(issue["email"], issue["attachment"], error_text)
+
+    console.print(table)
 
 
 def _get_format_name(content_type: str) -> str:
@@ -188,6 +225,12 @@ async def _ingest(
 
         processed_count = 0
 
+        # Reset issues list for this run
+        _processing_issues.clear()
+
+        # Create semaphore for concurrency control
+        semaphore = asyncio.Semaphore(settings.max_concurrent_files)
+
         # Process files with progress tracking
         with Progress(
             SpinnerColumn(),
@@ -198,36 +241,44 @@ async def _ingest(
         ) as progress:
             task = progress.add_task("Processing emails...", total=len(files))
 
-            for file_path in files:
-                # Check if shutdown was requested
-                if _shutdown_requested:
-                    console.print(f"[yellow]Stopping after {processed_count} files[/yellow]")
-                    break
+            async def process_with_limit(file_path: Path) -> tuple[Path, bool, str | None]:
+                """Process a file with concurrency limiting and real-time progress."""
+                nonlocal processed_count
+                async with semaphore:
+                    if _shutdown_requested:
+                        progress.update(task, advance=1)
+                        return (file_path, False, "shutdown")
+                    try:
+                        await _process_single_email(
+                            file_path,
+                            eml_parser,
+                            attachment_processor,
+                            hierarchy_manager,
+                            embeddings,
+                            db,
+                            tracker,
+                            unsupported_logger,
+                        )
+                        processed_count += 1
+                        progress.update(task, advance=1)
+                        return (file_path, True, None)
+                    except Exception as e:
+                        await tracker.mark_failed(file_path, str(e))
+                        console.print(f"[red]Error processing {file_path.name}: {e}[/red]")
+                        progress.update(task, advance=1)
+                        return (file_path, False, str(e))
 
-                try:
-                    await _process_single_email(
-                        file_path,
-                        eml_parser,
-                        attachment_processor,
-                        hierarchy_manager,
-                        embeddings,
-                        db,
-                        tracker,
-                        unsupported_logger,
-                    )
-                    processed_count += 1
-                    progress.update(task, advance=1)
-                except KeyboardInterrupt:
-                    console.print(f"[yellow]Stopping after {processed_count} files[/yellow]")
-                    break
-                except Exception as e:
-                    console.print(f"[red]Error processing {file_path}: {e}[/red]")
-                    await tracker.mark_failed(file_path, str(e))
-                    progress.update(task, advance=1)
+            # Process all files concurrently (semaphore limits to max_concurrent_files at a time)
+            tasks = [process_with_limit(f) for f in files]
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Show final stats
+            if _shutdown_requested:
+                console.print(f"[yellow]Stopped after {processed_count} files[/yellow]")
+
+        # Show final stats and issue summary
         stats = await tracker.get_processing_stats()
         _show_stats(stats)
+        _show_issue_summary(_processing_issues)
 
     finally:
         await db.close()
@@ -246,19 +297,20 @@ async def _process_single_email(
     """Process a single EML file with all its attachments."""
     file_hash = tracker.compute_file_hash(eml_path)
     source_eml_path = str(eml_path)
+    file_ctx = eml_path.name  # Short filename for logging
 
     # Check if already processed
     existing = await db.get_document_by_hash(file_hash)
     if existing and existing.status == ProcessingStatus.COMPLETED:
-        vprint(f"Skipping (already processed): {eml_path}")
+        vprint(f"Skipping (already processed): {eml_path}", file_ctx)
         return
 
     await tracker.mark_started(eml_path, file_hash)
-    vprint(f"Processing: {eml_path}")
+    vprint(f"Processing: {eml_path}", file_ctx)
 
     # Parse email
     parsed_email = eml_parser.parse_file(eml_path)
-    vprint(f"  Parsed: \"{parsed_email.metadata.subject}\" - {len(parsed_email.attachments)} attachments")
+    vprint(f"Parsed: \"{parsed_email.metadata.subject}\" - {len(parsed_email.attachments)} attachments", file_ctx)
 
     # Create email document in hierarchy
     email_doc = await hierarchy_manager.create_email_document(eml_path, parsed_email)
@@ -268,7 +320,7 @@ async def _process_single_email(
     body_text = eml_parser.get_body_text(parsed_email)
 
     if body_text:
-        vprint(f"  Email body: 1 chunk")
+        vprint("Email body: 1 chunk", file_ctx)
         email_chunks.append(
             Chunk(
                 document_id=email_doc.id,
@@ -286,6 +338,7 @@ async def _process_single_email(
             attachment=attachment,
             email_doc=email_doc,
             source_eml_path=source_eml_path,
+            file_ctx=file_ctx,
             attachment_processor=attachment_processor,
             hierarchy_manager=hierarchy_manager,
             db=db,
@@ -298,16 +351,17 @@ async def _process_single_email(
     if parsed_email.attachments:
         body_chunks = 1 if body_text else 0
         vprint(
-            f"  Summary: {len(parsed_email.attachments)} attachments -> "
-            f"{attachment_chunk_count} chunks (+ {body_chunks} email body)"
+            f"Summary: {len(parsed_email.attachments)} attachments -> "
+            f"{attachment_chunk_count} chunks (+ {body_chunks} email body)",
+            file_ctx,
         )
 
     # Generate embeddings for all chunks
     if email_chunks:
-        vprint(f"  Generating embeddings for {len(email_chunks)} chunks...")
+        vprint(f"Generating embeddings for {len(email_chunks)} chunks...", file_ctx)
         email_chunks = await embeddings.embed_chunks(email_chunks)
         await db.insert_chunks(email_chunks)
-        vprint(f"  Inserted {len(email_chunks)} chunks to database")
+        vprint(f"Inserted {len(email_chunks)} chunks to database", file_ctx)
 
     # Mark email as completed
     await db.update_document_status(email_doc.id, ProcessingStatus.COMPLETED)
@@ -318,6 +372,7 @@ async def _process_attachment(
     attachment,
     email_doc,
     source_eml_path: str,
+    file_ctx: str,
     attachment_processor: AttachmentProcessor,
     hierarchy_manager: HierarchyManager,
     db: SupabaseClient,
@@ -350,17 +405,17 @@ async def _process_attachment(
     else:
         processor = "unsupported"
 
-    vprint(f"  Attachment: {attachment.filename} ({format_name}, {size_str}) [{processor}]")
+    vprint(f"Attachment: {attachment.filename} ({format_name}, {size_str}) [{processor}]", file_ctx)
 
     # Handle based on preprocess result
     if not result.should_process:
         # Log skipped file
         reason = result.skip_reason or "unsupported_format"
         if "non_content" in reason.lower() or result.is_image:
-            vprint(f"    -> Skipped: non-content image (logo/banner/signature)")
+            vprint(f"  -> Skipped: non-content image (logo/banner/signature)", file_ctx)
             reason = "classified_as_non_content"
         else:
-            vprint(f"    -> Skipped: {reason}")
+            vprint(f"  -> Skipped: {reason}", file_ctx)
         await unsupported_logger.log_unsupported_file(
             file_path=file_path,
             reason=reason,
@@ -376,6 +431,7 @@ async def _process_attachment(
                 attachment=attachment,
                 email_doc=email_doc,
                 source_eml_path=source_eml_path,
+                file_ctx=file_ctx,
                 attachment_processor=attachment_processor,
                 hierarchy_manager=hierarchy_manager,
                 db=db,
@@ -400,7 +456,7 @@ async def _process_attachment(
                 file_path, attach_doc.id, result.image_description, "meaningful"
             )
             chunks.append(chunk)
-            vprint(f"    -> 1 chunk created (image described)")
+            vprint(f"  -> 1 chunk created (image described)", file_ctx)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
         elif result.is_image:
             # Image needs description (preprocessing didn't provide one)
@@ -408,7 +464,7 @@ async def _process_attachment(
                 file_path, attach_doc.id
             )
             chunks.extend(attach_chunks)
-            vprint(f"    -> {len(attach_chunks)} chunks created (image described)")
+            vprint(f"  -> {len(attach_chunks)} chunks created (image described)", file_ctx)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
         else:
             # Document - use parser registry
@@ -416,13 +472,13 @@ async def _process_attachment(
                 file_path, attach_doc.id, attachment.content_type
             )
             if attach_chunks:
-                vprint(f"    -> {len(attach_chunks)} chunks created")
+                vprint(f"  -> {len(attach_chunks)} chunks created", file_ctx)
             else:
-                vprint(f"    -> 0 chunks (document has no extractable text)")
+                vprint(f"  -> 0 chunks (document has no extractable text)", file_ctx)
             chunks.extend(attach_chunks)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
     except Exception as e:
-        vprint(f"    Error: {e}")
+        track_issue(file_ctx, attachment.filename, str(e))
         await db.update_document_status(attach_doc.id, ProcessingStatus.FAILED, str(e))
         await unsupported_logger.log_unsupported_file(
             file_path=file_path,
@@ -438,6 +494,7 @@ async def _process_zip_attachment(
     attachment,
     email_doc,
     source_eml_path: str,
+    file_ctx: str,
     attachment_processor: AttachmentProcessor,
     hierarchy_manager: HierarchyManager,
     db: SupabaseClient,
@@ -488,6 +545,7 @@ async def _process_zip_attachment(
                 chunks.extend(attach_chunks)
                 await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
             except Exception as e:
+                track_issue(file_ctx, f"{attachment.filename}/{extracted_path.name}", str(e))
                 await db.update_document_status(
                     attach_doc.id, ProcessingStatus.FAILED, str(e)
                 )
@@ -500,7 +558,7 @@ async def _process_zip_attachment(
                 )
 
     except Exception as e:
-        console.print(f"[yellow]Failed to extract ZIP {attachment.filename}: {e}[/yellow]")
+        track_issue(file_ctx, attachment.filename, f"ZIP extraction failed: {e}")
         await unsupported_logger.log_unsupported_file(
             file_path=Path(attachment.saved_path),
             reason="corrupted",

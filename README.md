@@ -101,6 +101,9 @@ uv run ncl ingest --retry-failed
 
 # Process without resuming from previous state
 uv run ncl ingest --no-resume
+
+# Process 10 emails concurrently (default: 5)
+MAX_CONCURRENT_FILES=10 uv run ncl ingest
 ```
 
 ### Clean Command
