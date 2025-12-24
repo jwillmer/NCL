@@ -20,6 +20,7 @@ from rich.progress import (
     BarColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TaskProgressColumn,
     TextColumn,
 )
@@ -231,24 +232,51 @@ async def _ingest(
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(settings.max_concurrent_files)
 
+        # Create a queue of available slot indices for worker progress bars
+        slot_queue: asyncio.Queue[int] = asyncio.Queue()
+        for i in range(settings.max_concurrent_files):
+            slot_queue.put_nowait(i)
+
         # Process files with progress tracking
         with Progress(
             SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
+            TextColumn("[progress.description]{task.description}", justify="left"),
             BarColumn(),
-            TaskProgressColumn(),
+            TextColumn("{task.completed}/{task.total}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Processing emails...", total=len(files))
+            # Create worker slot tasks (one progress bar per concurrent worker)
+            worker_tasks: list[TaskID] = []
+            for i in range(settings.max_concurrent_files):
+                task_id = progress.add_task(
+                    f"[dim][{i + 1}] (idle)[/dim]", total=1, completed=0
+                )
+                worker_tasks.append(task_id)
+
+            # Total progress bar
+            total_task = progress.add_task("[bold]Total[/bold]", total=len(files))
 
             async def process_with_limit(file_path: Path) -> tuple[Path, bool, str | None]:
                 """Process a file with concurrency limiting and real-time progress."""
                 nonlocal processed_count
                 async with semaphore:
-                    if _shutdown_requested:
-                        progress.update(task, advance=1)
-                        return (file_path, False, "shutdown")
+                    # Acquire a worker slot from queue
+                    slot_idx = await slot_queue.get()
+                    worker_task = worker_tasks[slot_idx]
+
                     try:
+                        if _shutdown_requested:
+                            progress.update(total_task, advance=1)
+                            return (file_path, False, "shutdown")
+
+                        # Show starting state
+                        progress.update(
+                            worker_task,
+                            description=f"[{slot_idx + 1}] {file_path.name}",
+                            total=1,
+                            completed=0,
+                        )
+
                         await _process_single_email(
                             file_path,
                             eml_parser,
@@ -258,15 +286,27 @@ async def _ingest(
                             db,
                             tracker,
                             unsupported_logger,
+                            progress=progress,
+                            worker_task=worker_task,
+                            slot_idx=slot_idx,
                         )
                         processed_count += 1
-                        progress.update(task, advance=1)
+                        progress.update(total_task, advance=1)
                         return (file_path, True, None)
                     except Exception as e:
                         await tracker.mark_failed(file_path, str(e))
                         console.print(f"[red]Error processing {file_path.name}: {e}[/red]")
-                        progress.update(task, advance=1)
+                        progress.update(total_task, advance=1)
                         return (file_path, False, str(e))
+                    finally:
+                        # Release slot - mark as idle
+                        progress.update(
+                            worker_task,
+                            description=f"[dim][{slot_idx + 1}] (idle)[/dim]",
+                            total=1,
+                            completed=0,
+                        )
+                        slot_queue.put_nowait(slot_idx)
 
             # Process all files concurrently (semaphore limits to max_concurrent_files at a time)
             tasks = [process_with_limit(f) for f in files]
@@ -293,6 +333,9 @@ async def _process_single_email(
     db: SupabaseClient,
     tracker: ProgressTracker,
     unsupported_logger: UnsupportedFileLogger,
+    progress: Progress | None = None,
+    worker_task: TaskID | None = None,
+    slot_idx: int | None = None,
 ):
     """Process a single EML file with all its attachments."""
     file_hash = tracker.compute_file_hash(eml_path)
@@ -311,6 +354,18 @@ async def _process_single_email(
     # Parse email
     parsed_email = eml_parser.parse_file(eml_path)
     vprint(f"Parsed: \"{parsed_email.metadata.subject}\" - {len(parsed_email.attachments)} attachments", file_ctx)
+
+    # Update progress bar with attachment count
+    attachment_count = len(parsed_email.attachments)
+    if progress and worker_task is not None and slot_idx is not None:
+        # Set total to attachment count (minimum 1 to show progress for emails without attachments)
+        total = max(1, attachment_count)
+        progress.update(
+            worker_task,
+            description=f"[{slot_idx + 1}] {file_ctx}",
+            total=total,
+            completed=0,
+        )
 
     # Create email document in hierarchy
     email_doc = await hierarchy_manager.create_email_document(eml_path, parsed_email)
@@ -331,9 +386,9 @@ async def _process_single_email(
             )
         )
 
-    # Process attachments
+    # Process attachments with progress updates
     attachment_chunk_count = 0
-    for attachment in parsed_email.attachments:
+    for i, attachment in enumerate(parsed_email.attachments):
         attachment_chunks = await _process_attachment(
             attachment=attachment,
             email_doc=email_doc,
@@ -347,6 +402,10 @@ async def _process_single_email(
         attachment_chunk_count += len(attachment_chunks)
         email_chunks.extend(attachment_chunks)
 
+        # Update progress after each attachment
+        if progress and worker_task is not None:
+            progress.update(worker_task, completed=i + 1)
+
     # Summary of attachments processed
     if parsed_email.attachments:
         body_chunks = 1 if body_text else 0
@@ -358,6 +417,13 @@ async def _process_single_email(
 
     # Generate embeddings for all chunks
     if email_chunks:
+        # Update progress to show embeddings stage
+        if progress and worker_task is not None and slot_idx is not None:
+            progress.update(
+                worker_task,
+                description=f"[{slot_idx + 1}] {file_ctx} [dim](embeddings)[/dim]",
+            )
+
         vprint(f"Generating embeddings for {len(email_chunks)} chunks...", file_ctx)
         email_chunks = await embeddings.embed_chunks(email_chunks)
         await db.insert_chunks(email_chunks)

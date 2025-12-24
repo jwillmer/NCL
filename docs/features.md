@@ -226,6 +226,25 @@ ncl ingest --retry-failed
 ncl reset-stale --max-age 60
 ```
 
+**Progress Display:**
+
+During ingestion, NCL shows real-time progress for each concurrent worker:
+
+```
+⠙ [1] email_001.eml               ━━━━━━━━━━  3/5
+⠙ [2] email_002.eml               ━━━━━━━━━━  7/12
+⠙ [3] email_003.eml               ━━━━━━━━━━  1/3
+⠙ [4] email_004.eml (embeddings)  ━━━━━━━━━━  2/2
+⠙ [5] (idle)
+⠙ Total                           ━━━━━━━━━━  42/100
+```
+
+Each worker slot shows:
+- Current email file name
+- Attachment processing progress (e.g., 3/5 = 3 of 5 attachments processed)
+- Status indicator for embedding generation phase
+- Idle state when waiting for work
+
 ### 11. Source Attribution
 
 Every answer includes traced sources.
