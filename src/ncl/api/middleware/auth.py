@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -83,3 +83,10 @@ class SupabaseJWTBearer(HTTPBearer):
             )
         except JWTError:
             return None
+
+
+async def get_current_user(
+    user: UserPayload = Depends(SupabaseJWTBearer())
+) -> UserPayload:
+    """Dependency to get the current authenticated user."""
+    return user
