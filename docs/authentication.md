@@ -1,6 +1,6 @@
 # Authentication Flow
 
-NCL uses Supabase Auth with JWT tokens validated in the Next.js API route. This document explains how authentication works across the 2-tier architecture.
+NCL uses Supabase Auth with JWT tokens validated at both the Next.js API route and the Python backend (defense-in-depth). This document explains how authentication works across the 2-tier architecture.
 
 ## Architecture Overview
 
@@ -15,18 +15,21 @@ NCL uses Supabase Auth with JWT tokens validated in the Next.js API route. This 
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │  /api/copilotkit (API Route)                            ││
 │  │  - JWT validation via Supabase getUser()                ││
-│  │  - Forwards authenticated requests to Python agent      ││
+│  │  - Forwards Authorization header to Python agent        ││
 │  └─────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Python Agent (FastAPI, port 8000)              │
-│  - Trusts requests from Next.js API route                   │
+│  - Defense-in-depth: Validates JWT tokens independently    │
+│  - Uses SupabaseJWTBearer middleware (HS256/ES256)          │
+│  - Security headers on all responses                        │
+│  - Rate limiting enabled                                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Design Decision:** Authentication is enforced in the Next.js API route, not the Python agent. The API route acts as a secure gateway - if a request reaches the Python agent, it has already been authenticated.
+**Key Design Decision:** Authentication is enforced at both layers (defense-in-depth). The Next.js API route validates tokens first, then forwards them to the Python agent which validates again. This ensures security even if one layer is bypassed.
 
 ## Authentication Flow
 
@@ -89,7 +92,15 @@ The API route validates tokens using Supabase's `getUser()` method, which verifi
 
 ### 4. Request Forwarding (API Route → Agent)
 
-After successful authentication, the API route forwards the request to the Python agent via CopilotKit's `HttpAgent`. The Python agent trusts all requests from the API route.
+After successful authentication, the CopilotKit runtime automatically forwards the `Authorization` header to the Python agent via `HttpAgent`. This is handled by the runtime's `handleRunAgent` function which forwards all `Authorization` and `x-*` headers to agents that have a `headers` property.
+
+### 5. Backend Validation (Python Agent)
+
+The Python agent validates the JWT token independently using `SupabaseJWTBearer` middleware:
+- Supports both HS256 (symmetric) and ES256 (asymmetric via JWKS) algorithms
+- Validates token signature and audience claim
+- Returns 401 Unauthorized if token is invalid or missing
+- Stores validated user in request state for downstream use
 
 ## Configuration
 
@@ -107,6 +118,9 @@ AGENT_URL=http://localhost:8000/copilotkit
 ### Python Agent (`.env`)
 
 ```bash
+# Supabase configuration (required for JWT validation)
+SUPABASE_URL=https://your-project.supabase.co
+
 # CORS configuration
 CORS_ORIGINS=http://localhost:3000
 API_HOST=0.0.0.0
@@ -144,7 +158,9 @@ Missing Supabase configuration
 2. **CORS:** Set `CORS_ORIGINS` in the Python agent to your production domain(s)
 3. **HTTPS:** Always use HTTPS in production
 4. **Token Expiry:** Supabase tokens expire after 1 hour; frontend handles refresh automatically
-5. **Python Agent:** Does not validate tokens - relies on API route as gateway
+5. **Defense-in-Depth:** Both Next.js and Python validate JWT tokens independently
+6. **Security Headers:** Both layers add security headers (X-Frame-Options, X-Content-Type-Options, HSTS, etc.)
+7. **Rate Limiting:** Python agent rate limits requests to prevent abuse
 
 ## Troubleshooting
 

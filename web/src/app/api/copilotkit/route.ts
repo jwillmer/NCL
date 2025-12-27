@@ -3,6 +3,9 @@
  *
  * Bridges the Next.js frontend to the Python AG-UI agent.
  * Handles JWT validation and forwards requests to the agent.
+ *
+ * Note: The CopilotKit runtime automatically forwards Authorization headers
+ * to HttpAgent instances. We only need to validate the token here.
  */
 
 import {
@@ -47,19 +50,24 @@ async function verifyAuth(req: NextRequest): Promise<boolean> {
   return !!user;
 }
 
+// Create runtime once - the runtime automatically forwards Authorization headers
+// to HttpAgent instances (see @copilotkitnext/runtime handleRunAgent)
+const runtime = new CopilotRuntime({
+  agents: {
+    default: new HttpAgent({
+      url: AGENT_URL,
+    }),
+  },
+});
+
 export const POST = async (req: NextRequest) => {
-  // Verify authentication
+  // Verify authentication at gateway level
   if (!(await verifyAuth(req))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Create CopilotKit runtime with HttpAgent pointing to Python agent
-  const runtime = new CopilotRuntime({
-    agents: {
-      default: new HttpAgent({ url: AGENT_URL }),
-    },
-  });
-
+  // CopilotKit runtime automatically forwards Authorization header to the agent
+  // (defense-in-depth: Python backend also validates the token)
   const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
     runtime,
     serviceAdapter,
