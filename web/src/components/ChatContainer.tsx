@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Chat container component with CopilotKit integration.
  * AI instructions are handled server-side in agent.py - this is a pure UI layer.

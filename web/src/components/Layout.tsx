@@ -1,12 +1,12 @@
+"use client";
+
 /**
  * Layout components - Header and MainLayout.
- * Consolidated into a single file for simplicity (KISS principle).
  */
 
 import { ReactNode } from "react";
 import { Mail } from "lucide-react";
 import { UserMenu } from "./auth";
-import { Separator } from "./ui";
 
 // =============================================================================
 // Header

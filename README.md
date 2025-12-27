@@ -131,51 +131,82 @@ User Query → Embedding → Vector Search → Reranking → LLM → Answer
 
 ## Web Interface
 
-NCL includes a modern web interface built with React and CopilotKit for conversational document search.
+NCL includes a modern web interface built with Next.js and CopilotKit for conversational document search.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Next.js App (port 3000)                 │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │  React Frontend                                         ││
+│  │  - CopilotKit chat interface                            ││
+│  │  - Supabase Auth UI                                     ││
+│  └─────────────────────────────────────────────────────────┘│
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │  /api/copilotkit (API Route)                            ││
+│  │  - JWT validation                                       ││
+│  │  - CopilotRuntime with HttpAgent                        ││
+│  └─────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Python Agent (FastAPI, port 8000)              │
+│  - Pydantic AI with AG-UI                                   │
+│  - RAG tools (search, synthesis)                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **Web App:** Next.js with embedded API route for CopilotKit runtime
+- **Agent:** Pydantic AI agent with RAG capabilities via AG-UI protocol
 
 ### Quick Start (Web)
 
 ```bash
-# 1. Install API dependencies
-uv sync --extra api
+# 1. Install dependencies
+uv sync --extra api        # Python agent
+cd web && npm install      # Next.js app
 
-# 2. Start the API server
+# 2. Configure environment (see Environment Setup below)
+
+# 3. Start services (2 terminals)
+
+# Terminal 1: Python Agent (port 8000)
 uv run python -m ncl.api.main
 
-# 3. In another terminal, start the frontend
-cd frontend
-npm install
-npm run dev
+# Terminal 2: Next.js App (port 3000)
+cd web && npm run dev
 
-# 4. Open http://localhost:5173 in your browser
+# 4. Open http://localhost:3000 in your browser
 ```
 
 ### Environment Setup
 
-Backend (`.env`):
+**Python Agent** (`.env`):
 ```bash
-# Add to existing .env file
-SUPABASE_JWT_SECRET=your-jwt-secret-from-supabase-dashboard
-CORS_ORIGINS=http://localhost:5173
+# Existing NCL config plus:
+CORS_ORIGINS=http://localhost:3000
 API_HOST=0.0.0.0
 API_PORT=8000
 ```
 
-Frontend (`frontend/.env.local`):
+**Next.js App** (`web/.env.local`):
 ```bash
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-VITE_API_URL=http://localhost:8000
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+AGENT_URL=http://localhost:8000/copilotkit
 ```
 
 ### Features
 
-- **Chat Interface:** Conversational AI for document Q&A
-- **Authentication:** Supabase Auth (Email, Magic Link, OAuth)
+- **Chat Interface:** Conversational AI for document Q&A powered by CopilotKit
+- **Authentication:** Supabase Auth with JWT validation in API route
 - **Source Attribution:** View sources with confidence scores
+- **Agent State Sync:** Bidirectional state between frontend and Python agent
 - **Professional Design:** NCL brand colors and responsive layout
 
-See [frontend/README.md](frontend/README.md) for detailed frontend documentation.
+See [docs/authentication.md](docs/authentication.md) for detailed auth flow documentation.
 
 ## API Reference
 
@@ -187,7 +218,7 @@ When running the API server, OpenAPI documentation is available at:
 
 - **CLI:** Typer + Rich
 - **Web API:** FastAPI + CopilotKit
-- **Frontend:** React + TypeScript + TailwindCSS + Radix UI
+- **Frontend:** Next.js + React + TypeScript + TailwindCSS + Radix UI
 - **Document Processing:** LlamaParse (PDFs, Office, legacy formats)
 - **Image Processing:** OpenAI Vision API (classification + description)
 - **Text Chunking:** LangChain text splitters with tiktoken

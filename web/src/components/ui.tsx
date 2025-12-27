@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * UI components built on Radix UI primitives.
  * Consolidated into a single file for simplicity (KISS principle).

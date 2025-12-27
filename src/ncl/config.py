@@ -132,7 +132,7 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0", validation_alias="API_HOST")
     api_port: int = Field(default=8000, validation_alias="API_PORT")
     cors_origins: str = Field(
-        default="http://localhost:5173", validation_alias="CORS_ORIGINS"
+        default="http://localhost:5173,http://127.0.0.1:5173", validation_alias="CORS_ORIGINS"
     )
 
 

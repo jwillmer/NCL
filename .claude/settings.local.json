@@ -17,7 +17,15 @@
       "Bash(cat:*)",
       "Skill(review-proposal)",
       "Skill(review-proposal:*)",
-      "Bash(python:*)"  
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(mkdir:*)",
+      "Bash(npm install:*)",
+      "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\runtime && npm install jose\")",
+      "Bash(npm ls:*)",
+      "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\runtime && npm ls @copilotkit/runtime @ag-ui/client\")",
+      "Bash(git clone:*)",
+      "Bash(npm run build:*)"
     ]
   }
 }

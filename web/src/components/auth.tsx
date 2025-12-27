@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Authentication components - AuthProvider, LoginForm, UserMenu.
  * Consolidated into a single file for simplicity (KISS principle).
@@ -14,7 +16,7 @@ import { Session, User } from "@supabase/supabase-js";
 import { Auth } from "@supabase/auth-ui-react";
 import { ThemeSupa } from "@supabase/auth-ui-shared";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { LogOut, User as UserIcon } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Button } from "./ui";
 
@@ -79,11 +81,16 @@ export function useAuth() {
 // =============================================================================
 
 export function LoginForm() {
+  const [origin, setOrigin] = useState<string>("");
+
+  useEffect(() => {
+    setOrigin(window.location.origin);
+  }, []);
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-ncl-blue to-ncl-blue-dark p-4">
       <div className="w-full max-w-md bg-white rounded-lg shadow-xl p-8">
         <div className="text-center mb-8">
-          <img src="/ncl-logo.svg" alt="NCL" className="h-16 mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-ncl-blue">NCL Email Archive</h1>
           <p className="text-ncl-gray mt-2">Sign in to search your documents</p>
         </div>
@@ -115,7 +122,7 @@ export function LoginForm() {
             },
           }}
           providers={["google", "github", "azure"]}
-          redirectTo={window.location.origin}
+          redirectTo={origin}
           magicLink={true}
           view="sign_in"
         />
