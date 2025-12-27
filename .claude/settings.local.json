@@ -25,7 +25,8 @@
       "Bash(npm ls:*)",
       "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\runtime && npm ls @copilotkit/runtime @ag-ui/client\")",
       "Bash(git clone:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(find:*)"
     ]
   }
 }
