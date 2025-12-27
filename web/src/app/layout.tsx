@@ -3,8 +3,8 @@ import { AuthProvider } from "@/components/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NCL Email Archive",
-  description: "Intelligent Document Search powered by AI",
+  title: "Maritime Technical Support System (MTSS)",
+  description: "AI-powered technical support system for maritime crew - search issue history and knowledge base",
 };
 
 export default function RootLayout({

@@ -5,7 +5,7 @@
  */
 
 import { ReactNode } from "react";
-import { Mail } from "lucide-react";
+import { Ship } from "lucide-react";
 import { UserMenu } from "./auth";
 
 // =============================================================================
@@ -18,11 +18,11 @@ function Header() {
       <div className="flex h-16 items-center justify-between px-6">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-ncl-blue">
-            <Mail className="h-5 w-5 text-white" />
+            <Ship className="h-5 w-5 text-white" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-ncl-blue">NCL Email Archive</h1>
-            <p className="text-xs text-ncl-gray">Intelligent Document Search</p>
+            <h1 className="text-lg font-semibold text-ncl-blue">Maritime Technical Support System (MTSS)</h1>
+            <p className="text-xs text-ncl-gray">Vessel Issue History & Knowledge Base</p>
           </div>
         </div>
         <UserMenu />
@@ -48,7 +48,7 @@ export function MainLayout({ children }: MainLayoutProps) {
       </main>
       <footer className="border-t border-ncl-gray-light bg-white py-4 px-6">
         <div className="flex items-center justify-between text-xs text-ncl-gray">
-          <span>NCL Email Archive v0.1.0</span>
+          <span>MTSS v0.1.0 | Developed for NCL</span>
           <span>Powered by AI with source attribution</span>
         </div>
       </footer>
