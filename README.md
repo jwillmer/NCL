@@ -173,24 +173,26 @@ NCL includes a modern web interface built with Next.js and CopilotKit for conver
 │  │  React Frontend                                         ││
 │  │  - CopilotKit chat interface                            ││
 │  │  - Supabase Auth UI                                     ││
+│  │  - Real-time progress rendering via useCoAgentStateRender││
 │  └─────────────────────────────────────────────────────────┘│
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │  /api/copilotkit (API Route)                            ││
 │  │  - JWT validation                                       ││
-│  │  - CopilotRuntime with HttpAgent                        ││
+│  │  - CopilotRuntime with LangGraphAgent                   ││
 │  └─────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Python Agent (FastAPI, port 8000)              │
-│  - Pydantic AI with AG-UI                                   │
-│  - RAG tools (search, synthesis)                            │
+│  - LangGraph with CopilotKit integration                    │
+│  - RAG tools with streaming progress updates                │
+│  - copilotkit_emit_state() for real-time UI updates         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 - **Web App:** Next.js with embedded API route for CopilotKit runtime
-- **Agent:** Pydantic AI agent with RAG capabilities via AG-UI protocol
+- **Agent:** LangGraph agent with RAG capabilities and streaming progress updates
 
 ### Quick Start (Web)
 
@@ -232,9 +234,10 @@ AGENT_URL=http://localhost:8000/copilotkit
 ### Features
 
 - **Chat Interface:** Conversational AI for document Q&A powered by CopilotKit
+- **Streaming Progress:** Real-time search progress updates (Searching → Reranking → Formatting)
 - **Authentication:** Supabase Auth with JWT validation in API route
 - **Source Attribution:** View sources with confidence scores
-- **Agent State Sync:** Bidirectional state between frontend and Python agent
+- **Agent State Sync:** Bidirectional state between frontend and Python agent via LangGraph
 - **Professional Design:** NCL brand colors and responsive layout
 
 See [docs/authentication.md](docs/authentication.md) for detailed auth flow documentation.
@@ -274,13 +277,14 @@ curl -H "Authorization: Bearer $TOKEN" \
 ## Technology Stack
 
 - **CLI:** Typer + Rich
-- **Web API:** FastAPI + CopilotKit
+- **Web API:** FastAPI + CopilotKit + LangGraph
 - **Frontend:** Next.js + React + TypeScript + TailwindCSS + Radix UI
+- **Agent Framework:** LangGraph with CopilotKit integration
 - **Document Processing:** LlamaParse (PDFs, Office, legacy formats)
 - **Image Processing:** OpenAI Vision API (classification + description)
 - **Text Chunking:** LangChain text splitters with tiktoken
 - **Embeddings:** OpenAI text-embedding-3-small
-- **LLM:** GPT-4o-mini via LiteLLM
+- **LLM:** GPT-4o via LangChain
 - **Reranking:** Cohere via LiteLLM
 - **Database:** Supabase (PostgreSQL + pgvector)
 - **Authentication:** Supabase Auth

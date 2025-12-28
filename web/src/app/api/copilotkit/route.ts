@@ -1,7 +1,7 @@
 /**
  * CopilotKit API Route
  *
- * Bridges the Next.js frontend to the Python AG-UI agent.
+ * Bridges the Next.js frontend to the Python LangGraph agent.
  * Handles JWT validation and forwards requests to the agent.
  *
  * Note: The CopilotKit runtime automatically forwards Authorization headers
@@ -17,7 +17,7 @@ import { HttpAgent } from "@ag-ui/client";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-const AGENT_URL = process.env.AGENT_URL || "http://localhost:8000/";
+const AGENT_URL = process.env.AGENT_URL || "http://localhost:8000/copilotkit";
 const serviceAdapter = new ExperimentalEmptyAdapter();
 
 /**
@@ -50,8 +50,8 @@ async function verifyAuth(req: NextRequest): Promise<boolean> {
   return !!user;
 }
 
-// Create runtime once - the runtime automatically forwards Authorization headers
-// to HttpAgent instances (see @copilotkitnext/runtime handleRunAgent)
+// Create runtime with HttpAgent - the LangGraph agent exposes AG-UI protocol
+// via add_langgraph_fastapi_endpoint, so we use HttpAgent to communicate with it
 const runtime = new CopilotRuntime({
   agents: {
     default: new HttpAgent({

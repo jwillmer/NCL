@@ -45,8 +45,10 @@ dev = [
 api = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
-    "pydantic-ai-slim[openai,ag-ui]>=0.2.0",
+    "langgraph>=0.2.0",
+    "langchain-openai>=0.3.0",
     "copilotkit>=0.1.74",
+    "ag-ui-langgraph>=0.0.1",
     "python-jose[cryptography]>=3.3.0",
     "slowapi>=0.1.9",
 ]

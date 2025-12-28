@@ -1,15 +1,19 @@
-"""Pydantic AI Agent for NCL Email RAG."""
+"""LangGraph Agent for NCL Email RAG with granular UI updates."""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Literal, Optional, cast
 
-from ag_ui.core import EventType, StateSnapshotEvent
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext, ToolReturn
-from pydantic_ai.ag_ui import StateDeps
+from copilotkit import CopilotKitState
+from copilotkit.langgraph import copilotkit_emit_state
+from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, StateGraph
+from langgraph.types import Command
 
 from ..config import get_settings
 from ..rag.query_engine import RAGQueryEngine
@@ -17,10 +21,14 @@ from ..rag.query_engine import RAGQueryEngine
 logger = logging.getLogger(__name__)
 
 
-class RAGState(BaseModel):
-    """Shared state for progress tracking between agent and frontend."""
+class AgentState(CopilotKitState):
+    """Shared state for progress tracking between agent and frontend.
+
+    Extends CopilotKitState to enable bidirectional state sync with frontend.
+    """
 
     is_searching: bool = False
+    search_progress: str = ""
     current_query: Optional[str] = None
     error_message: Optional[str] = None
 
@@ -31,56 +39,90 @@ def _load_system_prompt() -> str:
     return prompt_path.read_text(encoding="utf-8")
 
 
-# Create the Pydantic AI agent with state sharing support
-agent = Agent(
-    "openai:gpt-4o",
-    instructions=_load_system_prompt(),
-    deps_type=StateDeps[RAGState],
-)
+# Tool definition for the LLM
+SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "query_email_documents",
+        "description": (
+            "Search and answer questions about email documents and attachments. "
+            "Use this tool to find information from emails, PDFs, images, and other "
+            "attachments in the NCL archive. Always use this tool when the user asks "
+            "about their emails or documents."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question to ask about the email documents",
+                }
+            },
+            "required": ["question"],
+        },
+    },
+}
 
 
-@agent.tool
-async def query_email_documents(
-    ctx: RunContext[StateDeps[RAGState]],
-    question: str,
-) -> ToolReturn:
-    """Search and answer questions about email documents and attachments.
+async def chat_node(state: AgentState, config: RunnableConfig) -> Command[Literal["search_node", "__end__"]]:
+    """Main chat node - routes to search tool or responds directly."""
+    model = ChatOpenAI(model="gpt-4o")
+    model_with_tools = model.bind_tools([SEARCH_TOOL], parallel_tool_calls=False)
 
-    Use this tool to find information from emails, PDFs, images, and other
-    attachments in the NCL archive. Always use this tool when the user asks
-    about their emails or documents.
+    system_message = SystemMessage(content=_load_system_prompt())
 
-    Args:
-        ctx: Run context with shared state
-        question: The question to ask about the email documents
+    response = await model_with_tools.ainvoke(
+        [system_message, *state["messages"]],
+        config,
+    )
 
-    Returns:
-        ToolReturn with answer, sources, and state snapshot
-    """
-    state = ctx.deps.state
+    # Check if the model wants to use a tool
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        return Command(goto="search_node", update={"messages": [response]})
 
-    # Sanitize input
-    question = question.strip()[:2000] if question else ""
+    return Command(goto=END, update={"messages": [response]})
+
+
+async def search_node(state: AgentState, config: RunnableConfig) -> Command[Literal["chat_node"]]:
+    """Execute RAG search with granular progress updates."""
+    ai_message = cast(AIMessage, state["messages"][-1])
+
+    if not ai_message.tool_calls:
+        # No tool calls, return to chat
+        return Command(goto="chat_node", update={})
+
+    tool_call = ai_message.tool_calls[0]
+    question = tool_call["args"].get("question", "").strip()[:2000]
+
     if not question:
-        return ToolReturn(
-            return_value={"answer": "Please provide a valid question.", "sources": []},
-            metadata=[
-                StateSnapshotEvent(
-                    type=EventType.STATE_SNAPSHOT,
-                    snapshot=state.model_dump(),
-                )
-            ],
+        # Invalid question - create tool response and return to chat
+        from langchain_core.messages import ToolMessage
+        tool_response = ToolMessage(
+            content='{"answer": "Please provide a valid question.", "sources": []}',
+            tool_call_id=tool_call["id"],
         )
+        return Command(goto="chat_node", update={"messages": [tool_response]})
 
-    # Update state to show searching
-    state.is_searching = True
-    state.current_query = question
-    state.error_message = None
+    # Update state - starting search
+    state["is_searching"] = True
+    state["current_query"] = question
+    state["search_progress"] = "Initializing search..."
+    state["error_message"] = None
+    await copilotkit_emit_state(config, state)
 
     engine: Optional[RAGQueryEngine] = None
     try:
+        # Progress: Vector search
+        state["search_progress"] = "Searching document vectors..."
+        await copilotkit_emit_state(config, state)
+
         engine = RAGQueryEngine()
         settings = get_settings()
+
+        # Progress: Reranking (if enabled)
+        if settings.rerank_enabled:
+            state["search_progress"] = "Reranking results..."
+            await copilotkit_emit_state(config, state)
 
         response = await engine.query(
             question=question,
@@ -88,9 +130,13 @@ async def query_email_documents(
             use_rerank=settings.rerank_enabled,
         )
 
+        # Progress: Formatting response
+        state["search_progress"] = "Formatting response..."
+        await copilotkit_emit_state(config, state)
+
         # Convert sources to serializable format
         sources = []
-        for idx, s in enumerate(response.sources):
+        for s in response.sources:
             sources.append({
                 "file_path": s.file_path,
                 "document_type": s.document_type,
@@ -105,43 +151,67 @@ async def query_email_documents(
                 "root_file_path": s.root_file_path,
             })
 
-        # Update state - done searching
-        state.is_searching = False
-        state.current_query = None
+        # Create tool response
+        import json
+        from langchain_core.messages import ToolMessage
 
-        return ToolReturn(
-            return_value={"answer": response.answer, "sources": sources},
-            metadata=[
-                StateSnapshotEvent(
-                    type=EventType.STATE_SNAPSHOT,
-                    snapshot=state.model_dump(),
-                )
-            ],
+        result = {"answer": response.answer, "sources": sources}
+        tool_response = ToolMessage(
+            content=json.dumps(result),
+            tool_call_id=tool_call["id"],
         )
+
+        # Update state - done searching
+        state["is_searching"] = False
+        state["search_progress"] = ""
+        state["current_query"] = None
+        await copilotkit_emit_state(config, state)
+
+        return Command(goto="chat_node", update={"messages": [tool_response]})
 
     except Exception as e:
         logger.error("RAG query failed: %s", str(e), exc_info=True)
 
         # Update state with error
-        state.is_searching = False
-        state.error_message = str(e)
+        state["is_searching"] = False
+        state["search_progress"] = ""
+        state["error_message"] = str(e)
+        await copilotkit_emit_state(config, state)
 
-        return ToolReturn(
-            return_value={
-                "answer": "I encountered an error while searching the email archive. Please try again.",
-                "sources": [],
-            },
-            metadata=[
-                StateSnapshotEvent(
-                    type=EventType.STATE_SNAPSHOT,
-                    snapshot=state.model_dump(),
-                )
-            ],
+        import json
+        from langchain_core.messages import ToolMessage
+
+        result = {
+            "answer": "I encountered an error while searching the email archive. Please try again.",
+            "sources": [],
+        }
+        tool_response = ToolMessage(
+            content=json.dumps(result),
+            tool_call_id=tool_call["id"],
         )
+
+        return Command(goto="chat_node", update={"messages": [tool_response]})
+
     finally:
         if engine:
             await engine.close()
 
 
-# Expose as AG-UI ASGI app with initial state
-agent_app = agent.to_ag_ui(deps=StateDeps(RAGState()))
+def create_graph() -> StateGraph:
+    """Create the LangGraph agent graph."""
+    graph = StateGraph(AgentState)
+
+    # Add nodes
+    graph.add_node("chat_node", chat_node)
+    graph.add_node("search_node", search_node)
+
+    # Set entry point
+    graph.set_entry_point("chat_node")
+
+    # Compile with in-memory checkpointer (required for AG-UI protocol)
+    checkpointer = MemorySaver()
+    return graph.compile(checkpointer=checkpointer)
+
+
+# Create compiled graph instance
+agent_graph = create_graph()

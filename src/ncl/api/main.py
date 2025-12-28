@@ -1,6 +1,6 @@
-"""FastAPI application with Pydantic AI Agent integration.
+"""FastAPI application with LangGraph Agent integration.
 
-This server exposes the AG-UI agent endpoint with defense-in-depth authentication.
+This server exposes the LangGraph agent endpoint with defense-in-depth authentication.
 JWT tokens are validated both at the CopilotKit runtime (Node.js) and here.
 """
 
@@ -11,6 +11,8 @@ import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from ag_ui_langgraph import add_langgraph_fastapi_endpoint
+from copilotkit import LangGraphAGUIAgent
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -20,7 +22,7 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..config import get_settings
-from .agent import agent_app
+from .agent import agent_graph
 from .middleware.auth import SupabaseJWTBearer
 
 logger = logging.getLogger(__name__)
@@ -93,7 +95,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="NCL Email RAG API",
-        description="Pydantic AI Agent for email document Q&A",
+        description="LangGraph Agent for email document Q&A with streaming progress",
         version="0.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
@@ -207,8 +209,16 @@ def create_app() -> FastAPI:
             filename=requested_path.name,
         )
 
-    # Mount Pydantic AI Agent's AG-UI app
-    app.mount("/copilotkit", agent_app)
+    # Add LangGraph agent endpoint via AG-UI protocol
+    add_langgraph_fastapi_endpoint(
+        app=app,
+        agent=LangGraphAGUIAgent(
+            name="default",
+            description="NCL Email RAG Agent for document Q&A",
+            graph=agent_graph,
+        ),
+        path="/copilotkit",
+    )
 
     return app
 
