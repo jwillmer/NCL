@@ -2,7 +2,7 @@
 
 from .attachment_processor import AttachmentProcessor
 from .base import BaseParser
-from .chunker import DocumentChunker
+from .chunker import ContextGenerator, DocumentChunker
 from .eml_parser import EMLParser
 from .llamaparse_parser import LlamaParseParser
 from .preprocessor import DocumentPreprocessor, PreprocessResult
@@ -14,6 +14,7 @@ ParserRegistry.register(LlamaParseParser)
 __all__ = [
     "AttachmentProcessor",
     "BaseParser",
+    "ContextGenerator",
     "DocumentChunker",
     "DocumentPreprocessor",
     "EMLParser",

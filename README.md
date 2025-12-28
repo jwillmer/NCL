@@ -8,10 +8,12 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 - **Multi-Format Support:** PDF, DOCX, PPTX, XLSX, images, ZIP archives, legacy formats (DOC, XLS, PPT)
 - **Image Understanding:** AI-powered image classification and descriptions via OpenAI Vision
 - **Document Parsing:** LlamaParse for all document types with high-res OCR and table extraction
-- **Semantic Chunking:** LangChain-based markdown-aware chunking with heading paths
+- **Contextual Chunking:** LLM-generated document summaries prepended to chunks (35-67% retrieval improvement)
 - **Vector Storage:** Supabase with pgvector for similarity search
 - **Two-Stage Retrieval:** Vector search + cross-encoder reranking (20-35% accuracy improvement)
-- **Source Attribution:** Every answer traces back to source documents
+- **Citation System:** Validated citations with chunk-level references and archive links
+- **Browsable Archive:** Markdown versions of all content with download links via API
+- **Ingest Versioning:** Track schema version for bulk re-processing capability
 
 ## Installation
 
@@ -57,9 +59,19 @@ cp .env.template .env
 #    - OPENAI_API_KEY
 #    - COHERE_API_KEY (for reranking)
 #    - LLAMA_CLOUD_API_KEY (required for document parsing)
+#
+# Optional new settings:
+#    - CONTEXT_LLM_MODEL=gpt-4o-mini (for contextual chunking)
+#    - ARCHIVE_DIR=./data/archive (browsable content archive)
+#    - ARCHIVE_BASE_URL= (custom base URL for archive links)
+#    - CURRENT_INGEST_VERSION=1 (increment when upgrading processing logic)
 
 # 3. Run database migrations in Supabase
 #    (see migrations/001_initial_schema.sql)
+#
+#    ⚠️ BREAKING CHANGE: The schema has been updated with new fields
+#    for stable IDs, contextual chunking, and archive links. Existing
+#    databases must be recreated (ncl clean) or migrated manually.
 
 # 4. Ingest emails
 uv run ncl ingest --source ./data/emails
@@ -88,6 +100,7 @@ See the [docs/](docs/) folder for detailed documentation:
 | `uv run ncl search` | Search without generating an answer |
 | `uv run ncl stats` | View processing statistics |
 | `uv run ncl reset-stale` | Reset files stuck in processing |
+| `uv run ncl reprocess` | Re-ingest documents with older ingest version |
 | `uv run ncl clean` | Delete all data (database + processed files) |
 
 ### Ingest Options
@@ -104,6 +117,24 @@ uv run ncl ingest --no-resume
 
 # Process 10 emails concurrently (default: 5)
 MAX_CONCURRENT_FILES=10 uv run ncl ingest
+```
+
+### Reprocess Command
+
+Re-ingest documents that were processed with an older ingest version. Useful after upgrading the processing logic:
+
+```bash
+# Show documents needing reprocessing (dry run)
+uv run ncl reprocess --dry-run
+
+# Reprocess documents below current version
+uv run ncl reprocess
+
+# Reprocess documents below a specific version
+uv run ncl reprocess --target-version 2
+
+# Limit number of documents processed
+uv run ncl reprocess --limit 50
 ```
 
 ### Clean Command
@@ -213,6 +244,32 @@ See [docs/authentication.md](docs/authentication.md) for detailed auth flow docu
 When running the API server, OpenAPI documentation is available at:
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
+
+### Archive Endpoint
+
+The archive endpoint serves browsable markdown previews and original file downloads:
+
+```
+GET /archive/{path}
+```
+
+**Authentication:** Requires Supabase JWT token (same as UI auth)
+
+**Security:**
+- Path traversal prevention (rejects `..`, absolute paths)
+- JWT validation for all requests
+- Rate limited to 100 requests/minute
+
+**Example Usage:**
+```bash
+# Get markdown preview of an email
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/archive/abc123def456/email.eml.md
+
+# Download original attachment
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/archive/abc123def456/attachments/report.pdf
+```
 
 ## Technology Stack
 

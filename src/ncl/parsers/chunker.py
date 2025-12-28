@@ -1,4 +1,4 @@
-"""Text chunking using LangChain text splitters."""
+"""Text chunking using LangChain text splitters with contextual embeddings."""
 
 from __future__ import annotations
 
@@ -7,7 +7,11 @@ import re
 from typing import List, Optional
 from uuid import UUID
 
+import litellm
 import tiktoken
+
+# Drop unsupported parameters for models that don't support them (e.g., GPT-5 temperature)
+litellm.drop_params = True
 from langchain_text_splitters import (
     MarkdownTextSplitter,
     RecursiveCharacterTextSplitter,
@@ -15,8 +19,112 @@ from langchain_text_splitters import (
 
 from ..config import get_settings
 from ..models.chunk import Chunk
+from ..models.document import Document
 
 logger = logging.getLogger(__name__)
+
+
+class ContextGenerator:
+    """Generate document-level context summaries for improved retrieval.
+
+    Creates 2-3 sentence summaries of documents that are prepended to each
+    chunk before embedding. This technique (contextual chunking) improves
+    retrieval accuracy by 35-67% according to Anthropic research.
+    """
+
+    CONTEXT_PROMPT = """Summarize this document in 2-3 sentences for context.
+Include: document type, author/source if available, date if available, and main topic.
+Be concise and factual.
+
+Document:
+{content}"""
+
+    def __init__(self):
+        """Initialize context generator with settings."""
+        settings = get_settings()
+        self.model = settings.context_llm_model
+
+    async def generate_context(
+        self,
+        document: Document,
+        content_preview: str,
+        max_preview_chars: int = 4000,
+    ) -> str:
+        """Generate a 2-3 sentence context summary for a document.
+
+        Args:
+            document: Document object with metadata.
+            content_preview: Text content to summarize (will be truncated).
+            max_preview_chars: Maximum characters to send to LLM.
+
+        Returns:
+            Context summary string.
+        """
+        # Build context hints from document metadata
+        hints = []
+        if document.document_type:
+            hints.append(f"Type: {document.document_type.value}")
+        if document.email_metadata:
+            if document.email_metadata.subject:
+                hints.append(f"Subject: {document.email_metadata.subject}")
+            if document.email_metadata.initiator:
+                hints.append(f"From: {document.email_metadata.initiator}")
+            if document.email_metadata.date_start:
+                hints.append(f"Date: {document.email_metadata.date_start.strftime('%Y-%m-%d')}")
+
+        # Truncate content preview
+        truncated_content = content_preview[:max_preview_chars]
+        if hints:
+            truncated_content = "\n".join(hints) + "\n\n" + truncated_content
+
+        try:
+            response = await litellm.acompletion(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": self.CONTEXT_PROMPT.format(content=truncated_content),
+                    }
+                ],
+                max_tokens=150,
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"Failed to generate context: {e}")
+            # Fallback to basic metadata-based context
+            return self._fallback_context(document)
+
+    def _fallback_context(self, document: Document) -> str:
+        """Generate fallback context from document metadata when LLM fails."""
+        parts = []
+
+        doc_type = document.document_type.value.replace("_", " ").title()
+        parts.append(f"This is a {doc_type}.")
+
+        if document.email_metadata:
+            meta = document.email_metadata
+            if meta.subject:
+                parts.append(f"Subject: {meta.subject}.")
+            if meta.initiator and meta.date_start:
+                date_str = meta.date_start.strftime("%Y-%m-%d")
+                parts.append(f"Sent by {meta.initiator} on {date_str}.")
+
+        return " ".join(parts) if parts else ""
+
+    def build_embedding_text(self, context: str, chunk_content: str) -> str:
+        """Combine context with chunk content for embedding.
+
+        Args:
+            context: Document-level context summary.
+            chunk_content: Original chunk text.
+
+        Returns:
+            Combined text for embedding.
+        """
+        if not context:
+            return chunk_content
+        return f"{context}\n\n{chunk_content}"
 
 
 class DocumentChunker:

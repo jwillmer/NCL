@@ -30,13 +30,17 @@ from .config import get_settings
 from .models.chunk import Chunk
 from .models.document import ProcessingStatus
 from .parsers.attachment_processor import AttachmentProcessor
+from .parsers.chunker import ContextGenerator
 from .parsers.eml_parser import EMLParser
+from .processing.archive_generator import ArchiveGenerator
 from .processing.embeddings import EmbeddingGenerator
 from .processing.hierarchy_manager import HierarchyManager
+from .processing.version_manager import VersionManager
 from .rag.query_engine import RAGQueryEngine, format_response_with_sources
 from .storage.unsupported_file_logger import UnsupportedFileLogger
 from .storage.progress_tracker import ProgressTracker
 from .storage.supabase_client import SupabaseClient
+from .utils import compute_chunk_id
 
 app = typer.Typer(
     name="ncl",
@@ -84,6 +88,27 @@ def track_issue(file_ctx: str, attachment: str, error: str):
         "error": error
     })
     console.print(f"[yellow][{file_ctx}] ⚠ {attachment}: {error}[/yellow]")
+
+
+def _enrich_chunks_with_document_metadata(
+    chunks: list[Chunk],
+    doc: "Document",
+) -> None:
+    """Enrich chunks with citation metadata from their document.
+
+    Sets source_id, source_title, and archive URIs on each chunk.
+    Modifies chunks in-place.
+
+    Args:
+        chunks: List of chunks to enrich.
+        doc: Parent document with citation metadata.
+    """
+    from .models.document import Document  # Avoid circular import at top level
+    for chunk in chunks:
+        chunk.source_id = doc.source_id
+        chunk.source_title = doc.source_title
+        chunk.archive_browse_uri = doc.archive_browse_uri
+        chunk.archive_download_uri = doc.archive_download_uri
 
 
 def _show_issue_summary(issues: list[dict]):
@@ -203,8 +228,11 @@ async def _ingest(
     unsupported_logger = UnsupportedFileLogger(db)
     eml_parser = EMLParser()
     attachment_processor = AttachmentProcessor()
-    hierarchy_manager = HierarchyManager(db)
+    hierarchy_manager = HierarchyManager(db, ingest_root=source_dir)
     embeddings = EmbeddingGenerator()
+    archive_generator = ArchiveGenerator()
+    context_generator = ContextGenerator()
+    version_manager = VersionManager(db)
 
     try:
         # Get files to process
@@ -286,6 +314,9 @@ async def _ingest(
                             db,
                             tracker,
                             unsupported_logger,
+                            archive_generator=archive_generator,
+                            context_generator=context_generator,
+                            version_manager=version_manager,
                             progress=progress,
                             worker_task=worker_task,
                             slot_idx=slot_idx,
@@ -333,6 +364,9 @@ async def _process_single_email(
     db: SupabaseClient,
     tracker: ProgressTracker,
     unsupported_logger: UnsupportedFileLogger,
+    archive_generator: ArchiveGenerator | None = None,
+    context_generator: ContextGenerator | None = None,
+    version_manager: VersionManager | None = None,
     progress: Progress | None = None,
     worker_task: TaskID | None = None,
     slot_idx: int | None = None,
@@ -342,11 +376,26 @@ async def _process_single_email(
     source_eml_path = str(eml_path)
     file_ctx = eml_path.name  # Short filename for logging
 
-    # Check if already processed
-    existing = await db.get_document_by_hash(file_hash)
-    if existing and existing.status == ProcessingStatus.COMPLETED:
-        vprint(f"Skipping (already processed): {eml_path}", file_ctx)
-        return
+    # Check using version manager if available
+    if version_manager:
+        from .utils import normalize_source_id
+        settings = get_settings()
+        source_id = normalize_source_id(source_eml_path, settings.eml_source_dir)
+        decision = await version_manager.check_document(source_id, file_hash)
+
+        if decision.action == "skip":
+            vprint(f"Skipping (already processed): {eml_path}", file_ctx)
+            return
+        elif decision.action == "reprocess":
+            vprint(f"Reprocessing: {decision.reason}", file_ctx)
+        elif decision.action == "update":
+            vprint(f"Updating: {decision.reason}", file_ctx)
+    else:
+        # Fallback to legacy check
+        existing = await db.get_document_by_hash(file_hash)
+        if existing and existing.status == ProcessingStatus.COMPLETED:
+            vprint(f"Skipping (already processed): {eml_path}", file_ctx)
+            return
 
     await tracker.mark_started(eml_path, file_hash)
     vprint(f"Processing: {eml_path}", file_ctx)
@@ -367,15 +416,48 @@ async def _process_single_email(
             completed=0,
         )
 
+    # Generate archive if generator is available
+    archive_result = None
+    if archive_generator:
+        try:
+            archive_result = await archive_generator.generate_archive(
+                parsed_email=parsed_email,
+                source_eml_path=eml_path,
+            )
+            vprint(f"Archive generated: {archive_result.archive_path} ({len(archive_result.attachment_files)} attachments)", file_ctx)
+        except Exception as e:
+            vprint(f"Archive generation failed: {e}", file_ctx)
+
     # Create email document in hierarchy
-    email_doc = await hierarchy_manager.create_email_document(eml_path, parsed_email)
+    email_doc = await hierarchy_manager.create_email_document(
+        eml_path, parsed_email, archive_result=archive_result
+    )
 
     # Create chunks from email body
     email_chunks: list[Chunk] = []
     body_text = eml_parser.get_body_text(parsed_email)
 
+    # Generate context summary for the email if context generator is available
+    context_summary = None
+    if context_generator and body_text:
+        try:
+            context_summary = await context_generator.generate_context(
+                email_doc, body_text[:4000]
+            )
+            vprint(f"Context generated: {len(context_summary)} chars", file_ctx)
+        except Exception as e:
+            vprint(f"Context generation failed: {e}", file_ctx)
+
     if body_text:
         vprint("Email body: 1 chunk", file_ctx)
+        # Compute stable chunk_id
+        chunk_id = compute_chunk_id(email_doc.doc_id or "", 0, len(body_text))
+
+        # Build embedding text with context
+        embedding_text = body_text
+        if context_summary:
+            embedding_text = context_generator.build_embedding_text(context_summary, body_text)
+
         email_chunks.append(
             Chunk(
                 document_id=email_doc.id,
@@ -383,12 +465,31 @@ async def _process_single_email(
                 chunk_index=0,
                 heading_path=["Email Body"],
                 metadata={"type": "email_body"},
+                chunk_id=chunk_id,
+                context_summary=context_summary,
+                embedding_text=embedding_text,
+                char_start=0,
+                char_end=len(body_text),
+                source_id=email_doc.source_id,
+                source_title=email_doc.source_title,
+                archive_browse_uri=email_doc.archive_browse_uri,
+                archive_download_uri=email_doc.archive_download_uri,
             )
         )
 
     # Process attachments with progress updates
     attachment_chunk_count = 0
     for i, attachment in enumerate(parsed_email.attachments):
+        # Get archive file result for this attachment if available
+        archive_file_result = None
+        if archive_result and archive_result.attachment_files:
+            # Look for matching attachment in archive result by filename
+            for file_result in archive_result.attachment_files:
+                # original_path is like "abc123/attachments/file.pdf"
+                if file_result.original_path.endswith(f"/{attachment.filename}"):
+                    archive_file_result = file_result
+                    break
+
         attachment_chunks = await _process_attachment(
             attachment=attachment,
             email_doc=email_doc,
@@ -398,6 +499,8 @@ async def _process_single_email(
             hierarchy_manager=hierarchy_manager,
             db=db,
             unsupported_logger=unsupported_logger,
+            archive_file_result=archive_file_result,
+            context_generator=context_generator,
         )
         attachment_chunk_count += len(attachment_chunks)
         email_chunks.extend(attachment_chunks)
@@ -433,6 +536,20 @@ async def _process_single_email(
     await db.update_document_status(email_doc.id, ProcessingStatus.COMPLETED)
     await tracker.mark_completed(eml_path)
 
+    # Clean up processed attachments (archive has the originals for download)
+    if archive_result and parsed_email.attachments:
+        for attachment in parsed_email.attachments:
+            try:
+                processed_path = Path(attachment.saved_path)
+                if processed_path.exists():
+                    processed_path.unlink()
+                # Clean up parent directory if empty
+                parent = processed_path.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except Exception as e:
+                vprint(f"Warning: Failed to clean up {attachment.saved_path}: {e}", file_ctx)
+
 
 async def _process_attachment(
     attachment,
@@ -443,6 +560,8 @@ async def _process_attachment(
     hierarchy_manager: HierarchyManager,
     db: SupabaseClient,
     unsupported_logger: UnsupportedFileLogger,
+    archive_file_result=None,
+    context_generator: ContextGenerator | None = None,
 ) -> list[Chunk]:
     """Process a single attachment and return its chunks.
 
@@ -513,6 +632,7 @@ async def _process_attachment(
         content_type=attachment.content_type,
         size_bytes=attachment.size_bytes,
         original_filename=attachment.filename,
+        archive_file_result=archive_file_result,
     )
 
     try:
@@ -552,6 +672,9 @@ async def _process_attachment(
             source_eml_path=source_eml_path,
             parent_document_id=email_doc.id,
         )
+
+    # Enrich chunks with document citation metadata (source_id, source_title, archive URIs)
+    _enrich_chunks_with_document_metadata(chunks, attach_doc)
 
     return chunks
 
@@ -608,6 +731,8 @@ async def _process_zip_attachment(
                     attach_chunks = await attachment_processor.process_attachment(
                         extracted_path, attach_doc.id, extracted_content_type
                     )
+                # Enrich chunks with document citation metadata
+                _enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
                 chunks.extend(attach_chunks)
                 await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
             except Exception as e:
@@ -895,13 +1020,132 @@ async def _clean():
                     vprint(f"  Deleted {item.name}")
 
             if files_deleted > 0:
-                console.print(f"[green]Deleted {files_deleted} local files[/green]")
+                console.print(f"[green]Deleted {files_deleted} processed files[/green]")
             else:
-                console.print("[dim]No local files to delete[/dim]")
+                console.print("[dim]No processed files to delete[/dim]")
         else:
             console.print("[dim]Processed directory does not exist[/dim]")
 
+        # Delete archive files
+        archive_dir = settings.archive_dir
+        archive_files_deleted = 0
+
+        if archive_dir.exists():
+            vprint(f"Cleaning {archive_dir}...")
+            for item in archive_dir.iterdir():
+                if item.is_dir():
+                    file_count = sum(1 for _ in item.rglob("*") if _.is_file())
+                    archive_files_deleted += file_count
+                    shutil.rmtree(item)
+                    vprint(f"  Deleted {item.name}/ ({file_count} files)")
+                elif item.is_file():
+                    item.unlink()
+                    archive_files_deleted += 1
+                    vprint(f"  Deleted {item.name}")
+
+            if archive_files_deleted > 0:
+                console.print(f"[green]Deleted {archive_files_deleted} archive files[/green]")
+            else:
+                console.print("[dim]No archive files to delete[/dim]")
+        else:
+            console.print("[dim]Archive directory does not exist[/dim]")
+
         console.print("[green]✓ Clean complete[/green]")
+
+    finally:
+        await db.close()
+
+
+@app.command()
+def reprocess(
+    target_version: int = typer.Option(
+        None,
+        "--target-version",
+        "-t",
+        help="Re-process documents below this ingest version (default: current version)",
+    ),
+    limit: int = typer.Option(
+        100,
+        "--limit",
+        "-l",
+        help="Maximum number of documents to process",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Show what would be processed without making changes",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+):
+    """Re-process documents that were ingested with an older ingest version.
+
+    Use this after upgrading the ingest logic to re-process existing documents
+    with the new logic. Documents will be identified by their stable source_id
+    and updated in place.
+    """
+    global _verbose
+    _verbose = verbose
+    asyncio.run(_reprocess(target_version, limit, dry_run))
+
+
+async def _reprocess(target_version: int | None, limit: int, dry_run: bool):
+    """Async implementation of reprocess command."""
+    settings = get_settings()
+    db = SupabaseClient()
+    version_manager = VersionManager(db)
+
+    try:
+        # Use current version if not specified
+        version = target_version or settings.current_ingest_version
+
+        # Get count of documents needing reprocessing
+        count = await version_manager.count_reprocess_candidates(version)
+
+        if count == 0:
+            console.print(f"[green]No documents need reprocessing (all at version {version} or higher)[/green]")
+            return
+
+        console.print(f"[yellow]Found {count} documents below ingest version {version}[/yellow]")
+
+        if dry_run:
+            # Show sample of documents that would be processed
+            candidates = await version_manager.get_reprocess_candidates(version, min(limit, 20))
+
+            table = Table(title="Documents to Reprocess (sample)")
+            table.add_column("Source ID", style="cyan", max_width=20)
+            table.add_column("Doc ID", style="green", max_width=20)
+            table.add_column("Current Version", justify="right")
+            table.add_column("File Path", max_width=40)
+
+            for doc in candidates:
+                table.add_row(
+                    (doc.source_id or "")[:20],
+                    (doc.doc_id or "")[:20],
+                    str(doc.ingest_version),
+                    Path(doc.file_path).name if doc.file_path else "-",
+                )
+
+            console.print(table)
+            console.print(f"\n[dim]Run without --dry-run to process these documents[/dim]")
+            return
+
+        # Get documents to reprocess
+        candidates = await version_manager.get_reprocess_candidates(version, limit)
+        console.print(f"[yellow]Processing {len(candidates)} documents...[/yellow]")
+
+        # TODO: Implement actual reprocessing logic
+        # This would involve:
+        # 1. Deleting old chunks for each document
+        # 2. Re-parsing the source file
+        # 3. Regenerating chunks with new context
+        # 4. Updating the document's ingest_version
+        console.print("[red]Reprocessing logic not yet implemented - use 'ncl clean' and re-ingest[/red]")
 
     finally:
         await db.close()

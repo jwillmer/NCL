@@ -65,21 +65,38 @@ class SupabaseClient:
         """Insert a document record.
 
         Args:
-            doc: Document to insert.
+            doc: Document to insert (should have all fields populated).
 
         Returns:
             The inserted document.
         """
+        settings = get_settings()
+
         data = {
             "id": str(doc.id),
+            # Stable identification (from Document model)
+            "source_id": doc.source_id or "",
+            "doc_id": doc.doc_id or "",
+            # Versioning
+            "content_version": doc.content_version,
+            "ingest_version": doc.ingest_version or settings.current_ingest_version,
+            # Hierarchy
             "parent_id": str(doc.parent_id) if doc.parent_id else None,
             "root_id": str(doc.root_id) if doc.root_id else None,
             "depth": doc.depth,
             "path": doc.path,
+            # Identification
             "document_type": doc.document_type.value,
             "file_path": doc.file_path,
             "file_name": doc.file_name,
             "file_hash": doc.file_hash,
+            # Citation metadata (from Document model)
+            "source_title": doc.source_title,
+            # Archive links (from Document model)
+            "archive_path": doc.archive_path,
+            "archive_browse_uri": doc.archive_browse_uri,
+            "archive_download_uri": doc.archive_download_uri,
+            # Status
             "status": doc.status.value,
         }
 
@@ -207,7 +224,7 @@ class SupabaseClient:
     # ==================== Chunk Operations ====================
 
     async def insert_chunks(self, chunks: List[Chunk]) -> List[Chunk]:
-        """Insert multiple chunks with embeddings.
+        """Insert multiple chunks with embeddings and citation metadata.
 
         Args:
             chunks: List of chunks to insert.
@@ -223,14 +240,23 @@ class SupabaseClient:
             records = [
                 (
                     chunk.id,
+                    chunk.chunk_id or "",  # Stable chunk ID for citations
                     chunk.document_id,
                     chunk.content,
                     chunk.chunk_index,
-                    chunk.heading_path,
+                    chunk.context_summary,  # LLM-generated context
+                    chunk.embedding_text,  # Full text used for embedding
+                    chunk.section_path,  # Renamed from heading_path
                     chunk.section_title,
+                    chunk.source_title,  # Denormalized citation metadata
+                    chunk.source_id,
                     chunk.page_number,
-                    chunk.start_char,
-                    chunk.end_char,
+                    chunk.line_from,
+                    chunk.line_to,
+                    chunk.char_start,
+                    chunk.char_end,
+                    chunk.archive_browse_uri,
+                    chunk.archive_download_uri,
                     chunk.embedding,
                     json.dumps(chunk.metadata),
                 )
@@ -240,9 +266,13 @@ class SupabaseClient:
             await conn.executemany(
                 """
                 INSERT INTO chunks
-                (id, document_id, content, chunk_index, heading_path,
-                 section_title, page_number, start_char, end_char, embedding, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                (id, chunk_id, document_id, content, chunk_index,
+                 context_summary, embedding_text, section_path, section_title,
+                 source_title, source_id,
+                 page_number, line_from, line_to, char_start, char_end,
+                 archive_browse_uri, archive_download_uri,
+                 embedding, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                 """,
                 records,
             )
@@ -298,6 +328,92 @@ class SupabaseClient:
             )
 
         return [dict(row) for row in rows]
+
+    # ==================== Version-aware Queries ====================
+
+    async def get_document_by_doc_id(self, doc_id: str) -> Optional[Document]:
+        """Get document by content-addressable doc_id.
+
+        Args:
+            doc_id: Content-addressable document ID.
+
+        Returns:
+            Document if found, None otherwise.
+        """
+        result = (
+            self.client.table("documents")
+            .select("*")
+            .eq("doc_id", doc_id)
+            .limit(1)
+            .execute()
+        )
+
+        if result.data:
+            return self._row_to_document(result.data[0])
+        return None
+
+    async def get_document_by_source_id(self, source_id: str) -> Optional[Document]:
+        """Get document by source identifier.
+
+        Args:
+            source_id: Normalized source path.
+
+        Returns:
+            Document if found, None otherwise.
+        """
+        result = (
+            self.client.table("documents")
+            .select("*")
+            .eq("source_id", source_id)
+            .limit(1)
+            .execute()
+        )
+
+        if result.data:
+            return self._row_to_document(result.data[0])
+        return None
+
+    async def get_documents_below_version(
+        self, target_version: int, limit: int = 100
+    ) -> List[Document]:
+        """Get documents with ingest_version below target.
+
+        Used for bulk re-processing when ingest logic is upgraded.
+
+        Args:
+            target_version: Get documents with version below this.
+            limit: Maximum number of documents to return.
+
+        Returns:
+            List of documents needing re-processing.
+        """
+        result = (
+            self.client.table("documents")
+            .select("*")
+            .lt("ingest_version", target_version)
+            .limit(limit)
+            .execute()
+        )
+
+        return [self._row_to_document(row) for row in result.data]
+
+    async def count_documents_below_version(self, target_version: int) -> int:
+        """Count documents with ingest_version below target.
+
+        Args:
+            target_version: Count documents with version below this.
+
+        Returns:
+            Count of documents needing re-processing.
+        """
+        result = (
+            self.client.table("documents")
+            .select("id", count="exact")
+            .lt("ingest_version", target_version)
+            .execute()
+        )
+
+        return result.count or 0
 
     # ==================== Cleanup Operations ====================
 
@@ -423,13 +539,22 @@ class SupabaseClient:
                 if isinstance(row["document_id"], str)
                 else row["document_id"]
             ),
+            chunk_id=row.get("chunk_id"),
             content=row["content"],
             chunk_index=row["chunk_index"],
-            heading_path=row.get("heading_path") or [],
+            context_summary=row.get("context_summary"),
+            embedding_text=row.get("embedding_text"),
+            section_path=row.get("section_path") or row.get("heading_path") or [],
             section_title=row.get("section_title"),
+            source_title=row.get("source_title"),
+            source_id=row.get("source_id"),
             page_number=row.get("page_number"),
-            start_char=row.get("start_char"),
-            end_char=row.get("end_char"),
+            line_from=row.get("line_from"),
+            line_to=row.get("line_to"),
+            char_start=row.get("char_start") or row.get("start_char"),
+            char_end=row.get("char_end") or row.get("end_char"),
+            archive_browse_uri=row.get("archive_browse_uri"),
+            archive_download_uri=row.get("archive_download_uri"),
             embedding=row.get("embedding"),
             metadata=row.get("metadata") or {},
         )

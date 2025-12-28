@@ -7,15 +7,16 @@
 -- ============================================
 
 -- Drop tables first (CASCADE handles triggers and dependent objects)
+DROP TABLE IF EXISTS ingest_versions CASCADE;
 DROP TABLE IF EXISTS unsupported_files CASCADE;
 DROP TABLE IF EXISTS chunks CASCADE;
 DROP TABLE IF EXISTS processing_log CASCADE;
 DROP TABLE IF EXISTS documents CASCADE;
 
--- Drop functions
-DROP FUNCTION IF EXISTS match_chunks(extensions.vector(1536), FLOAT, INT);
-DROP FUNCTION IF EXISTS get_document_ancestry(UUID);
-DROP FUNCTION IF EXISTS update_updated_at_column();
+-- Drop functions (use CASCADE to handle dependent objects)
+DROP FUNCTION IF EXISTS match_chunks CASCADE;
+DROP FUNCTION IF EXISTS get_document_ancestry CASCADE;
+DROP FUNCTION IF EXISTS update_updated_at_column CASCADE;
 
 -- Drop custom types
 DROP TYPE IF EXISTS document_type CASCADE;
@@ -62,6 +63,14 @@ CREATE TYPE processing_status AS ENUM (
 CREATE TABLE documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
+    -- STABLE IDENTIFICATION (for citations and versioning)
+    source_id TEXT NOT NULL,              -- Normalized path: relative path lowercased
+    doc_id TEXT NOT NULL UNIQUE,          -- Content-addressable: hash(source_id + file_hash)
+
+    -- VERSIONING (for re-ingestion support)
+    content_version INTEGER NOT NULL DEFAULT 1,   -- Increments when content changes
+    ingest_version INTEGER NOT NULL DEFAULT 1,    -- Schema/logic version used during ingest
+
     -- Hierarchy relationships
     parent_id UUID REFERENCES documents(id) ON DELETE CASCADE,
     root_id UUID REFERENCES documents(id) ON DELETE CASCADE,
@@ -74,6 +83,9 @@ CREATE TABLE documents (
     file_name TEXT NOT NULL,
     file_hash TEXT,  -- SHA-256 hash for deduplication
 
+    -- SOURCE METADATA FOR CITATIONS
+    source_title TEXT,                    -- Human-readable title (email subject, filename, etc.)
+
     -- Email conversation metadata (nullable for attachments)
     email_subject TEXT,
     email_participants TEXT[],  -- All unique email addresses in conversation
@@ -85,6 +97,11 @@ CREATE TABLE documents (
     -- Attachment-specific metadata
     attachment_content_type TEXT,
     attachment_size_bytes BIGINT,
+
+    -- ARCHIVE LINKS (for browsable content)
+    archive_path TEXT,                    -- Relative path to archive folder
+    archive_browse_uri TEXT,              -- URI to browsable .md file
+    archive_download_uri TEXT,            -- URI to original file for download
 
     -- Processing metadata
     status processing_status NOT NULL DEFAULT 'pending',
@@ -103,12 +120,18 @@ CREATE INDEX idx_documents_file_hash ON documents(file_hash);
 CREATE INDEX idx_documents_status ON documents(status);
 CREATE INDEX idx_documents_document_type ON documents(document_type);
 CREATE INDEX idx_documents_path ON documents USING GIN(path);
+CREATE INDEX idx_documents_source_id ON documents(source_id);
+CREATE INDEX idx_documents_doc_id ON documents(doc_id);
+CREATE INDEX idx_documents_ingest_version ON documents(ingest_version);
 
 -- ============================================
 -- CHUNKS TABLE (with embeddings)
 -- ============================================
 CREATE TABLE chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- STABLE IDENTIFICATION (for citations)
+    chunk_id TEXT NOT NULL,               -- Deterministic: hash(doc_id + char_start + char_end)
 
     -- Relationship to document
     document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -117,14 +140,28 @@ CREATE TABLE chunks (
     content TEXT NOT NULL,
     chunk_index INTEGER NOT NULL,  -- Order within document
 
+    -- CONTEXTUAL CHUNKING (for improved retrieval)
+    context_summary TEXT,                 -- Document-level context (LLM-generated)
+    embedding_text TEXT,                  -- Full text used for embedding: context + content
+
     -- Hierarchy context (denormalized for query performance)
-    heading_path TEXT[],  -- e.g., ['Chapter 1', 'Section 1.1']
+    section_path TEXT[],                  -- e.g., ['Chapter 1', 'Section 1.1'] (renamed from heading_path)
     section_title TEXT,
+
+    -- CITATION METADATA (denormalized from document for fast retrieval)
+    source_title TEXT,
+    source_id TEXT,
 
     -- Source location in original document
     page_number INTEGER,
-    start_char INTEGER,
-    end_char INTEGER,
+    line_from INTEGER,                    -- Line number start
+    line_to INTEGER,                      -- Line number end
+    char_start INTEGER,                   -- Character offset start
+    char_end INTEGER,                     -- Character offset end
+
+    -- ARCHIVE LINKS (denormalized for fast retrieval)
+    archive_browse_uri TEXT,
+    archive_download_uri TEXT,
 
     -- Embedding vector (OpenAI text-embedding-3-small = 1536 dimensions)
     embedding extensions.vector(1536),
@@ -139,6 +176,8 @@ CREATE TABLE chunks (
 -- Indexes for chunks
 CREATE INDEX idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX idx_chunks_chunk_index ON chunks(document_id, chunk_index);
+CREATE UNIQUE INDEX idx_chunks_chunk_id ON chunks(chunk_id);
+CREATE INDEX idx_chunks_source_id ON chunks(source_id);
 
 -- HNSW index for vector similarity search (cosine distance)
 CREATE INDEX idx_chunks_embedding ON chunks
@@ -204,6 +243,20 @@ CREATE INDEX idx_unsupported_files_mime_type ON unsupported_files(mime_type);
 CREATE INDEX idx_unsupported_files_reason ON unsupported_files(reason);
 
 -- ============================================
+-- INGEST VERSIONS TABLE (for re-processing)
+-- ============================================
+CREATE TABLE ingest_versions (
+    version INTEGER PRIMARY KEY,
+    description TEXT NOT NULL,
+    breaking_changes BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Seed with initial version
+INSERT INTO ingest_versions (version, description, breaking_changes) VALUES
+    (1, 'Initial schema with contextual chunking, citations, and browsable archive', FALSE);
+
+-- ============================================
 -- VECTOR SEARCH FUNCTION
 -- ============================================
 CREATE OR REPLACE FUNCTION match_chunks(
@@ -212,13 +265,30 @@ CREATE OR REPLACE FUNCTION match_chunks(
     match_count INT DEFAULT 10
 )
 RETURNS TABLE (
-    chunk_id UUID,
-    document_id UUID,
+    -- Chunk identification
+    chunk_id TEXT,
+    document_uuid UUID,
     content TEXT,
-    heading_path TEXT[],
+    section_path TEXT[],
     similarity FLOAT,
+
+    -- Document info
+    doc_id TEXT,
+    source_id TEXT,
     file_path TEXT,
     document_type document_type,
+
+    -- Citation metadata
+    source_title TEXT,
+    page_number INTEGER,
+    line_from INTEGER,
+    line_to INTEGER,
+
+    -- Archive links
+    archive_browse_uri TEXT,
+    archive_download_uri TEXT,
+
+    -- Email metadata (from root document)
     email_subject TEXT,
     email_initiator TEXT,
     email_participants TEXT[],
@@ -230,13 +300,25 @@ AS $$
 BEGIN
     RETURN QUERY
     SELECT
-        c.id AS chunk_id,
-        c.document_id,
+        c.chunk_id,
+        c.document_id AS document_uuid,
         c.content,
-        c.heading_path,
+        c.section_path,
         1 - (c.embedding <=> query_embedding) AS similarity,
+
+        d.doc_id,
+        c.source_id,
         d.file_path,
         d.document_type,
+
+        c.source_title,
+        c.page_number,
+        c.line_from,
+        c.line_to,
+
+        c.archive_browse_uri,
+        c.archive_download_uri,
+
         COALESCE(d.email_subject, root_doc.email_subject) AS email_subject,
         COALESCE(d.email_initiator, root_doc.email_initiator) AS email_initiator,
         COALESCE(d.email_participants, root_doc.email_participants) AS email_participants,
@@ -255,7 +337,7 @@ $$;
 -- ============================================
 -- GET DOCUMENT ANCESTRY FUNCTION
 -- ============================================
-CREATE OR REPLACE FUNCTION get_document_ancestry(doc_id UUID)
+CREATE OR REPLACE FUNCTION get_document_ancestry(document_uuid UUID)
 RETURNS TABLE (
     id UUID,
     document_type document_type,
@@ -269,7 +351,7 @@ AS $$
     WITH RECURSIVE ancestry AS (
         SELECT d.id, d.document_type, d.file_path, d.file_name, d.depth,
                d.email_subject, d.parent_id
-        FROM documents d WHERE d.id = doc_id
+        FROM documents d WHERE d.id = document_uuid
 
         UNION ALL
 
@@ -290,6 +372,7 @@ ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE processing_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE unsupported_files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ingest_versions ENABLE ROW LEVEL SECURITY;
 
 -- Default policy: allow all for service role (adjust for multi-tenant if needed)
 CREATE POLICY "Service role full access to documents" ON documents
@@ -299,6 +382,8 @@ CREATE POLICY "Service role full access to chunks" ON chunks
 CREATE POLICY "Service role full access to processing_log" ON processing_log
     FOR ALL USING (true);
 CREATE POLICY "Service role full access to unsupported_files" ON unsupported_files
+    FOR ALL USING (true);
+CREATE POLICY "Service role full access to ingest_versions" ON ingest_versions
     FOR ALL USING (true);
 
 -- ============================================

@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(default=1536, validation_alias="EMBEDDING_DIMENSIONS")
     llm_model: str = Field(default="gpt-4o-mini", validation_alias="LLM_MODEL")
 
+    # Contextual Chunking Configuration
+    context_llm_model: str = Field(
+        default="gpt-5-nano", validation_alias="CONTEXT_LLM_MODEL"
+    )
+
     # Chunking Configuration
     chunk_size_tokens: int = Field(default=512, validation_alias="CHUNK_SIZE_TOKENS")
     chunk_overlap_tokens: int = Field(default=50, validation_alias="CHUNK_OVERLAP_TOKENS")
@@ -77,6 +82,19 @@ class Settings(BaseSettings):
     def extracted_dir(self) -> Path:
         """Directory for extracted ZIP contents."""
         return self.data_processed_dir / "extracted"
+
+    # Archive Configuration (for browsable content)
+    archive_dir: Path = Field(
+        default=Path("./data/archive"), validation_alias="ARCHIVE_DIR"
+    )
+    archive_base_url: str = Field(
+        default="", validation_alias="ARCHIVE_BASE_URL"
+    )
+
+    # Ingest Versioning
+    current_ingest_version: int = Field(
+        default=1, validation_alias="CURRENT_INGEST_VERSION"
+    )
 
     # Processing Options
     batch_size: int = Field(default=10, validation_alias="BATCH_SIZE")

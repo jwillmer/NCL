@@ -7,11 +7,13 @@ JWT tokens are validated both at the CopilotKit runtime (Node.js) and here.
 from __future__ import annotations
 
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -128,6 +130,82 @@ def create_app() -> FastAPI:
     @limiter.limit("60/minute")
     async def health_check(request: Request):
         return {"status": "healthy", "service": "ncl-api"}
+
+    # Archive file serving endpoint
+    # Uses same JWT auth as all other endpoints (via AuthMiddleware)
+    @app.get("/archive/{file_path:path}")
+    @limiter.limit("100/minute")
+    async def serve_archive(request: Request, file_path: str):
+        """Serve archive files (markdown previews and original downloads).
+
+        Security measures:
+        - Uses same Supabase JWT auth as UI endpoints (via AuthMiddleware)
+        - Path validation to prevent traversal attacks (rejects '..', absolute paths)
+        - Validates resolved path stays within ARCHIVE_DIR
+        - Rate limited to prevent abuse
+
+        Args:
+            request: FastAPI request object (user available in request.state.user)
+            file_path: Relative path within the archive directory
+
+        Returns:
+            FileResponse for the requested file
+
+        Raises:
+            HTTPException: 400 for invalid path, 404 for file not found
+        """
+        # Security: Reject paths with traversal attempts or absolute paths
+        if ".." in file_path or file_path.startswith("/") or file_path.startswith("\\"):
+            logger.warning(
+                "Archive path traversal attempt: %s from user %s",
+                file_path,
+                getattr(request.state, "user", {}).get("email", "unknown"),
+            )
+            raise HTTPException(status_code=400, detail="Invalid path")
+
+        # Resolve the full path
+        archive_dir = settings.archive_dir.resolve()
+        requested_path = (archive_dir / file_path).resolve()
+
+        # Security: Ensure the resolved path is within archive_dir
+        try:
+            requested_path.relative_to(archive_dir)
+        except ValueError:
+            logger.warning(
+                "Archive path escape attempt: %s resolved to %s from user %s",
+                file_path,
+                requested_path,
+                getattr(request.state, "user", {}).get("email", "unknown"),
+            )
+            raise HTTPException(status_code=400, detail="Invalid path")
+
+        # Check if file exists
+        if not requested_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if not requested_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        # Determine content type
+        content_type, _ = mimetypes.guess_type(str(requested_path))
+        if content_type is None:
+            # Default to text/plain for markdown, octet-stream for others
+            if requested_path.suffix.lower() == ".md":
+                content_type = "text/markdown; charset=utf-8"
+            else:
+                content_type = "application/octet-stream"
+
+        logger.debug(
+            "Serving archive file: %s to user %s",
+            file_path,
+            getattr(request.state, "user", {}).get("email", "unknown"),
+        )
+
+        return FileResponse(
+            path=requested_path,
+            media_type=content_type,
+            filename=requested_path.name,
+        )
 
     # Mount Pydantic AI Agent's AG-UI app
     app.mount("/copilotkit", agent_app)

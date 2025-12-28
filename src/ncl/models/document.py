@@ -91,6 +91,22 @@ class Document(BaseModel):
     file_name: str
     file_hash: Optional[str] = None
 
+    # Stable identification for citations
+    source_id: Optional[str] = None  # Normalized path: hash(relative_path.lower())
+    doc_id: Optional[str] = None  # Content-addressable: hash(source_id + file_hash)
+
+    # Versioning
+    content_version: int = 1
+    ingest_version: int = 1
+
+    # Source metadata for citations
+    source_title: Optional[str] = None  # Human-readable (email subject, filename)
+
+    # Archive links
+    archive_path: Optional[str] = None  # Relative path to archive folder
+    archive_browse_uri: Optional[str] = None  # URI to browsable .md file
+    archive_download_uri: Optional[str] = None  # URI to original file
+
     # Type-specific metadata (one will be set based on document_type)
     email_metadata: Optional[EmailMetadata] = None
     attachment_metadata: Optional[AttachmentMetadata] = None

@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from ..config import get_settings
-from ..models.chunk import RAGResponse, SourceReference
+from ..models.chunk import (
+    EnhancedRAGResponse,
+    RAGResponse,
+    RetrievalResult,
+    SourceReference,
+)
 from ..processing.embeddings import EmbeddingGenerator
 from ..processing.reranker import Reranker
 from ..storage.supabase_client import SupabaseClient
+from .citation_processor import CitationProcessor
+
+logger = logging.getLogger(__name__)
 
 
 class RAGQueryEngine:
@@ -19,8 +28,11 @@ class RAGQueryEngine:
     2. Cross-encoder reranking for improved accuracy (20-35% improvement)
 
     Then generates answers using LLM with source attribution.
+    Includes citation validation with retry for improved accuracy.
     API keys are initialized via ncl.__init__ at module load.
     """
+
+    MAX_CITATION_RETRIES = 2
 
     def __init__(self):
         """Initialize the RAG query engine."""
@@ -28,6 +40,7 @@ class RAGQueryEngine:
         self.db = SupabaseClient()
         self.embeddings = EmbeddingGenerator()
         self.reranker = Reranker()
+        self.citation_processor = CitationProcessor()
         self.llm_model = settings.llm_model
         self.chunk_display_max_chars = settings.chunk_display_max_chars
 
@@ -116,6 +129,219 @@ class RAGQueryEngine:
             sources=sources,
             query=question,
         )
+
+    async def query_with_citations(
+        self,
+        question: str,
+        top_k: int = 20,
+        similarity_threshold: float = 0.5,
+        rerank_top_n: Optional[int] = None,
+        use_rerank: bool = True,
+    ) -> EnhancedRAGResponse:
+        """Answer a question with validated citations and retry logic.
+
+        Uses the enhanced citation system with:
+        - Citation headers in context
+        - Citation validation after LLM response
+        - Automatic retry if too many invalid citations
+        - Archive link verification
+
+        Args:
+            question: User's question.
+            top_k: Number of candidates to retrieve for reranking.
+            similarity_threshold: Minimum similarity score (0-1).
+            rerank_top_n: Final results after reranking (default from config).
+            use_rerank: Whether to use reranking (default: True).
+
+        Returns:
+            EnhancedRAGResponse with validated citations and archive links.
+        """
+        # Generate embedding for query
+        query_embedding = await self.embeddings.generate_embedding(question)
+
+        # Stage 1: Vector search
+        results = await self.db.search_similar_chunks(
+            query_embedding=query_embedding,
+            match_threshold=similarity_threshold,
+            match_count=top_k,
+        )
+
+        if not results:
+            return EnhancedRAGResponse(
+                answer="I couldn't find any relevant information to answer your question.",
+                citations=[],
+                query=question,
+            )
+
+        # Convert to RetrievalResult objects
+        retrieval_results = self._convert_to_retrieval_results(results)
+
+        # Stage 2: Rerank if enabled
+        if use_rerank and self.reranker.enabled:
+            retrieval_results = self._rerank_retrieval_results(
+                question, retrieval_results, rerank_top_n
+            )
+
+        # Build citation map and context
+        citation_map = self.citation_processor.get_citation_map(retrieval_results)
+        context = self.citation_processor.build_context(retrieval_results)
+
+        # Generate answer with citation validation and retry
+        retry_count = 0
+        validation = None
+
+        for attempt in range(self.MAX_CITATION_RETRIES + 1):
+            # Add retry hint if this is a retry
+            current_context = context
+            if attempt > 0 and validation and validation.invalid_citations:
+                hint = self.citation_processor.build_retry_hint(list(citation_map.keys()))
+                current_context = context + hint
+
+            # Generate LLM response
+            raw_response = await self._generate_answer_with_citations(
+                question, current_context
+            )
+
+            # Validate citations
+            validation = self.citation_processor.process_response(
+                raw_response, citation_map
+            )
+
+            if not validation.needs_retry:
+                break
+
+            retry_count += 1
+            logger.info(
+                f"Citation retry {retry_count}: {len(validation.invalid_citations)} invalid citations"
+            )
+
+        # Format final response
+        formatted_answer = self.citation_processor.replace_citation_markers(
+            validation.response, validation.citations
+        )
+
+        # Add sources section
+        sources_section = self.citation_processor.format_sources_section(
+            validation.citations
+        )
+        if sources_section:
+            formatted_answer = formatted_answer + sources_section
+
+        return EnhancedRAGResponse(
+            answer=formatted_answer,
+            citations=validation.citations,
+            query=question,
+            had_invalid_citations=len(validation.invalid_citations) > 0,
+            retry_count=retry_count,
+        )
+
+    def _convert_to_retrieval_results(
+        self, results: List[Dict[str, Any]]
+    ) -> List[RetrievalResult]:
+        """Convert database results to RetrievalResult objects."""
+        retrieval_results = []
+
+        for result in results:
+            retrieval_results.append(
+                RetrievalResult(
+                    text=result["content"],
+                    score=result["similarity"],
+                    chunk_id=result.get("chunk_id", ""),
+                    doc_id=result.get("doc_id", ""),
+                    source_id=result.get("source_id", ""),
+                    source_title=result.get("source_title"),
+                    section_path=result.get("section_path") or [],
+                    page_number=result.get("page_number"),
+                    line_from=result.get("line_from"),
+                    line_to=result.get("line_to"),
+                    archive_browse_uri=result.get("archive_browse_uri"),
+                    archive_download_uri=result.get("archive_download_uri"),
+                    document_type=result.get("document_type"),
+                    email_subject=result.get("email_subject"),
+                    email_initiator=result.get("email_initiator"),
+                    email_participants=result.get("email_participants"),
+                    email_date=(
+                        result["email_date"].isoformat()
+                        if result.get("email_date")
+                        else None
+                    ),
+                    root_file_path=result.get("root_file_path"),
+                    file_path=result.get("file_path"),
+                )
+            )
+
+        return retrieval_results
+
+    def _rerank_retrieval_results(
+        self,
+        query: str,
+        results: List[RetrievalResult],
+        top_n: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """Rerank retrieval results using cross-encoder."""
+        # Convert to SourceReference for reranker (it expects this type)
+        sources = [
+            SourceReference(
+                file_path=r.file_path or "",
+                document_type=r.document_type or "",
+                email_subject=r.email_subject,
+                email_initiator=r.email_initiator,
+                email_participants=r.email_participants,
+                email_date=r.email_date,
+                chunk_content=r.text[: self.chunk_display_max_chars],
+                similarity_score=r.score,
+                heading_path=r.section_path,
+                root_file_path=r.root_file_path,
+            )
+            for r in results
+        ]
+
+        # Rerank
+        reranked_sources = self.reranker.rerank_results(
+            query=query, sources=sources, top_n=top_n
+        )
+
+        # Map back to retrieval results with updated scores
+        content_to_result = {r.text[: self.chunk_display_max_chars]: r for r in results}
+        reranked_results = []
+
+        for source in reranked_sources:
+            original = content_to_result.get(source.chunk_content)
+            if original:
+                original.rerank_score = source.rerank_score
+                reranked_results.append(original)
+
+        return reranked_results
+
+    async def _generate_answer_with_citations(
+        self, question: str, context: str
+    ) -> str:
+        """Generate answer using LLM with citation-aware prompt."""
+        from litellm import completion
+
+        system_prompt = self.citation_processor.get_system_prompt()
+
+        user_prompt = f"""Context from emails and attachments:
+
+{context}
+
+---
+
+Question: {question}
+
+Please provide a comprehensive answer based on the above context. Remember to cite sources using [C:chunk_id] format."""
+
+        response = completion(
+            model=self.llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=1000,
+        )
+
+        return response.choices[0].message.content
 
     def _build_context_header(self, result: Dict[str, Any]) -> str:
         """Build a header describing the source of a chunk.
