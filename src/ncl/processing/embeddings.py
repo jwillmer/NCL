@@ -82,7 +82,9 @@ class EmbeddingGenerator:
         if not chunks:
             return chunks
 
-        texts = [chunk.content for chunk in chunks]
+        # Use embedding_text if available (contains cleaned/enriched content),
+        # otherwise fall back to raw content
+        texts = [chunk.embedding_text or chunk.content for chunk in chunks]
         embeddings = await self.generate_embeddings_batch(texts)
 
         for chunk, emb in zip(chunks, embeddings):
@@ -114,7 +116,9 @@ class EmbeddingGenerator:
 
         for i in range(0, total, self.batch_size):
             batch = chunks[i : i + self.batch_size]
-            texts = [chunk.content for chunk in batch]
+            # Use embedding_text if available (contains cleaned/enriched content),
+            # otherwise fall back to raw content
+            texts = [chunk.embedding_text or chunk.content for chunk in batch]
 
             response = embedding(
                 model=self.model,

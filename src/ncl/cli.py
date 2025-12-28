@@ -31,6 +31,11 @@ from .models.chunk import Chunk
 from .models.document import ProcessingStatus
 from .parsers.attachment_processor import AttachmentProcessor
 from .parsers.chunker import ContextGenerator
+from .parsers.email_cleaner import (
+    clean_email_body,
+    remove_boilerplate_from_message,
+    split_into_messages,
+)
 from .parsers.eml_parser import EMLParser
 from .processing.archive_generator import ArchiveGenerator
 from .processing.embeddings import EmbeddingGenerator
@@ -449,33 +454,52 @@ async def _process_single_email(
             vprint(f"Context generation failed: {e}", file_ctx)
 
     if body_text:
-        vprint("Email body: 1 chunk", file_ctx)
-        # Compute stable chunk_id
-        chunk_id = compute_chunk_id(email_doc.doc_id or "", 0, len(body_text))
+        # Split email thread into individual messages for better embedding quality
+        # Each message becomes a separate chunk to improve semantic search relevance
+        messages = split_into_messages(body_text)
+        vprint(f"Email body: {len(messages)} message(s) -> chunks", file_ctx)
 
-        # Build embedding text with context
-        embedding_text = body_text
-        if context_summary:
-            embedding_text = context_generator.build_embedding_text(context_summary, body_text)
+        char_offset = 0
+        for msg_idx, message in enumerate(messages):
+            # Clean boilerplate from this message
+            cleaned_message = remove_boilerplate_from_message(message)
+            if not cleaned_message.strip():
+                continue
 
-        email_chunks.append(
-            Chunk(
-                document_id=email_doc.id,
-                content=body_text,
-                chunk_index=0,
-                heading_path=["Email Body"],
-                metadata={"type": "email_body"},
-                chunk_id=chunk_id,
-                context_summary=context_summary,
-                embedding_text=embedding_text,
-                char_start=0,
-                char_end=len(body_text),
-                source_id=email_doc.source_id,
-                source_title=email_doc.source_title,
-                archive_browse_uri=email_doc.archive_browse_uri,
-                archive_download_uri=email_doc.archive_download_uri,
+            # Find char positions in original body
+            msg_start = body_text.find(message[:50], char_offset)
+            if msg_start == -1:
+                msg_start = char_offset
+            msg_end = msg_start + len(message)
+            char_offset = msg_end
+
+            # Compute stable chunk_id
+            chunk_id = compute_chunk_id(email_doc.doc_id or "", msg_start, msg_end)
+
+            # Build embedding text with context (using cleaned message)
+            embedding_text = cleaned_message
+            if context_summary and msg_idx == 0:
+                # Only add context summary to the first message
+                embedding_text = context_generator.build_embedding_text(context_summary, cleaned_message)
+
+            email_chunks.append(
+                Chunk(
+                    document_id=email_doc.id,
+                    content=message,  # Store original message content
+                    chunk_index=msg_idx,
+                    heading_path=["Email Body", f"Message {msg_idx + 1}"],
+                    metadata={"type": "email_body", "message_index": msg_idx},
+                    chunk_id=chunk_id,
+                    context_summary=context_summary if msg_idx == 0 else None,
+                    embedding_text=embedding_text,  # Cleaned for better embeddings
+                    char_start=msg_start,
+                    char_end=msg_end,
+                    source_id=email_doc.source_id,
+                    source_title=email_doc.source_title,
+                    archive_browse_uri=email_doc.archive_browse_uri,
+                    archive_download_uri=email_doc.archive_download_uri,
+                )
             )
-        )
 
     # Process attachments with progress updates
     attachment_chunk_count = 0

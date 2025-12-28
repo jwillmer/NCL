@@ -112,27 +112,20 @@ async def search_node(state: AgentState, config: RunnableConfig) -> Command[Lite
 
     engine: Optional[RAGQueryEngine] = None
     try:
-        # Progress: Vector search
-        state["search_progress"] = "Searching document vectors..."
-        await copilotkit_emit_state(config, state)
-
         engine = RAGQueryEngine()
         settings = get_settings()
 
-        # Progress: Reranking (if enabled)
-        if settings.rerank_enabled:
-            state["search_progress"] = "Reranking results..."
+        # Progress callback to emit state updates
+        async def on_progress(message: str) -> None:
+            state["search_progress"] = message
             await copilotkit_emit_state(config, state)
 
         response = await engine.query(
             question=question,
             top_k=settings.rerank_top_n if settings.rerank_enabled else 10,
             use_rerank=settings.rerank_enabled,
+            on_progress=on_progress,
         )
-
-        # Progress: Formatting response
-        state["search_progress"] = "Formatting response..."
-        await copilotkit_emit_state(config, state)
 
         # Convert sources to serializable format
         sources = []

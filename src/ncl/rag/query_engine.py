@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+import litellm
+
+# Allow unsupported params to be dropped (e.g., temperature for gpt-5)
+litellm.drop_params = True
 
 from ..config import get_settings
 from ..models.chunk import (
@@ -48,9 +53,10 @@ class RAGQueryEngine:
         self,
         question: str,
         top_k: int = 20,
-        similarity_threshold: float = 0.5,
+        similarity_threshold: float = 0.3,
         rerank_top_n: Optional[int] = None,
         use_rerank: bool = True,
+        on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> RAGResponse:
         """Answer a question using RAG with two-stage retrieval.
 
@@ -60,10 +66,15 @@ class RAGQueryEngine:
             similarity_threshold: Minimum similarity score (0-1).
             rerank_top_n: Final results after reranking (default from config).
             use_rerank: Whether to use reranking (default: True).
+            on_progress: Optional async callback for progress updates.
 
         Returns:
             RAGResponse with answer and source references.
         """
+        # Progress: Vector search
+        if on_progress:
+            await on_progress("Searching documents...")
+
         # Generate embedding for query
         query_embedding = await self.embeddings.generate_embedding(question)
 
@@ -103,13 +114,20 @@ class RAGQueryEngine:
             sources.append(source)
             result_map[source.chunk_content] = result
 
-        # Stage 2: Rerank for improved accuracy
-        if use_rerank and self.reranker.enabled:
+        # Stage 2: Rerank for improved accuracy (skip if too few results)
+        effective_top_n = rerank_top_n or self.reranker.top_n
+        if use_rerank and self.reranker.enabled and len(sources) > effective_top_n:
+            if on_progress:
+                await on_progress("Reranking results...")
             sources = self.reranker.rerank_results(
                 query=question,
                 sources=sources,
                 top_n=rerank_top_n,
             )
+
+        # Progress: Generating answer
+        if on_progress:
+            await on_progress("Generating answer...")
 
         # Build context from (reranked) sources
         context_parts = []
@@ -176,8 +194,9 @@ class RAGQueryEngine:
         # Convert to RetrievalResult objects
         retrieval_results = self._convert_to_retrieval_results(results)
 
-        # Stage 2: Rerank if enabled
-        if use_rerank and self.reranker.enabled:
+        # Stage 2: Rerank if enabled (skip if too few results)
+        effective_top_n = rerank_top_n or self.reranker.top_n
+        if use_rerank and self.reranker.enabled and len(retrieval_results) > effective_top_n:
             retrieval_results = self._rerank_retrieval_results(
                 question, retrieval_results, rerank_top_n
             )
@@ -464,8 +483,9 @@ Please provide a comprehensive answer based on the above context. If you referen
             )
             sources.append(source)
 
-        # Apply reranking if enabled
-        if use_rerank and self.reranker.enabled:
+        # Apply reranking if enabled (skip if too few results)
+        effective_top_n = rerank_top_n or self.reranker.top_n
+        if use_rerank and self.reranker.enabled and len(sources) > effective_top_n:
             sources = self.reranker.rerank_results(
                 query=question,
                 sources=sources,
