@@ -444,7 +444,8 @@ Please provide a comprehensive answer based on the above context. If you referen
         similarity_threshold: float = 0.5,
         rerank_top_n: Optional[int] = None,
         use_rerank: bool = True,
-    ) -> List[SourceReference]:
+        on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> List[RetrievalResult]:
         """Search for relevant chunks without generating an answer.
 
         Args:
@@ -453,10 +454,14 @@ Please provide a comprehensive answer based on the above context. If you referen
             similarity_threshold: Minimum similarity score.
             rerank_top_n: Final results after reranking.
             use_rerank: Whether to use reranking.
+            on_progress: Optional async callback for progress updates.
 
         Returns:
-            List of source references.
+            List of retrieval results with citation metadata.
         """
+        if on_progress:
+            await on_progress("Searching documents...")
+
         query_embedding = await self.embeddings.generate_embedding(question)
 
         results = await self.db.search_similar_chunks(
@@ -465,34 +470,22 @@ Please provide a comprehensive answer based on the above context. If you referen
             match_count=top_k,
         )
 
-        sources = []
-        for result in results:
-            source = SourceReference(
-                file_path=result["file_path"],
-                document_type=result["document_type"],
-                email_subject=result.get("email_subject"),
-                email_initiator=result.get("email_initiator"),
-                email_participants=result.get("email_participants"),
-                email_date=(
-                    result["email_date"].isoformat() if result.get("email_date") else None
-                ),
-                chunk_content=result["content"][: self.chunk_display_max_chars],
-                similarity_score=result["similarity"],
-                heading_path=result.get("heading_path") or [],
-                root_file_path=result.get("root_file_path"),
-            )
-            sources.append(source)
+        if not results:
+            return []
+
+        # Convert to RetrievalResult (includes chunk_id, archive URIs for citations)
+        retrieval_results = self._convert_to_retrieval_results(results)
 
         # Apply reranking if enabled (skip if too few results)
         effective_top_n = rerank_top_n or self.reranker.top_n
-        if use_rerank and self.reranker.enabled and len(sources) > effective_top_n:
-            sources = self.reranker.rerank_results(
-                query=question,
-                sources=sources,
-                top_n=rerank_top_n,
+        if use_rerank and self.reranker.enabled and len(retrieval_results) > effective_top_n:
+            if on_progress:
+                await on_progress("Reranking results...")
+            retrieval_results = self._rerank_retrieval_results(
+                question, retrieval_results, rerank_top_n
             )
 
-        return sources
+        return retrieval_results
 
     async def close(self):
         """Close database connections."""

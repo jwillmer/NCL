@@ -900,14 +900,15 @@ async def _search(
 
         for i, source in enumerate(sources, 1):
             # Show rerank score if available, otherwise similarity score
-            relevance = source.rerank_score if source.rerank_score is not None else source.similarity_score
+            relevance = source.rerank_score if source.rerank_score is not None else source.score
             relevance_label = f"{relevance:.1%}" + (" ✓" if source.rerank_score is not None else "")
+            file_name = Path(source.file_path).name if source.file_path else "-"
             table.add_row(
                 str(i),
-                Path(source.file_path).name,
+                file_name,
                 source.email_subject or "-",
                 relevance_label,
-                source.chunk_content[:100] + "...",
+                source.text[:100] + "..." if source.text else "-",
             )
 
         console.print(table)
