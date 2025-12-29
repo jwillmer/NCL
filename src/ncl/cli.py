@@ -185,6 +185,11 @@ def ingest(
         "--retry-failed",
         help="Retry previously failed files",
     ),
+    reprocess_outdated: bool = typer.Option(
+        False,
+        "--reprocess-outdated",
+        help="Reprocess files that were ingested with an older version",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -201,7 +206,7 @@ def ingest(
     original_handler = signal.signal(signal.SIGINT, _handle_interrupt)
 
     try:
-        asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed))
+        asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed, reprocess_outdated))
     except KeyboardInterrupt:
         console.print("[yellow]Processing stopped by user[/yellow]")
     finally:
@@ -216,6 +221,7 @@ async def _ingest(
     batch_size: int,
     resume: bool,
     retry_failed: bool,
+    reprocess_outdated: bool = False,
 ):
     """Async implementation of ingest command."""
     global _shutdown_requested
@@ -241,7 +247,10 @@ async def _ingest(
 
     try:
         # Get files to process
-        if retry_failed:
+        if reprocess_outdated:
+            files = await tracker.get_outdated_files(source_dir, settings.current_ingest_version)
+            console.print(f"[yellow]Reprocessing {len(files)} outdated files (ingest_version < {settings.current_ingest_version})[/yellow]")
+        elif retry_failed:
             files = await tracker.get_failed_files()
             console.print(f"[yellow]Retrying {len(files)} failed files[/yellow]")
         elif resume:
@@ -393,6 +402,9 @@ async def _process_single_email(
             return
         elif decision.action == "reprocess":
             vprint(f"Reprocessing: {decision.reason}", file_ctx)
+            # Delete old document (cascades to child docs and chunks)
+            if decision.existing_doc_id:
+                db.delete_document_for_reprocess(decision.existing_doc_id)
         elif decision.action == "update":
             vprint(f"Updating: {decision.reason}", file_ctx)
     else:

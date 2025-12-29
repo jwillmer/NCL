@@ -56,6 +56,67 @@ class ProgressTracker:
 
         return pending
 
+    async def get_outdated_files(self, source_dir: Path, target_version: int) -> List[Path]:
+        """Get files that were processed with an older ingest version.
+
+        Args:
+            source_dir: Directory to scan for EML files.
+            target_version: Target ingest version. Files processed with
+                           ingest_version < target_version are returned.
+
+        Returns:
+            List of file paths that need reprocessing.
+        """
+        return await anyio.to_thread.run_sync(
+            partial(self._get_outdated_files_sync, source_dir, target_version)
+        )
+
+    def _get_outdated_files_sync(self, source_dir: Path, target_version: int) -> List[Path]:
+        """Synchronous implementation of get_outdated_files."""
+        # Get completed file hashes from processing_log
+        log_result = (
+            self.db.client.table("processing_log")
+            .select("file_path, file_hash")
+            .eq("status", ProcessingStatus.COMPLETED.value)
+            .execute()
+        )
+
+        if not log_result.data:
+            return []
+
+        # Build hash to file_path mapping
+        hash_to_path = {row["file_hash"]: Path(row["file_path"]) for row in log_result.data}
+        completed_hashes = list(hash_to_path.keys())
+
+        # Query documents with these hashes that have old ingest_version
+        # Supabase doesn't support joins, so we query documents by file_hash
+        outdated_hashes = set()
+
+        # Process in batches to avoid query limits
+        batch_size = 100
+        for i in range(0, len(completed_hashes), batch_size):
+            batch = completed_hashes[i:i + batch_size]
+            doc_result = (
+                self.db.client.table("documents")
+                .select("file_hash")
+                .in_("file_hash", batch)
+                .lt("ingest_version", target_version)
+                .is_("parent_id", "null")  # Only root documents (not attachments)
+                .execute()
+            )
+            for row in doc_result.data:
+                outdated_hashes.add(row["file_hash"])
+
+        # Filter to files that exist in source_dir and have outdated versions
+        all_files = set(source_dir.glob("**/*.eml"))
+        outdated_files = []
+
+        for file_hash, file_path in hash_to_path.items():
+            if file_hash in outdated_hashes and file_path in all_files:
+                outdated_files.append(file_path)
+
+        return outdated_files
+
     async def mark_started(self, file_path: Path, file_hash: str):
         """Mark a file as started processing.
 

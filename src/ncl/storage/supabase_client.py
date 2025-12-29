@@ -59,6 +59,17 @@ class SupabaseClient:
             await self._pool.close()
             self._pool = None
 
+    def delete_document_for_reprocess(self, doc_id: UUID):
+        """Delete a document and its children to prepare for reprocessing.
+
+        Child documents (attachments) and chunks are automatically deleted
+        due to ON DELETE CASCADE constraints in the database schema.
+
+        Args:
+            doc_id: UUID of the document to delete.
+        """
+        self.client.table("documents").delete().eq("id", str(doc_id)).execute()
+
     # ==================== Document Operations ====================
 
     async def insert_document(self, doc: Document) -> Document:
