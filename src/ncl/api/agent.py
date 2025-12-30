@@ -120,6 +120,17 @@ async def chat_node(
 
     system_message = SystemMessage(content=_load_system_prompt())
 
+    # Check if we have search context (coming back from search_node)
+    citation_map_data = state.get("citation_map")
+    logger.debug("chat_node called, citation_map_data present: %s", citation_map_data is not None)
+
+    if citation_map_data:
+        # Update progress - generating answer
+        logger.debug("Emitting 'Generating answer...' progress")
+        state["search_progress"] = "Generating answer..."
+        state["is_searching"] = True  # Keep the searching indicator active
+        await copilotkit_emit_state(config, state)
+
     response = await model_with_tools.ainvoke(
         [system_message, *state["messages"]],
         config,
@@ -130,9 +141,13 @@ async def chat_node(
         return Command(goto="search_node", update={"messages": [response]})
 
     # No tool call - process citations inline before returning
-    citation_map_data = state.get("citation_map")
     if citation_map_data:
         try:
+            # Update progress - validating citations
+            logger.debug("Emitting 'Validating citations...' progress")
+            state["search_progress"] = "Validating citations..."
+            await copilotkit_emit_state(config, state)
+
             # Deserialize and process citations
             citation_map = {
                 k: _deserialize_retrieval_result(v) for k, v in citation_map_data.items()
@@ -149,6 +164,12 @@ async def chat_node(
         except Exception as e:
             logger.error("Citation processing failed: %s", str(e), exc_info=True)
             # Continue with original response on error
+        finally:
+            # Clear progress
+            logger.debug("Clearing progress indicators")
+            state["search_progress"] = ""
+            state["is_searching"] = False
+            await copilotkit_emit_state(config, state)
 
     return Command(goto=END, update={"messages": [response], "citation_map": None})
 
@@ -242,9 +263,10 @@ async def search_node(
             tool_call_id=tool_call["id"],
         )
 
-        # Update state - done searching
-        state["is_searching"] = False
-        state["search_progress"] = ""
+        # Update state - search complete, moving to answer generation
+        # Keep is_searching=True so the UI continues showing progress
+        # chat_node will clear it after generating the answer
+        state["search_progress"] = "Processing results..."
         state["current_query"] = None
         await copilotkit_emit_state(config, state)
 

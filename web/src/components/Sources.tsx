@@ -96,6 +96,44 @@ function useCitationContext() {
   return context;
 }
 
+// Export the hook for use in custom AssistantMessage
+export { useCitationContext };
+
+// =============================================================================
+// MessageCitationProvider - Per-message citation context
+// =============================================================================
+
+interface MessageCitationProviderProps {
+  children: ReactNode;
+  onViewCitation: (id: string) => void;
+}
+
+/**
+ * Per-message citation context that collects citations only for a single message.
+ * Each assistant message gets its own instance, isolating citations per response.
+ */
+export function MessageCitationProvider({ children, onViewCitation }: MessageCitationProviderProps) {
+  const [citations, setCitations] = useState<Map<string, CitationEntry>>(new Map());
+
+  const addCitation = useCallback((entry: CitationEntry) => {
+    setCitations((prev) => {
+      const next = new Map(prev);
+      next.set(entry.id, entry);
+      return next;
+    });
+  }, []);
+
+  const clearCitations = useCallback(() => {
+    setCitations(new Map());
+  }, []);
+
+  return (
+    <CitationContext.Provider value={{ citations, addCitation, clearCitations, onViewCitation }}>
+      {children}
+    </CitationContext.Provider>
+  );
+}
+
 // =============================================================================
 // CiteRenderer - Renders <cite> tags as inline citation badges
 // =============================================================================
@@ -103,7 +141,21 @@ function useCitationContext() {
 function CiteRenderer(props: CiteProps) {
   const { id, title, page, lines, download, children } = props;
   const { addCitation, onViewCitation } = useCitationContext();
-  const index = typeof children === "string" ? parseInt(children, 10) : 0;
+
+  // Extract index from children - ReactMarkdown may pass string, number, or array
+  let index = 0;
+  if (typeof children === "string") {
+    index = parseInt(children, 10) || 0;
+  } else if (typeof children === "number") {
+    index = children;
+  } else if (Array.isArray(children) && children.length > 0) {
+    const first = children[0];
+    if (typeof first === "string") {
+      index = parseInt(first, 10) || 0;
+    } else if (typeof first === "number") {
+      index = first;
+    }
+  }
 
   // If no id, render children as-is (fallback for malformed tags)
   if (!id) {
@@ -128,21 +180,31 @@ function CiteRenderer(props: CiteProps) {
 
   const displayTitle = title || "Source";
 
+  // Use a span-based tooltip to avoid hydration errors when citation is inside <p>
+  // The tooltip content uses Portal so it won't cause nesting issues
   return (
-    <TooltipProvider>
+    <TooltipProvider delayDuration={300}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <button
+          <span
+            role="button"
+            tabIndex={0}
             onClick={() => onViewCitation(id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onViewCitation(id);
+              }
+            }}
             className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 text-xs font-medium text-ncl-blue bg-ncl-blue/10 rounded hover:bg-ncl-blue/20 transition-colors cursor-pointer align-super"
             aria-label={`View source: ${displayTitle}`}
           >
             {children}
-          </button>
+          </span>
         </TooltipTrigger>
-        <TooltipContent>
-          <p className="text-sm">{displayTitle}</p>
-          {page && <p className="text-xs text-muted-foreground">Page {page}</p>}
+        <TooltipContent side="top" sideOffset={4}>
+          <span className="text-sm">{displayTitle}</span>
+          {page && <span className="text-xs text-muted-foreground ml-2">Page {page}</span>}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -319,7 +381,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDial
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl h-[80vh] flex flex-col overflow-hidden">
+      <DialogContent className="max-w-4xl h-[80vh] flex flex-col overflow-hidden" aria-describedby={undefined}>
         <DialogHeader className="flex-shrink-0">
           <div className="flex items-start justify-between gap-4 pr-8">
             <div>

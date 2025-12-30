@@ -39,7 +39,9 @@
       "Bash(cmd /c \"if exist c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive \\(dir /s /b c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive\\) else \\(echo Archive directory does not exist\\)\")",
       "Bash(uv run ncl ingest:*)",
       "Bash(cmd /c \"dir c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\")",
-      "Bash(cmd /c \"dir c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive\\\\02c1307f24a6576d /a /s\")"
+      "Bash(cmd /c \"dir c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive\\\\02c1307f24a6576d /a /s\")",
+      "Bash(xargs ls:*)",
+      "Bash(grep:*)"
     ]
   }
 }
