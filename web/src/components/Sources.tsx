@@ -47,6 +47,7 @@ interface CitationEntry {
   id: string;
   index: number;
   title: string;
+  titleLoading?: boolean;
   page?: number;
   lines?: [number, number];
   download?: string;
@@ -55,6 +56,7 @@ interface CitationEntry {
 interface CitationContextType {
   citations: Map<string, CitationEntry>;
   addCitation: (entry: CitationEntry) => void;
+  updateCitationTitle: (id: string, title: string) => void;
   clearCitations: () => void;
   onViewCitation: (id: string) => void;
 }
@@ -77,12 +79,22 @@ export function CitationProvider({ children, onViewCitation }: CitationProviderP
     });
   }, []);
 
+  const updateCitationTitle = useCallback((id: string, title: string) => {
+    setCitations((prev) => {
+      const existing = prev.get(id);
+      if (!existing) return prev;
+      const next = new Map(prev);
+      next.set(id, { ...existing, title, titleLoading: false });
+      return next;
+    });
+  }, []);
+
   const clearCitations = useCallback(() => {
     setCitations(new Map());
   }, []);
 
   return (
-    <CitationContext.Provider value={{ citations, addCitation, clearCitations, onViewCitation }}>
+    <CitationContext.Provider value={{ citations, addCitation, updateCitationTitle, clearCitations, onViewCitation }}>
       {children}
     </CitationContext.Provider>
   );
@@ -123,12 +135,22 @@ export function MessageCitationProvider({ children, onViewCitation }: MessageCit
     });
   }, []);
 
+  const updateCitationTitle = useCallback((id: string, title: string) => {
+    setCitations((prev) => {
+      const existing = prev.get(id);
+      if (!existing) return prev;
+      const next = new Map(prev);
+      next.set(id, { ...existing, title, titleLoading: false });
+      return next;
+    });
+  }, []);
+
   const clearCitations = useCallback(() => {
     setCitations(new Map());
   }, []);
 
   return (
-    <CitationContext.Provider value={{ citations, addCitation, clearCitations, onViewCitation }}>
+    <CitationContext.Provider value={{ citations, addCitation, updateCitationTitle, clearCitations, onViewCitation }}>
       {children}
     </CitationContext.Provider>
   );
@@ -207,7 +229,8 @@ function ImgCiteRenderer(props: ImgCiteProps) {
 
 function CiteRenderer(props: CiteProps) {
   const { id, title, page, lines, download, children } = props;
-  const { addCitation, onViewCitation } = useCitationContext();
+  const { citations, addCitation, updateCitationTitle, onViewCitation } = useCitationContext();
+  const { session } = useAuth();
 
   // Extract index from children - ReactMarkdown may pass string, number, or array
   let index = 0;
@@ -229,6 +252,9 @@ function CiteRenderer(props: CiteProps) {
     return <>{children}</>;
   }
 
+  // Track if title needs fetching
+  const needsTitleFetch = !title;
+
   // Register this citation when it renders
   useEffect(() => {
     const parsedLines = lines
@@ -239,13 +265,41 @@ function CiteRenderer(props: CiteProps) {
       id,
       index,
       title: title || "Source",
+      titleLoading: needsTitleFetch,
       page: page ? parseInt(page, 10) : undefined,
       lines: parsedLines,
       download,
     });
-  }, [id, index, title, page, lines, download, addCitation]);
+  }, [id, index, title, page, lines, download, addCitation, needsTitleFetch]);
 
-  const displayTitle = title || "Source";
+  // Fetch title from API if not provided in the cite tag
+  useEffect(() => {
+    if (!needsTitleFetch || !session?.access_token) return;
+
+    const fetchTitle = async () => {
+      try {
+        const response = await fetch(`/api/citations/${id}`, {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.source_title) {
+            updateCitationTitle(id, data.source_title);
+          }
+        }
+      } catch {
+        // Silently fail - "Source" fallback is acceptable
+      }
+    };
+
+    fetchTitle();
+  }, [id, needsTitleFetch, session?.access_token, updateCitationTitle]);
+
+  // Get title from context (updates when fetched) or fall back to prop/default
+  const citationEntry = id ? citations.get(id) : undefined;
+  const displayTitle = citationEntry?.title || title || "Source";
 
   // Use a span-based tooltip to avoid hydration errors when citation is inside <p>
   // The tooltip content uses Portal so it won't cause nesting issues
@@ -359,9 +413,13 @@ function SourceItem({ citation, onView }: SourceItemProps) {
           {citation.index}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-ncl-blue-dark truncate">
-            {citation.title}
-          </p>
+          {citation.titleLoading ? (
+            <Skeleton className="h-4 w-48" />
+          ) : (
+            <p className="text-sm font-medium text-ncl-blue-dark truncate">
+              {citation.title}
+            </p>
+          )}
           {locationParts.length > 0 && (
             <p className="text-xs text-ncl-gray">{locationParts.join(" | ")}</p>
           )}
