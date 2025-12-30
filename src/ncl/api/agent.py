@@ -49,12 +49,8 @@ class AgentState(CopilotKitState):
     Extends CopilotKitState to enable bidirectional state sync with frontend.
     """
 
-    is_searching: bool = False
     search_progress: str = ""
-    current_query: Optional[str] = None
     error_message: Optional[str] = None
-    # Citation map for validation (chunk_id -> serialized RetrievalResult)
-    citation_map: Optional[Dict[str, Any]] = None
 
 
 def _load_system_prompt() -> str:
@@ -129,7 +125,6 @@ async def chat_node(
         # Update progress - generating answer
         logger.debug("Emitting 'Generating answer...' progress")
         state["search_progress"] = "Generating answer..."
-        state["is_searching"] = True  # Keep the searching indicator active
         await copilotkit_emit_state(config, state)
 
     response = await model_with_tools.ainvoke(
@@ -169,7 +164,6 @@ async def chat_node(
             # Clear progress
             logger.debug("Clearing progress indicators")
             state["search_progress"] = ""
-            state["is_searching"] = False
             await copilotkit_emit_state(config, state)
 
     return Command(goto=END, update={"messages": [response], "citation_map": None})
@@ -202,8 +196,6 @@ async def search_node(
         return Command(goto="chat_node", update={"messages": [tool_response]})
 
     # Update state - starting search
-    state["is_searching"] = True
-    state["current_query"] = question
     state["search_progress"] = "Initializing search..."
     state["error_message"] = None
     await copilotkit_emit_state(config, state)
@@ -229,9 +221,7 @@ async def search_node(
 
         if not retrieval_results:
             # No results found
-            state["is_searching"] = False
             state["search_progress"] = ""
-            state["current_query"] = None
             await copilotkit_emit_state(config, state)
 
             tool_response = ToolMessage(
@@ -265,10 +255,7 @@ async def search_node(
         )
 
         # Update state - search complete, moving to answer generation
-        # Keep is_searching=True so the UI continues showing progress
-        # chat_node will clear it after generating the answer
         state["search_progress"] = "Processing results..."
-        state["current_query"] = None
         await copilotkit_emit_state(config, state)
 
         return Command(
@@ -283,7 +270,6 @@ async def search_node(
         logger.error("RAG search failed: %s", str(e), exc_info=True)
 
         # Update state with error
-        state["is_searching"] = False
         state["search_progress"] = ""
         state["error_message"] = str(e)
         await copilotkit_emit_state(config, state)
