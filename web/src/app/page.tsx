@@ -1,18 +1,23 @@
 "use client";
 
 /**
- * Main page with CopilotKit integration.
- * Handles authentication flow and renders the chat interface.
+ * Main page - redirects to conversations list.
+ * Unauthenticated users see the login form.
  */
 
-import { CopilotKit } from "@copilotkit/react-core";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth, LoginForm } from "@/components/auth";
-import { MainLayout } from "@/components/Layout";
-import { ChatContainer } from "@/components/ChatContainer";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
 
-function AuthenticatedApp() {
+export default function Home() {
+  const router = useRouter();
   const { session, loading } = useAuth();
+
+  useEffect(() => {
+    if (!loading && session) {
+      router.replace("/conversations");
+    }
+  }, [loading, session, router]);
 
   if (loading) {
     return (
@@ -26,25 +31,10 @@ function AuthenticatedApp() {
     return <LoginForm />;
   }
 
+  // Brief loading state while redirecting
   return (
-    <CopilotKit
-      runtimeUrl="/api/copilotkit"
-      agent="default"
-      headers={{
-        Authorization: `Bearer ${session.access_token}`,
-      }}
-    >
-      <MainLayout>
-        <ChatContainer />
-      </MainLayout>
-    </CopilotKit>
-  );
-}
-
-export default function Home() {
-  return (
-    <ErrorBoundary>
-      <AuthenticatedApp />
-    </ErrorBoundary>
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="text-ncl-gray">Redirecting...</div>
+    </div>
   );
 }

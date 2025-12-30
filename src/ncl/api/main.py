@@ -2,6 +2,8 @@
 
 This server exposes the LangGraph agent endpoint with defense-in-depth authentication.
 JWT tokens are validated both at the CopilotKit runtime (Node.js) and here.
+
+Conversation history is persisted via LangGraph's AsyncPostgresSaver checkpointer.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from copilotkit import LangGraphAGUIAgent
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -23,7 +26,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..config import get_settings
 from ..storage.supabase_client import SupabaseClient
-from .agent import agent_graph
+from .agent import create_graph
+from .conversations import router as conversations_router
 from .middleware.auth import SupabaseJWTBearer
 
 logger = logging.getLogger(__name__)
@@ -42,6 +46,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """Validate JWT token for protected routes."""
         # Skip auth for public paths
         if request.url.path in self.PUBLIC_PATHS:
+            return await call_next(request)
+
+        # Skip auth for CORS preflight requests (OPTIONS)
+        # These don't include auth headers and are handled by CORSMiddleware
+        if request.method == "OPTIONS":
             return await call_next(request)
 
         # Validate JWT for all other routes
@@ -86,8 +95,41 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager."""
-    yield
+    """Application lifespan manager.
+
+    Initializes the LangGraph PostgreSQL checkpointer for conversation persistence.
+    The checkpointer is stored in app.state for access by the agent graph.
+    """
+    settings = get_settings()
+
+    # Initialize AsyncPostgresSaver for LangGraph conversation persistence
+    logger.info("Initializing LangGraph checkpointer...")
+    async with AsyncPostgresSaver.from_conn_string(settings.supabase_db_url) as checkpointer:
+        # Setup creates checkpoint tables if they don't exist
+        await checkpointer.setup()
+        logger.info("LangGraph checkpointer initialized successfully")
+
+        # Store checkpointer in app.state for access by agent
+        app.state.checkpointer = checkpointer
+
+        # Create agent graph with checkpointer
+        app.state.agent_graph = create_graph(checkpointer)
+
+        # Add LangGraph agent endpoint via AG-UI protocol
+        add_langgraph_fastapi_endpoint(
+            app=app,
+            agent=LangGraphAGUIAgent(
+                name="default",
+                description="NCL Email RAG Agent for document Q&A",
+                graph=app.state.agent_graph,
+            ),
+            path="/copilotkit",
+        )
+        logger.info("LangGraph agent endpoint registered at /copilotkit")
+
+        yield
+
+        logger.info("Shutting down LangGraph checkpointer...")
 
 
 def create_app() -> FastAPI:
@@ -277,16 +319,8 @@ def create_app() -> FastAPI:
             "content": content,
         }
 
-    # Add LangGraph agent endpoint via AG-UI protocol
-    add_langgraph_fastapi_endpoint(
-        app=app,
-        agent=LangGraphAGUIAgent(
-            name="default",
-            description="NCL Email RAG Agent for document Q&A",
-            graph=agent_graph,
-        ),
-        path="/copilotkit",
-    )
+    # Include conversations router
+    app.include_router(conversations_router)
 
     return app
 

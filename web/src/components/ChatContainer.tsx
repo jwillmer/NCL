@@ -88,7 +88,14 @@ function CustomAssistantMessage(props: AssistantMessageProps) {
   );
 }
 
-export function ChatContainer() {
+interface ChatContainerProps {
+  /** Callback when user sends a message (for title generation and timestamp updates) */
+  onMessageSent?: (content: string) => void;
+  /** Whether the chat is read-only (e.g., archived conversations) */
+  disabled?: boolean;
+}
+
+export function ChatContainer({ onMessageSent, disabled }: ChatContainerProps) {
   const { state } = useCoAgent<RAGState>({
     name: "default",
     initialState: initialRAGState,
@@ -102,6 +109,13 @@ export function ChatContainer() {
     setSelectedChunkId(chunkId);
     setDialogOpen(true);
   }, []);
+
+  const handleSubmitMessage = useCallback(
+    (message: string) => {
+      onMessageSent?.(message);
+    },
+    [onMessageSent]
+  );
 
   // Render search progress during agent execution
   useCoAgentStateRender<RAGState>({
@@ -128,11 +142,16 @@ export function ChatContainer() {
           labels={{
             title: "MTSS Assistant",
             initial: "Hello! I can help you find solutions to technical issues on your vessel. Ask me about past maintenance problems, equipment failures, or search our knowledge base for technical documentation and procedures.",
-            placeholder: "Describe an issue or search for technical information...",
+            placeholder: disabled
+              ? "This conversation is archived (read-only)"
+              : "Describe an issue or search for technical information...",
           }}
-          className="flex-1 [&_.copilotKitChat]:h-full [&_.copilotKitMessages]:max-h-[calc(100vh-16rem)]"
+          className={`flex-1 [&_.copilotKitChat]:h-full [&_.copilotKitMessages]:max-h-[calc(100vh-16rem)] ${
+            disabled ? "[&_.copilotKitInput]:opacity-50 [&_.copilotKitInput]:pointer-events-none" : ""
+          }`}
           markdownTagRenderers={sourceTagRenderers}
           AssistantMessage={CustomAssistantMessage}
+          onSubmitMessage={disabled ? undefined : handleSubmitMessage}
         />
 
         {/* Dialog for viewing full source content */}

@@ -32,6 +32,8 @@ dependencies = [
     "openai-agents>=0.6.4",
     # Nested async support (required for LlamaParse in async context)
     "nest-asyncio>=1.6.0",
+    "langgraph-checkpoint-postgres>=3.0.2",
+    "psycopg[binary]>=3.3.2",
 ]
 
 [project.optional-dependencies]

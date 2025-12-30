@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 
 import jwt
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 from pydantic import BaseModel
@@ -44,106 +44,125 @@ def get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 
-class SupabaseJWTBearer(HTTPBearer):
-    """JWT Bearer authentication using Supabase with PyJWT."""
+# Use HTTPBearer directly - don't subclass it to avoid __call__ override issues
+_bearer_scheme = HTTPBearer(auto_error=False)
 
-    def __init__(self, auto_error: bool = True):
-        super().__init__(auto_error=auto_error)
-        settings = get_settings()
-        self.jwt_secret = settings.supabase_jwt_secret
 
-    async def __call__(self, request: Request) -> Optional[UserPayload]:
-        credentials: Optional[HTTPAuthorizationCredentials] = await super().__call__(
-            request
-        )
+def _verify_jwt(token: str) -> Optional[UserPayload]:
+    """Verify JWT using Supabase's JWKS (ES256) or JWT secret (HS256)."""
+    settings = get_settings()
+    try:
+        # Get unverified header to determine algorithm
+        header = jwt.get_unverified_header(token)
+        alg = header.get("alg")
 
-        if not credentials:
-            if self.auto_error:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid authorization credentials",
-                )
-            return None
+        if alg == "ES256":
+            # Use PyJWKClient for ES256 (asymmetric) verification
+            jwks_client = get_jwks_client()
+            signing_key = jwks_client.get_signing_key_from_jwt(token)
 
-        if credentials.scheme.lower() != "bearer":
-            if self.auto_error:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid authentication scheme",
-                )
-            return None
-
-        payload = self._verify_jwt(credentials.credentials)
-        if not payload:
-            if self.auto_error:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid or expired token",
-                )
-            return None
-
-        return payload
-
-    def _verify_jwt(self, token: str) -> Optional[UserPayload]:
-        """Verify JWT using Supabase's JWKS (ES256) or JWT secret (HS256)."""
-        try:
-            # Get unverified header to determine algorithm
-            header = jwt.get_unverified_header(token)
-            alg = header.get("alg")
-
-            if alg == "ES256":
-                # Use PyJWKClient for ES256 (asymmetric) verification
-                jwks_client = get_jwks_client()
-                signing_key = jwks_client.get_signing_key_from_jwt(token)
-
-                payload = jwt.decode(
-                    token,
-                    signing_key.key,
-                    algorithms=["ES256"],
-                    audience="authenticated",
-                )
-            elif alg == "HS256":
-                # Use JWT secret for HS256 (symmetric) verification
-                if not self.jwt_secret:
-                    logger.warning("HS256 token but no JWT secret configured")
-                    return None
-
-                payload = jwt.decode(
-                    token,
-                    self.jwt_secret,
-                    algorithms=["HS256"],
-                    audience="authenticated",
-                )
-            else:
-                logger.warning("Unsupported JWT algorithm: %s", alg)
+            payload = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["ES256"],
+                audience="authenticated",
+            )
+        elif alg == "HS256":
+            # Use JWT secret for HS256 (symmetric) verification
+            jwt_secret = settings.supabase_jwt_secret
+            if not jwt_secret:
+                logger.warning("HS256 token but no JWT secret configured")
                 return None
 
-            logger.debug(
-                "JWT verified for user: %s",
-                payload.get("email", payload.get("sub")),
+            payload = jwt.decode(
+                token,
+                jwt_secret,
+                algorithms=["HS256"],
+                audience="authenticated",
             )
-            return UserPayload(
-                sub=payload.get("sub", ""),
-                email=payload.get("email"),
-                role=payload.get("role"),
-                aud=payload.get("aud"),
-            )
-        except jwt.ExpiredSignatureError:
-            logger.warning("JWT token has expired")
+        else:
+            logger.warning("Unsupported JWT algorithm: %s", alg)
             return None
-        except jwt.InvalidAudienceError:
-            logger.warning("JWT audience claim is invalid")
-            return None
-        except jwt.InvalidTokenError as e:
-            logger.warning("JWT verification failed: %s", str(e))
-            return None
-        except Exception as e:
-            logger.error("Unexpected error during JWT verification: %s", str(e))
-            return None
+
+        logger.debug(
+            "JWT verified for user: %s",
+            payload.get("email", payload.get("sub")),
+        )
+        return UserPayload(
+            sub=payload.get("sub", ""),
+            email=payload.get("email"),
+            role=payload.get("role"),
+            aud=payload.get("aud"),
+        )
+    except jwt.ExpiredSignatureError:
+        logger.warning("JWT token has expired")
+        return None
+    except jwt.InvalidAudienceError:
+        logger.warning("JWT audience claim is invalid")
+        return None
+    except jwt.InvalidTokenError as e:
+        logger.warning("JWT verification failed: %s", str(e))
+        return None
+    except Exception as e:
+        logger.error("Unexpected error during JWT verification: %s", str(e))
+        return None
 
 
 async def get_current_user(
-    user: UserPayload = Depends(SupabaseJWTBearer()),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ) -> UserPayload:
     """Dependency to get the current authenticated user."""
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication scheme",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = _verify_jwt(credentials.credentials)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
+
+
+# Keep SupabaseJWTBearer for backwards compatibility with AuthMiddleware in main.py
+class SupabaseJWTBearer:
+    """JWT Bearer authentication for use in middleware.
+
+    This class is used by AuthMiddleware which passes the Request directly.
+    For route dependencies, use get_current_user instead.
+    """
+
+    def __init__(self, auto_error: bool = True):
+        self.auto_error = auto_error
+        self._settings = get_settings()
+
+    async def __call__(self, request) -> Optional[UserPayload]:
+        """Validate JWT from request headers."""
+        from starlette.requests import Request
+
+        if not isinstance(request, Request):
+            return None
+
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header:
+            return None
+
+        parts = auth_header.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return None
+
+        token = parts[1]
+        return _verify_jwt(token)

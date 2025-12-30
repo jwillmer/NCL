@@ -31,7 +31,7 @@ from copilotkit.langgraph import copilotkit_emit_state
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command
 
@@ -306,8 +306,12 @@ async def search_node(
             await engine.close()
 
 
-def create_graph() -> StateGraph:
-    """Create the LangGraph agent graph.
+def create_graph(checkpointer: BaseCheckpointSaver) -> StateGraph:
+    """Create the LangGraph agent graph with persistence.
+
+    Args:
+        checkpointer: LangGraph checkpointer for conversation persistence.
+                      Use AsyncPostgresSaver for production, MemorySaver for testing.
 
     Flow:
         chat_node -> search_node -> chat_node -> END
@@ -326,10 +330,5 @@ def create_graph() -> StateGraph:
     # Set entry point
     graph.set_entry_point("chat_node")
 
-    # Compile with in-memory checkpointer (required for AG-UI protocol)
-    checkpointer = MemorySaver()
+    # Compile with provided checkpointer for conversation persistence
     return graph.compile(checkpointer=checkpointer)
-
-
-# Create compiled graph instance
-agent_graph = create_graph()

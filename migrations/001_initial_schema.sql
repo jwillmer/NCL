@@ -7,6 +7,7 @@
 -- ============================================
 
 -- Drop tables first (CASCADE handles triggers and dependent objects)
+DROP TABLE IF EXISTS conversations CASCADE;
 DROP TABLE IF EXISTS ingest_versions CASCADE;
 DROP TABLE IF EXISTS unsupported_files CASCADE;
 DROP TABLE IF EXISTS chunks CASCADE;
@@ -257,6 +258,36 @@ INSERT INTO ingest_versions (version, description, breaking_changes) VALUES
     (1, 'Initial schema with contextual chunking, citations, and browsable archive', FALSE);
 
 -- ============================================
+-- CONVERSATIONS TABLE
+-- Stores conversation metadata only - messages are persisted
+-- by LangGraph's AsyncPostgresSaver checkpointer
+-- ============================================
+CREATE TABLE conversations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id UUID UNIQUE NOT NULL,              -- Links to LangGraph checkpoints
+    user_id UUID NOT NULL,                       -- Supabase auth user (no FK for flexibility)
+    title TEXT,                                  -- Auto-generated or user-edited
+    vessel_filter TEXT,                          -- Vessel name filter (NULL = all vessels)
+    is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_message_at TIMESTAMPTZ                  -- Updated on each message for sorting
+);
+
+-- Fast lookup by user
+CREATE INDEX idx_conversations_user_id ON conversations(user_id);
+
+-- Sort by recent activity (most common query)
+CREATE INDEX idx_conversations_user_recent ON conversations(user_id, last_message_at DESC NULLS LAST);
+
+-- Filter by archived status
+CREATE INDEX idx_conversations_user_archived ON conversations(user_id, is_archived);
+
+-- Full-text search on title
+CREATE INDEX idx_conversations_search ON conversations
+    USING gin(to_tsvector('english', COALESCE(title, '')));
+
+-- ============================================
 -- VECTOR SEARCH FUNCTION
 -- ============================================
 CREATE OR REPLACE FUNCTION match_chunks(
@@ -373,18 +404,37 @@ ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE processing_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE unsupported_files ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ingest_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
 
--- Default policy: allow all for service role (adjust for multi-tenant if needed)
+-- Service role policies for backend operations (restricted to service_role)
 CREATE POLICY "Service role full access to documents" ON documents
-    FOR ALL USING (true);
+    FOR ALL TO service_role USING (true);
 CREATE POLICY "Service role full access to chunks" ON chunks
-    FOR ALL USING (true);
+    FOR ALL TO service_role USING (true);
 CREATE POLICY "Service role full access to processing_log" ON processing_log
-    FOR ALL USING (true);
+    FOR ALL TO service_role USING (true);
 CREATE POLICY "Service role full access to unsupported_files" ON unsupported_files
-    FOR ALL USING (true);
+    FOR ALL TO service_role USING (true);
 CREATE POLICY "Service role full access to ingest_versions" ON ingest_versions
-    FOR ALL USING (true);
+    FOR ALL TO service_role USING (true);
+CREATE POLICY "Service role full access to conversations" ON conversations
+    FOR ALL TO service_role USING (true);
+
+-- Authenticated users can read chunks and documents (for search/retrieval)
+CREATE POLICY "Authenticated users can read documents" ON documents
+    FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Authenticated users can read chunks" ON chunks
+    FOR SELECT TO authenticated USING (true);
+
+-- Conversations: users can only access their own
+CREATE POLICY "Users can view own conversations" ON conversations
+    FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own conversations" ON conversations
+    FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can update own conversations" ON conversations
+    FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users can delete own conversations" ON conversations
+    FOR DELETE TO authenticated USING (auth.uid() = user_id);
 
 -- ============================================
 -- TRIGGER FOR updated_at
@@ -406,3 +456,17 @@ CREATE TRIGGER update_processing_log_updated_at
     BEFORE UPDATE ON processing_log
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_conversations_updated_at
+    BEFORE UPDATE ON conversations
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================
+-- NOTES
+-- ============================================
+-- LangGraph's AsyncPostgresSaver creates its own tables automatically:
+--   - checkpoints
+--   - checkpoint_writes
+--   - checkpoint_blobs
+-- These store the actual message history per thread_id.

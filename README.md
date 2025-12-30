@@ -237,11 +237,27 @@ AGENT_URL=http://localhost:8000/copilotkit
 ### Features
 
 - **Chat Interface:** Conversational AI for document Q&A powered by CopilotKit
+- **Conversation History:** Browse, search, and continue previous conversations
 - **Streaming Progress:** Real-time search progress updates (Searching → Reranking → Formatting)
 - **Authentication:** Supabase Auth with JWT validation in API route
 - **Interactive Citations:** Clickable citation badges with source viewer dialog and file downloads
 - **Agent State Sync:** Bidirectional state between frontend and Python agent via LangGraph
 - **Professional Design:** NCL brand colors and responsive layout
+
+### Conversation History
+
+The web interface includes persistent conversation storage:
+
+- **Conversation List:** Main page (`/conversations`) shows all conversations with search and date grouping
+- **Auto-naming:** Conversations are automatically titled based on the first message
+- **Vessel Filter:** UI placeholder for filtering by vessel (logic to be implemented)
+- **Message Persistence:** Messages are automatically saved and restored via LangGraph's checkpointer
+- **Private Conversations:** Each user only sees their own conversations (Row-Level Security)
+
+**Database Setup:**
+
+The conversations table is included in the main schema migration (`migrations/001_initial_schema.sql`).
+LangGraph automatically creates its own checkpoint tables (`checkpoints`, `checkpoint_writes`, `checkpoint_blobs`) for message persistence.
 
 See [docs/authentication.md](docs/authentication.md) for detailed auth flow documentation.
 
@@ -250,6 +266,22 @@ See [docs/authentication.md](docs/authentication.md) for detailed auth flow docu
 When running the API server, OpenAPI documentation is available at:
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
+
+### Conversations Endpoint
+
+The conversations API manages conversation metadata (messages are handled by LangGraph):
+
+```
+GET    /conversations              # List conversations (with ?q=, ?archived=, ?limit=, ?offset=)
+POST   /conversations              # Create new conversation
+GET    /conversations/{thread_id}  # Get conversation by thread_id
+PATCH  /conversations/{thread_id}  # Update title, vessel_filter, or archive status
+DELETE /conversations/{thread_id}  # Delete conversation
+POST   /conversations/{thread_id}/touch          # Update last_message_at timestamp
+POST   /conversations/{thread_id}/generate-title # Auto-generate title from message
+```
+
+**Authentication:** Requires Supabase JWT token
 
 ### Archive Endpoint
 
