@@ -14,6 +14,7 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 - **Citation System:** Validated citations with chunk-level references and archive links
 - **Browsable Archive:** Markdown versions of all content with download links via API
 - **Ingest Versioning:** Track schema version for bulk re-processing capability
+- **Vessel Filtering:** Filter search results by vessel - documents are automatically tagged during ingest
 
 ## Installation
 
@@ -73,13 +74,16 @@ cp .env.template .env
 #    for stable IDs, contextual chunking, and archive links. Existing
 #    databases must be recreated (ncl clean) or migrated manually.
 
-# 4. Ingest emails
+# 4. Import vessel register (optional - enables vessel filtering)
+uv run ncl vessels import data/vessel-list.csv
+
+# 5. Ingest emails
 uv run ncl ingest --source ./data/emails
 
-# 5. Query the system
+# 6. Query the system
 uv run ncl query "What did John say about the project deadline?"
 
-# 6. Search without generating answer
+# 7. Search without generating answer
 uv run ncl search "budget allocation" --top-k 10
 ```
 
@@ -101,6 +105,8 @@ See the [docs/](docs/) folder for detailed documentation:
 | `uv run ncl stats` | View processing statistics |
 | `uv run ncl reset-stale` | Reset files stuck in processing |
 | `uv run ncl reprocess` | Re-ingest documents with older ingest version |
+| `uv run ncl vessels import` | Import vessel register from CSV |
+| `uv run ncl vessels list` | List all vessels in registry |
 | `uv run ncl clean` | Delete all data (database + processed files) |
 
 ### Ingest Options
@@ -138,6 +144,27 @@ uv run ncl reprocess --target-version 2
 
 # Limit number of documents processed
 uv run ncl reprocess --limit 50
+```
+
+### Vessel Commands
+
+Import and manage the vessel register for document filtering:
+
+```bash
+# Import vessels from CSV (semicolon-delimited)
+uv run ncl vessels import data/vessel-list.csv
+
+# Clear existing vessels before import
+uv run ncl vessels import --clear
+
+# List all vessels in registry
+uv run ncl vessels list
+```
+
+CSV format (semicolon-delimited):
+```csv
+IMO_Number;Vessel_Name;Vessel_type;DWT
+9527295;MARAN THALEIA;VLCC;321225
 ```
 
 ### Clean Command

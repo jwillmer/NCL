@@ -245,7 +245,62 @@ Each worker slot shows:
 - Status indicator for embedding generation phase
 - Idle state when waiting for work
 
-### 11. Source Attribution
+### 11. Vessel Filtering
+
+NCL supports filtering search results by vessel. Documents are automatically tagged with vessel references during ingestion.
+
+**How Vessel Tagging Works:**
+
+During ingestion, NCL scans the **email subject and body** for vessel names and aliases from the vessel registry. Matched vessel IDs are stored in chunk metadata for filtering.
+
+```
+Email arrives → Parse subject + body → Match vessel names → Store vessel_ids in chunks
+```
+
+**Current Tagging Scope:**
+| Content | Scanned | Notes |
+|---------|---------|-------|
+| Email subject | Yes | Primary source of vessel references |
+| Email body | Yes | Includes all messages in thread |
+| Attachments | No | Inherit vessel tags from parent email |
+
+Attachments inherit the `vessel_ids` from their parent email. This means if an email mentions "MARAN THALEIA" in the subject or body, all attachments (PDFs, images, etc.) are also tagged with that vessel.
+
+**Why Email-Only Tagging:**
+- **Performance:** Scanning parsed attachment text would slow ingestion significantly
+- **Reliability:** Email subject/body usually names the vessel explicitly
+- **Simplicity:** Avoids false positives from vessel names appearing in unrelated document content
+
+**Future Enhancement:** Attachment content scanning can be added if email-level tagging proves insufficient. This would scan parsed text from PDFs, DOCX, etc. and merge found vessels with email-level matches. See `VesselMatcher.find_vessels()` in [vessel_matcher.py](../src/ncl/processing/vessel_matcher.py).
+
+**Vessel Matching:**
+- Case-insensitive matching
+- Word boundary detection (prevents "MARAN" matching "AMARANTO")
+- Supports vessel aliases (configured in registry)
+
+**Query Flow with Vessel Filter:**
+```
+User selects vessel → Frontend passes vessel_id → Agent builds metadata filter
+    → match_chunks filters by chunks.metadata @> '{"vessel_ids":["uuid"]}'
+    → Only matching chunks returned
+```
+
+**CLI Commands:**
+```bash
+# Import vessel registry from CSV
+uv run ncl vessels import data/vessel-list.csv
+
+# List all vessels
+uv run ncl vessels list
+```
+
+**CSV Format (semicolon-delimited):**
+```csv
+IMO_Number;Vessel_Name;Vessel_type;DWT
+9527295;MARAN THALEIA;VLCC;321225
+```
+
+### 12. Source Attribution
 
 Every answer includes traced sources with interactive citations in the web UI.
 

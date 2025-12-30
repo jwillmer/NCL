@@ -319,6 +319,41 @@ def create_app() -> FastAPI:
             "content": content,
         }
 
+    # Vessels endpoint for dropdown lists
+    @app.get("/vessels")
+    @limiter.limit("60/minute")
+    async def list_vessels(request: Request):
+        """Get all vessels for dropdown selection.
+
+        Returns minimal vessel info (id, name, imo, type) for filtering.
+
+        Args:
+            request: FastAPI request object (user available in request.state.user)
+
+        Returns:
+            List of vessel summaries ordered by name
+        """
+        client = SupabaseClient()
+        try:
+            vessels = await client.get_vessel_summaries()
+            user = getattr(request.state, "user", None)
+            logger.debug(
+                "Serving %d vessels to user %s",
+                len(vessels),
+                getattr(user, "email", "unknown") if user else "unknown",
+            )
+            return [
+                {
+                    "id": str(v.id),
+                    "name": v.name,
+                    "imo": v.imo,
+                    "vessel_type": v.vessel_type,
+                }
+                for v in vessels
+            ]
+        finally:
+            await client.close()
+
     # Include conversations router
     app.include_router(conversations_router)
 

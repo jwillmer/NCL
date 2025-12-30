@@ -41,6 +41,7 @@ from .processing.archive_generator import ArchiveGenerator
 from .processing.embeddings import EmbeddingGenerator
 from .processing.hierarchy_manager import HierarchyManager
 from .processing.version_manager import VersionManager
+from .processing.vessel_matcher import VesselMatcher
 from .rag.query_engine import RAGQueryEngine, format_response_with_sources
 from .storage.unsupported_file_logger import UnsupportedFileLogger
 from .storage.progress_tracker import ProgressTracker
@@ -51,6 +52,8 @@ app = typer.Typer(
     name="ncl",
     help="NCL - Email RAG Pipeline for processing EML files with attachments",
 )
+vessels_app = typer.Typer(help="Vessel registry management")
+app.add_typer(vessels_app, name="vessels")
 console = Console()
 
 # Module-level verbose flag
@@ -245,6 +248,14 @@ async def _ingest(
     context_generator = ContextGenerator()
     version_manager = VersionManager(db)
 
+    # Load vessel registry for matching
+    vessels = await db.get_all_vessels()
+    vessel_matcher = VesselMatcher(vessels) if vessels else None
+    if vessel_matcher:
+        vprint(f"Loaded {vessel_matcher.vessel_count} vessels ({vessel_matcher.name_count} names/aliases)")
+    else:
+        vprint("No vessels in registry - vessel tagging disabled")
+
     try:
         # Get files to process
         if reprocess_outdated:
@@ -331,6 +342,7 @@ async def _ingest(
                             archive_generator=archive_generator,
                             context_generator=context_generator,
                             version_manager=version_manager,
+                            vessel_matcher=vessel_matcher,
                             progress=progress,
                             worker_task=worker_task,
                             slot_idx=slot_idx,
@@ -381,6 +393,7 @@ async def _process_single_email(
     archive_generator: ArchiveGenerator | None = None,
     context_generator: ContextGenerator | None = None,
     version_manager: VersionManager | None = None,
+    vessel_matcher: VesselMatcher | None = None,
     progress: Progress | None = None,
     worker_task: TaskID | None = None,
     slot_idx: int | None = None,
@@ -450,6 +463,18 @@ async def _process_single_email(
         eml_path, parsed_email, archive_result=archive_result
     )
 
+    # Match vessels in email content
+    vessel_ids: list[str] = []
+    if vessel_matcher:
+        body_text_for_matching = eml_parser.get_body_text(parsed_email)
+        matched_vessels = vessel_matcher.find_vessels_in_email(
+            subject=parsed_email.metadata.subject,
+            body=body_text_for_matching,
+        )
+        vessel_ids = [str(v) for v in matched_vessels]
+        if vessel_ids:
+            vprint(f"Matched {len(vessel_ids)} vessel(s)", file_ctx)
+
     # Create chunks from email body
     email_chunks: list[Chunk] = []
     body_text = eml_parser.get_body_text(parsed_email)
@@ -494,13 +519,18 @@ async def _process_single_email(
                 # Only add context summary to the first message
                 embedding_text = context_generator.build_embedding_text(context_summary, cleaned_message)
 
+            # Build chunk metadata including vessel_ids for filtering
+            chunk_metadata = {"type": "email_body", "message_index": msg_idx}
+            if vessel_ids:
+                chunk_metadata["vessel_ids"] = vessel_ids
+
             email_chunks.append(
                 Chunk(
                     document_id=email_doc.id,
                     content=message,  # Store original message content
                     chunk_index=msg_idx,
                     heading_path=["Email Body", f"Message {msg_idx + 1}"],
-                    metadata={"type": "email_body", "message_index": msg_idx},
+                    metadata=chunk_metadata,
                     chunk_id=chunk_id,
                     context_summary=context_summary if msg_idx == 0 else None,
                     embedding_text=embedding_text,  # Cleaned for better embeddings
@@ -538,6 +568,7 @@ async def _process_single_email(
             archive_file_result=archive_file_result,
             context_generator=context_generator,
             archive_generator=archive_generator,
+            vessel_ids=vessel_ids,
         )
         attachment_chunk_count += len(attachment_chunks)
         email_chunks.extend(attachment_chunks)
@@ -610,6 +641,7 @@ async def _process_attachment(
     archive_file_result=None,
     context_generator: ContextGenerator | None = None,
     archive_generator: ArchiveGenerator | None = None,
+    vessel_ids: list[str] | None = None,
 ) -> list[Chunk]:
     """Process a single attachment and return its chunks.
 
@@ -617,6 +649,7 @@ async def _process_attachment(
     Also updates the archive with .md files for parsed attachments.
     """
     chunks: list[Chunk] = []
+    vessel_ids = vessel_ids or []
     file_path = Path(attachment.saved_path)
 
     # Format size for display
@@ -671,6 +704,7 @@ async def _process_attachment(
                 db=db,
                 unsupported_logger=unsupported_logger,
                 archive_generator=archive_generator,
+                vessel_ids=vessel_ids,
             )
         )
         return chunks
@@ -751,6 +785,13 @@ async def _process_attachment(
     # Enrich chunks with document citation metadata (source_id, source_title, archive URIs)
     _enrich_chunks_with_document_metadata(chunks, attach_doc)
 
+    # Add vessel_ids to chunk metadata for filtering
+    if vessel_ids:
+        for chunk in chunks:
+            if chunk.metadata is None:
+                chunk.metadata = {}
+            chunk.metadata["vessel_ids"] = vessel_ids
+
     return chunks
 
 
@@ -764,9 +805,11 @@ async def _process_zip_attachment(
     db: SupabaseClient,
     unsupported_logger: UnsupportedFileLogger,
     archive_generator: ArchiveGenerator | None = None,
+    vessel_ids: list[str] | None = None,
 ) -> list[Chunk]:
     """Extract and process files from a ZIP attachment."""
     chunks: list[Chunk] = []
+    vessel_ids = vessel_ids or []
 
     try:
         extracted_files = attachment_processor.extract_zip(Path(attachment.saved_path))
@@ -814,6 +857,12 @@ async def _process_zip_attachment(
                         parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
                 # Enrich chunks with document citation metadata
                 _enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
+                # Add vessel_ids to chunk metadata for filtering
+                if vessel_ids:
+                    for chunk in attach_chunks:
+                        if chunk.metadata is None:
+                            chunk.metadata = {}
+                        chunk.metadata["vessel_ids"] = vessel_ids
                 chunks.extend(attach_chunks)
                 await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
 
@@ -1238,6 +1287,159 @@ async def _reprocess(target_version: int | None, limit: int, dry_run: bool):
         # 3. Regenerating chunks with new context
         # 4. Updating the document's ingest_version
         console.print("[red]Reprocessing logic not yet implemented - use 'ncl clean' and re-ingest[/red]")
+
+    finally:
+        await db.close()
+
+
+# ==================== Vessel Commands ====================
+
+
+@vessels_app.command("import")
+def vessels_import(
+    csv_file: Optional[Path] = typer.Argument(
+        None,
+        help="Path to vessel CSV file (semicolon-delimited)",
+    ),
+    clear: bool = typer.Option(
+        False,
+        "--clear",
+        "-c",
+        help="Clear existing vessels before import",
+    ),
+):
+    """Import vessel register from CSV file.
+
+    Default file: data/vessel-list.csv
+
+    CSV format (semicolon-delimited):
+        IMO_Number;Vessel_Name;Vessel_type;DWT
+    """
+    asyncio.run(_vessels_import(csv_file, clear))
+
+
+async def _vessels_import(csv_file: Optional[Path], clear: bool):
+    """Async implementation of vessels import command."""
+    import csv
+    from .models.vessel import Vessel
+
+    settings = get_settings()
+
+    # Default CSV path
+    if csv_file is None:
+        csv_file = settings.data_dir / "vessel-list.csv"
+
+    if not csv_file.exists():
+        console.print(f"[red]CSV file not found: {csv_file}[/red]")
+        raise typer.Exit(1)
+
+    db = SupabaseClient()
+
+    try:
+        # Clear existing vessels if requested
+        if clear:
+            deleted = await db.delete_all_vessels()
+            console.print(f"[yellow]Cleared {deleted} existing vessels[/yellow]")
+
+        # Read CSV file
+        vessels_to_import: list[Vessel] = []
+        with open(csv_file, "r", encoding="utf-8") as f:
+            # Detect delimiter (semicolon or comma)
+            sample = f.read(1024)
+            f.seek(0)
+            delimiter = ";" if ";" in sample else ","
+
+            reader = csv.DictReader(f, delimiter=delimiter)
+
+            for row in reader:
+                # Handle different column naming conventions
+                imo = row.get("IMO_Number") or row.get("imo") or row.get("IMO")
+                name = row.get("Vessel_Name") or row.get("name") or row.get("Name")
+                vessel_type = row.get("Vessel_type") or row.get("vessel_type") or row.get("Type")
+                dwt_str = row.get("DWT") or row.get("dwt") or ""
+
+                if not name:
+                    continue  # Skip rows without vessel name
+
+                # Parse DWT (might have commas or other formatting)
+                dwt = None
+                if dwt_str:
+                    try:
+                        dwt = int(dwt_str.replace(",", "").replace(".", "").strip())
+                    except ValueError:
+                        pass
+
+                vessel = Vessel(
+                    name=name.strip(),
+                    imo=imo.strip() if imo else None,
+                    vessel_type=vessel_type.strip() if vessel_type else None,
+                    dwt=dwt,
+                    aliases=[],  # Can be extended later
+                )
+                vessels_to_import.append(vessel)
+
+        if not vessels_to_import:
+            console.print("[yellow]No vessels found in CSV file[/yellow]")
+            return
+
+        # Import vessels with progress
+        imported_count = 0
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Importing vessels...", total=len(vessels_to_import))
+
+            for vessel in vessels_to_import:
+                try:
+                    await db.upsert_vessel(vessel)
+                    imported_count += 1
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Failed to import {vessel.name}: {e}[/yellow]")
+                progress.update(task, advance=1)
+
+        console.print(f"[green]Imported {imported_count} vessels from {csv_file.name}[/green]")
+
+    finally:
+        await db.close()
+
+
+@vessels_app.command("list")
+def vessels_list():
+    """List all vessels in the registry."""
+    asyncio.run(_vessels_list())
+
+
+async def _vessels_list():
+    """Async implementation of vessels list command."""
+    db = SupabaseClient()
+
+    try:
+        vessels = await db.get_all_vessels()
+
+        if not vessels:
+            console.print("[dim]No vessels in registry[/dim]")
+            return
+
+        table = Table(title=f"Vessel Registry ({len(vessels)} vessels)")
+        table.add_column("Name", style="cyan")
+        table.add_column("IMO", style="green")
+        table.add_column("Type", style="yellow")
+        table.add_column("DWT", justify="right")
+
+        for vessel in vessels:
+            dwt_str = f"{vessel.dwt:,}" if vessel.dwt else "-"
+            table.add_row(
+                vessel.name,
+                vessel.imo or "-",
+                vessel.vessel_type or "-",
+                dwt_str,
+            )
+
+        console.print(table)
 
     finally:
         await db.close()

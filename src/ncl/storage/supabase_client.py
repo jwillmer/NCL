@@ -17,6 +17,7 @@ from ..models.document import (
     EmailMetadata,
     ProcessingStatus,
 )
+from ..models.vessel import Vessel, VesselSummary
 
 
 class SupabaseClient:
@@ -347,6 +348,7 @@ class SupabaseClient:
         query_embedding: List[float],
         match_threshold: float = 0.7,
         match_count: int = 10,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Search for similar chunks using vector similarity.
 
@@ -354,19 +356,23 @@ class SupabaseClient:
             query_embedding: Query embedding vector (1536 dimensions).
             match_threshold: Minimum similarity score (0-1).
             match_count: Maximum number of results.
+            metadata_filter: Optional JSONB filter (e.g., {"vessel_ids": ["uuid"]}).
 
         Returns:
             List of matching chunks with document context.
         """
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            # Convert metadata_filter to JSONB format for PostgreSQL
+            filter_json = json.dumps(metadata_filter) if metadata_filter else None
             rows = await conn.fetch(
                 """
-                SELECT * FROM match_chunks($1, $2, $3)
+                SELECT * FROM match_chunks($1, $2, $3, $4::jsonb)
                 """,
                 query_embedding,
                 match_threshold,
                 match_count,
+                filter_json,
             )
 
         return [dict(row) for row in rows]
@@ -470,6 +476,31 @@ class SupabaseClient:
         counts: Dict[str, int] = {}
 
         # Delete in order respecting foreign keys
+        # conversations has FK to vessels
+        result = (
+            self.client.table("conversations")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        counts["conversations"] = len(result.data) if result.data else 0
+
+        # LangGraph checkpoint tables (no FK to our tables, but related to conversations)
+        # These are created by AsyncPostgresSaver and store conversation message history
+        for table in ["checkpoint_blobs", "checkpoint_writes", "checkpoints"]:
+            try:
+                # Delete all rows - use neq with impossible value as Supabase requires a filter
+                result = (
+                    self.client.table(table)
+                    .delete()
+                    .neq("thread_id", "00000000-0000-0000-0000-000000000000")
+                    .execute()
+                )
+                counts[table] = len(result.data) if result.data else 0
+            except Exception:
+                # Table may not exist yet if no conversations have been created
+                counts[table] = 0
+
         # unsupported_files has FK to documents
         result = (
             self.client.table("unsupported_files")
@@ -507,6 +538,138 @@ class SupabaseClient:
         counts["documents"] = len(result.data) if result.data else 0
 
         return counts
+
+    # ==================== Vessel Operations ====================
+
+    async def insert_vessel(self, vessel: Vessel) -> Vessel:
+        """Insert a vessel record.
+
+        Args:
+            vessel: Vessel to insert.
+
+        Returns:
+            The inserted vessel.
+        """
+        data = {
+            "id": str(vessel.id),
+            "name": vessel.name,
+            "imo": vessel.imo,
+            "vessel_type": vessel.vessel_type,
+            "dwt": vessel.dwt,
+            "aliases": vessel.aliases,
+        }
+        self.client.table("vessels").insert(data).execute()
+        return vessel
+
+    async def upsert_vessel(self, vessel: Vessel) -> Vessel:
+        """Insert or update a vessel record by IMO number.
+
+        Args:
+            vessel: Vessel to upsert.
+
+        Returns:
+            The upserted vessel.
+        """
+        data = {
+            "id": str(vessel.id),
+            "name": vessel.name,
+            "imo": vessel.imo,
+            "vessel_type": vessel.vessel_type,
+            "dwt": vessel.dwt,
+            "aliases": vessel.aliases,
+        }
+        self.client.table("vessels").upsert(data, on_conflict="imo").execute()
+        return vessel
+
+    async def get_all_vessels(self) -> List[Vessel]:
+        """Get all vessels from the registry.
+
+        Returns:
+            List of all vessels ordered by name.
+        """
+        result = (
+            self.client.table("vessels")
+            .select("*")
+            .order("name")
+            .execute()
+        )
+        return [self._row_to_vessel(row) for row in result.data]
+
+    async def get_vessel_summaries(self) -> List[VesselSummary]:
+        """Get minimal vessel info for dropdown lists.
+
+        Returns:
+            List of vessel summaries ordered by name.
+        """
+        result = (
+            self.client.table("vessels")
+            .select("id, name, imo, vessel_type")
+            .order("name")
+            .execute()
+        )
+        return [
+            VesselSummary(
+                id=UUID(row["id"]) if isinstance(row["id"], str) else row["id"],
+                name=row["name"],
+                imo=row.get("imo"),
+                vessel_type=row.get("vessel_type"),
+            )
+            for row in result.data
+        ]
+
+    async def get_vessel_by_id(self, vessel_id: UUID) -> Optional[Vessel]:
+        """Get vessel by ID.
+
+        Args:
+            vessel_id: Vessel UUID.
+
+        Returns:
+            Vessel if found, None otherwise.
+        """
+        result = (
+            self.client.table("vessels")
+            .select("*")
+            .eq("id", str(vessel_id))
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return self._row_to_vessel(result.data[0])
+        return None
+
+    async def delete_all_vessels(self) -> int:
+        """Delete all vessels from the registry.
+
+        Returns:
+            Number of vessels deleted.
+        """
+        result = (
+            self.client.table("vessels")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        return len(result.data) if result.data else 0
+
+    def _row_to_vessel(self, row: Dict[str, Any]) -> Vessel:
+        """Convert database row to Vessel model.
+
+        Args:
+            row: Database row as dictionary.
+
+        Returns:
+            Vessel model instance.
+        """
+        return Vessel(
+            id=UUID(row["id"]) if isinstance(row["id"], str) else row["id"],
+            name=row["name"],
+            imo=row.get("imo"),
+            vessel_type=row.get("vessel_type"),
+            dwt=row.get("dwt"),
+            aliases=row.get("aliases") or [],
+            created_at=row.get("created_at"),
+            updated_at=row.get("updated_at"),
+        )
 
     # ==================== Helper Methods ====================
 

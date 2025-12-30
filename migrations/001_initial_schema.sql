@@ -8,6 +8,7 @@
 
 -- Drop tables first (CASCADE handles triggers and dependent objects)
 DROP TABLE IF EXISTS conversations CASCADE;
+DROP TABLE IF EXISTS vessels CASCADE;
 DROP TABLE IF EXISTS ingest_versions CASCADE;
 DROP TABLE IF EXISTS unsupported_files CASCADE;
 DROP TABLE IF EXISTS chunks CASCADE;
@@ -185,6 +186,9 @@ CREATE INDEX idx_chunks_embedding ON chunks
     USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
 
+-- GIN index for fast JSONB containment queries on chunk metadata (vessel filtering)
+CREATE INDEX idx_chunks_metadata ON chunks USING GIN (metadata);
+
 -- ============================================
 -- PROCESSING LOG TABLE (for resumable processing)
 -- ============================================
@@ -258,6 +262,24 @@ INSERT INTO ingest_versions (version, description, breaking_changes) VALUES
     (1, 'Initial schema with contextual chunking, citations, and browsable archive', FALSE);
 
 -- ============================================
+-- VESSELS TABLE (Vessel Register)
+-- ============================================
+CREATE TABLE vessels (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    imo TEXT UNIQUE,                             -- 7-digit IMO number
+    vessel_type TEXT,                            -- VLCC, Suezmax, Aframax, etc.
+    dwt INTEGER,                                 -- Deadweight tonnage
+    aliases TEXT[] NOT NULL DEFAULT '{}',        -- Alternative names for matching
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexes for vessels
+CREATE INDEX idx_vessels_name ON vessels(name);
+CREATE INDEX idx_vessels_imo ON vessels(imo);
+
+-- ============================================
 -- CONVERSATIONS TABLE
 -- Stores conversation metadata only - messages are persisted
 -- by LangGraph's AsyncPostgresSaver checkpointer
@@ -267,7 +289,7 @@ CREATE TABLE conversations (
     thread_id UUID UNIQUE NOT NULL,              -- Links to LangGraph checkpoints
     user_id UUID NOT NULL,                       -- Supabase auth user (no FK for flexibility)
     title TEXT,                                  -- Auto-generated or user-edited
-    vessel_filter TEXT,                          -- Vessel name filter (NULL = all vessels)
+    vessel_id UUID REFERENCES vessels(id),       -- Vessel filter (NULL = all vessels)
     is_archived BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -283,6 +305,9 @@ CREATE INDEX idx_conversations_user_recent ON conversations(user_id, last_messag
 -- Filter by archived status
 CREATE INDEX idx_conversations_user_archived ON conversations(user_id, is_archived);
 
+-- Filter by vessel
+CREATE INDEX idx_conversations_vessel ON conversations(vessel_id);
+
 -- Full-text search on title
 CREATE INDEX idx_conversations_search ON conversations
     USING gin(to_tsvector('english', COALESCE(title, '')));
@@ -293,7 +318,8 @@ CREATE INDEX idx_conversations_search ON conversations
 CREATE OR REPLACE FUNCTION match_chunks(
     query_embedding extensions.vector(1536),
     match_threshold FLOAT DEFAULT 0.7,
-    match_count INT DEFAULT 10
+    match_count INT DEFAULT 10,
+    metadata_filter JSONB DEFAULT NULL
 )
 RETURNS TABLE (
     -- Chunk identification
@@ -360,6 +386,7 @@ BEGIN
     LEFT JOIN documents root_doc ON d.root_id = root_doc.id
     WHERE c.embedding IS NOT NULL
       AND 1 - (c.embedding <=> query_embedding) > match_threshold
+      AND (metadata_filter IS NULL OR c.metadata @> metadata_filter)
     ORDER BY c.embedding <=> query_embedding ASC
     LIMIT match_count;
 END;
@@ -404,6 +431,7 @@ ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE processing_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE unsupported_files ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ingest_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vessels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
 
 -- Service role policies for backend operations (restricted to service_role)
@@ -417,13 +445,17 @@ CREATE POLICY "Service role full access to unsupported_files" ON unsupported_fil
     FOR ALL TO service_role USING (true);
 CREATE POLICY "Service role full access to ingest_versions" ON ingest_versions
     FOR ALL TO service_role USING (true);
+CREATE POLICY "Service role full access to vessels" ON vessels
+    FOR ALL TO service_role USING (true);
 CREATE POLICY "Service role full access to conversations" ON conversations
     FOR ALL TO service_role USING (true);
 
--- Authenticated users can read chunks and documents (for search/retrieval)
+-- Authenticated users can read chunks, documents, and vessels (for search/retrieval)
 CREATE POLICY "Authenticated users can read documents" ON documents
     FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Authenticated users can read chunks" ON chunks
+    FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Authenticated users can read vessels" ON vessels
     FOR SELECT TO authenticated USING (true);
 
 -- Conversations: users can only access their own
@@ -459,6 +491,11 @@ CREATE TRIGGER update_processing_log_updated_at
 
 CREATE TRIGGER update_conversations_updated_at
     BEFORE UPDATE ON conversations
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_vessels_updated_at
+    BEFORE UPDATE ON vessels
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 

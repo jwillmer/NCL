@@ -118,7 +118,6 @@ export function ChatContainer({ threadId, disabled }: ChatContainerProps) {
     async function loadHistory() {
       try {
         const history = await getMessages(threadId!);
-        console.log("[ChatContainer] Loaded history:", history.length, "messages");
         if (history.length > 0) {
           // Use setTimeout to ensure CopilotChat is fully mounted
           setTimeout(() => {
@@ -128,7 +127,6 @@ export function ChatContainer({ threadId, disabled }: ChatContainerProps) {
               role: msg.role as "user" | "assistant",
               content: msg.content,
             }));
-            console.log("[ChatContainer] Setting messages after delay:", copilotMessages);
             setMessages(copilotMessages);
           }, 100);
           // Check if title was already generated (has user messages)
@@ -144,11 +142,6 @@ export function ChatContainer({ threadId, disabled }: ChatContainerProps) {
 
     loadHistory();
   }, [threadId, historyLoaded, setMessages]);
-
-  // Debug: log messages state changes
-  useEffect(() => {
-    console.log("[ChatContainer] Messages state changed:", messages.length, messages);
-  }, [messages]);
 
   // Auto-sync metadata when messages change (replaces onMessageSent callback)
   useEffect(() => {

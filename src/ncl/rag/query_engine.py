@@ -451,6 +451,7 @@ Please provide a comprehensive answer based on the above context. If you referen
         similarity_threshold: float = 0.5,
         rerank_top_n: Optional[int] = None,
         use_rerank: bool = True,
+        vessel_id: Optional[str] = None,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> List[RetrievalResult]:
         """Search for relevant chunks without generating an answer.
@@ -461,6 +462,7 @@ Please provide a comprehensive answer based on the above context. If you referen
             similarity_threshold: Minimum similarity score.
             rerank_top_n: Final results after reranking.
             use_rerank: Whether to use reranking.
+            vessel_id: Optional vessel UUID to filter results by.
             on_progress: Optional async callback for progress updates.
 
         Returns:
@@ -471,10 +473,16 @@ Please provide a comprehensive answer based on the above context. If you referen
 
         query_embedding = await self.embeddings.generate_embedding(question)
 
+        # Build metadata filter if vessel_id is specified
+        metadata_filter = None
+        if vessel_id:
+            metadata_filter = {"vessel_ids": [vessel_id]}
+
         results = await self.db.search_similar_chunks(
             query_embedding=query_embedding,
             match_threshold=similarity_threshold,
             match_count=top_k,
+            metadata_filter=metadata_filter,
         )
 
         if not results:

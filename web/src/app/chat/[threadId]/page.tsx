@@ -18,60 +18,94 @@ import { Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import {
   Conversation,
+  Vessel,
   getConversation,
   createConversation,
   updateConversation,
+  listVessels,
   ConversationApiError,
 } from "@/lib/conversations";
 
 // ============================================
-// Vessel Selector (UI Placeholder)
+// Vessel Selector
 // ============================================
 
 interface VesselSelectorProps {
   value: string | null;
+  vessels: Vessel[];
+  loading?: boolean;
   onChange: (value: string | null) => void;
 }
 
-function VesselSelector({ value, onChange }: VesselSelectorProps) {
-  // Placeholder vessel list - will be replaced with actual data later
-  const vessels = [
+function VesselSelector({ value, vessels, loading, onChange }: VesselSelectorProps) {
+  const [search, setSearch] = useState("");
+
+  // Build options list with "All Vessels" at the top
+  const options: { id: string | null; name: string }[] = [
     { id: null, name: "All Vessels" },
-    { id: "vessel-1", name: "MV Atlantic Star" },
-    { id: "vessel-2", name: "MV Pacific Explorer" },
-    { id: "vessel-3", name: "MV Nordic Spirit" },
+    ...vessels.map((v) => ({ id: v.id, name: v.name })),
   ];
 
-  const selectedVessel = vessels.find((v) => v.id === value) || vessels[0];
+  // Filter options by search term
+  const filteredOptions = search
+    ? options.filter((v) =>
+        v.name.toLowerCase().includes(search.toLowerCase())
+      )
+    : options;
+
+  const selectedOption = options.find((v) => v.id === value) || options[0];
 
   return (
-    <DropdownMenu.Root>
+    <DropdownMenu.Root onOpenChange={(open) => !open && setSearch("")}>
       <DropdownMenu.Trigger asChild>
-        <Button variant="outline" size="sm" className="gap-2">
+        <Button variant="outline" size="sm" className="gap-2" disabled={loading}>
           <Ship className="h-4 w-4" />
-          <span className="max-w-[120px] truncate">{selectedVessel.name}</span>
+          <span className="max-w-[120px] truncate">
+            {loading ? "Loading..." : selectedOption.name}
+          </span>
           <ChevronDown className="h-3 w-3 opacity-50" />
         </Button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
-          className="min-w-[180px] bg-white rounded-md shadow-lg border border-ncl-gray-light p-1 z-50"
+          className="min-w-[180px] bg-white rounded-md shadow-lg border border-ncl-gray-light z-50"
           align="end"
         >
-          {vessels.map((vessel) => (
-            <DropdownMenu.Item
-              key={vessel.id || "all"}
-              className={cn(
-                "flex items-center gap-2 px-3 py-2 text-sm cursor-pointer rounded outline-none",
-                vessel.id === value
-                  ? "bg-ncl-blue/10 text-ncl-blue"
-                  : "hover:bg-ncl-gray-light/50"
-              )}
-              onSelect={() => onChange(vessel.id)}
-            >
-              {vessel.name}
-            </DropdownMenu.Item>
-          ))}
+          {/* Search input */}
+          <div className="p-2 border-b border-ncl-gray-light">
+            <input
+              type="text"
+              placeholder="Search vessels..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full px-2 py-1 text-sm border border-ncl-gray-light rounded outline-none focus:border-ncl-blue"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            />
+          </div>
+          {/* Filtered list */}
+          <div className="max-h-[250px] overflow-y-auto p-1">
+            {filteredOptions.length > 0 ? (
+              filteredOptions.map((option) => (
+                <DropdownMenu.Item
+                  key={option.id || "all"}
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-2 text-sm cursor-pointer rounded outline-none",
+                    option.id === value
+                      ? "bg-ncl-blue/10 text-ncl-blue"
+                      : "hover:bg-ncl-gray-light/50"
+                  )}
+                  onSelect={() => onChange(option.id)}
+                >
+                  {option.name}
+                </DropdownMenu.Item>
+              ))
+            ) : (
+              <div className="px-3 py-2 text-sm text-gray-500">
+                No vessels found
+              </div>
+            )}
+          </div>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -84,14 +118,18 @@ function VesselSelector({ value, onChange }: VesselSelectorProps) {
 
 interface ChatHeaderProps {
   conversation: Conversation | null;
-  vesselFilter: string | null;
+  vesselId: string | null;
+  vessels: Vessel[];
+  vesselsLoading: boolean;
   onBack: () => void;
   onVesselChange: (value: string | null) => void;
 }
 
 function ChatHeader({
   conversation,
-  vesselFilter,
+  vesselId,
+  vessels,
+  vesselsLoading,
   onBack,
   onVesselChange,
 }: ChatHeaderProps) {
@@ -122,7 +160,12 @@ function ChatHeader({
           )}
         </div>
         {!isArchived && (
-          <VesselSelector value={vesselFilter} onChange={onVesselChange} />
+          <VesselSelector
+            value={vesselId}
+            vessels={vessels}
+            loading={vesselsLoading}
+            onChange={onVesselChange}
+          />
         )}
       </div>
     </header>
@@ -140,9 +183,30 @@ function ChatPageContent() {
   const { session, loading: authLoading } = useAuth();
 
   const [conversation, setConversation] = useState<Conversation | null>(null);
-  const [vesselFilter, setVesselFilter] = useState<string | null>(null);
+  const [vesselId, setVesselId] = useState<string | null>(null);
+  const [vessels, setVessels] = useState<Vessel[]>([]);
+  const [vesselsLoading, setVesselsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Load vessels from API
+  useEffect(() => {
+    if (!session) return;
+
+    async function loadVessels() {
+      try {
+        const vesselList = await listVessels();
+        setVessels(vesselList);
+      } catch (err) {
+        console.error("Failed to load vessels:", err);
+        // Non-fatal error - continue without vessels
+      } finally {
+        setVesselsLoading(false);
+      }
+    }
+
+    loadVessels();
+  }, [session]);
 
   // Load or create conversation
   useEffect(() => {
@@ -156,7 +220,7 @@ function ChatPageContent() {
         // Try to load existing conversation
         const conv = await getConversation(threadId);
         setConversation(conv);
-        setVesselFilter(conv.vessel_filter);
+        setVesselId(conv.vessel_id);
       } catch (err) {
         if (err instanceof ConversationApiError && err.status === 404) {
           // Conversation doesn't exist yet - create it
@@ -187,10 +251,11 @@ function ChatPageContent() {
   // Handle vessel filter change
   const handleVesselChange = useCallback(
     async (value: string | null) => {
-      setVesselFilter(value);
+      setVesselId(value);
       if (conversation) {
         try {
-          await updateConversation(threadId, { vessel_filter: value || undefined });
+          // Pass null explicitly to clear vessel filter, or the vessel_id to set it
+          await updateConversation(threadId, { vessel_id: value });
         } catch (err) {
           console.error("Failed to update vessel filter:", err);
         }
@@ -242,11 +307,16 @@ function ChatPageContent() {
       headers={{
         Authorization: `Bearer ${session.access_token}`,
       }}
+      properties={{
+        selected_vessel_id: vesselId,  // Pass vessel selection to agent
+      }}
     >
       <div className="flex min-h-screen flex-col bg-gray-50">
         <ChatHeader
           conversation={conversation}
-          vesselFilter={vesselFilter}
+          vesselId={vesselId}
+          vessels={vessels}
+          vesselsLoading={vesselsLoading}
           onBack={handleBack}
           onVesselChange={handleVesselChange}
         />

@@ -72,7 +72,8 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    START([ncl ingest]) --> SCAN[Scan source directory]
+    START([ncl ingest]) --> LOAD_VESSELS[Load vessel registry]
+    LOAD_VESSELS --> SCAN[Scan source directory]
     SCAN --> HASH{Hash exists?}
 
     HASH --> |Completed| SKIP[Skip file]
@@ -81,7 +82,8 @@ flowchart TD
     PARSE --> BODY[Extract body text]
     PARSE --> ATTACH[Save attachments]
 
-    BODY --> CHUNK_BODY[Create body chunk]
+    BODY --> VESSEL_MATCH[Match vessels in<br/>subject + body]
+    VESSEL_MATCH --> CHUNK_BODY[Create body chunks<br/>with vessel_ids]
 
     ATTACH --> PREPROCESS[Preprocess attachment]
 
@@ -101,9 +103,9 @@ flowchart TD
     IS_ZIP --> EXTRACT[Extract ZIP]
     EXTRACT --> PREPROCESS
 
-    DESCRIBE --> CREATE_IMG_CHUNK[Create image chunk]
+    DESCRIBE --> CREATE_IMG_CHUNK[Create image chunk<br/>inherit vessel_ids]
     HAS_PARSER --> LLAMAPARSE[Parse with LlamaParse]
-    LLAMAPARSE --> CHUNK_DOC[Chunk with LangChain]
+    LLAMAPARSE --> CHUNK_DOC[Chunk with LangChain<br/>inherit vessel_ids]
 
     SKIP_IMG --> LOG_SKIP[Log as non-content]
     NO_PARSER --> LOG_UNSUP[Log as unsupported]
@@ -112,7 +114,7 @@ flowchart TD
     CREATE_IMG_CHUNK --> EMBED
     CHUNK_DOC --> EMBED
 
-    EMBED[Generate embeddings] --> STORE[Store in Supabase]
+    EMBED[Generate embeddings] --> STORE[Store in Supabase<br/>with vessel_ids metadata]
     STORE --> COMPLETE[Mark completed]
 
     SKIP --> END([Next file])
@@ -236,8 +238,12 @@ Limits (configurable via environment):
 
 ```mermaid
 flowchart TD
-    Q([User Query]) --> EMBED[Generate embedding]
-    EMBED --> SEARCH[Vector search<br/>top_k=20]
+    Q([User Query]) --> VESSEL{Vessel selected?}
+    VESSEL --> |Yes| BUILD_FILTER[Build metadata filter<br/>vessel_ids contains uuid]
+    VESSEL --> |No| EMBED
+
+    BUILD_FILTER --> EMBED[Generate embedding]
+    EMBED --> SEARCH[Vector search<br/>top_k=20<br/>+ metadata filter]
 
     SEARCH --> RERANK{Reranking?}
     RERANK --> |Enabled| COHERE[Cohere rerank<br/>top_n=5]
@@ -249,26 +255,53 @@ flowchart TD
     LLM --> ANSWER[Answer + Sources]
 ```
 
+### Vessel Filtering
+
+When a user selects a vessel in the UI, the search is filtered to only return chunks from documents tagged with that vessel.
+
+```mermaid
+flowchart LR
+    subgraph Frontend
+        UI[Vessel Dropdown] --> |vessel_id| COPILOT[CopilotKit properties]
+    end
+
+    subgraph Agent
+        COPILOT --> |selected_vessel_id| SEARCH_NODE[search_node]
+        SEARCH_NODE --> |metadata_filter| QUERY[query_engine.search_only]
+    end
+
+    subgraph Database
+        QUERY --> |vessel_ids contains uuid| MATCH[match_chunks function]
+        MATCH --> |chunks.metadata @> filter| RESULTS[Filtered results]
+    end
+```
+
+**Tagging scope:** Only email subject and body are scanned for vessel names during ingest. Attachments inherit vessel tags from their parent email. See [features.md](features.md#11-vessel-filtering) for details.
+
 ## Data Flow Summary
 
 | Stage | Component | Input | Output |
 |-------|-----------|-------|--------|
-| 1. Scan | CLI | Source directory | EML file list |
-| 2. Dedupe | ProgressTracker | File hash | Skip or process |
-| 3. Parse | EMLParser | EML file | Body + attachments |
-| 4. Route | Preprocessor | File + MIME type | PreprocessResult |
-| 5. Extract | AttachmentProcessor | ZIP file | Extracted files |
-| 6. Classify | ImageProcessor | Image file | Skip or description |
-| 7. Parse | LlamaParse | Document | Markdown text |
-| 8. Chunk | DocumentChunker | Markdown | Chunk objects |
-| 9. Embed | EmbeddingGenerator | Chunks | 1536-dim vectors |
-| 10. Store | SupabaseClient | Embedded chunks | Database records |
+| 1. Load | VesselMatcher | Vessel registry | Name/alias lookup |
+| 2. Scan | CLI | Source directory | EML file list |
+| 3. Dedupe | ProgressTracker | File hash | Skip or process |
+| 4. Parse | EMLParser | EML file | Body + attachments |
+| 5. Match | VesselMatcher | Subject + body | vessel_ids list |
+| 6. Route | Preprocessor | File + MIME type | PreprocessResult |
+| 7. Extract | AttachmentProcessor | ZIP file | Extracted files |
+| 8. Classify | ImageProcessor | Image file | Skip or description |
+| 9. Parse | LlamaParse | Document | Markdown text |
+| 10. Chunk | DocumentChunker | Markdown | Chunk objects |
+| 11. Embed | EmbeddingGenerator | Chunks | 1536-dim vectors |
+| 12. Store | SupabaseClient | Chunks + vessel_ids | Database records |
 
 ## Database Schema
 
 | Table | Purpose |
 |-------|---------|
 | `documents` | Email/attachment hierarchy with deduplication |
-| `chunks` | Text chunks with embeddings (pgvector) |
+| `chunks` | Text chunks with embeddings (pgvector), vessel_ids in metadata |
+| `vessels` | Vessel registry (name, IMO, type, aliases) |
+| `conversations` | Chat conversations with vessel_id filter |
 | `unsupported_files` | Logged unsupported/skipped files |
 | `processing_log` | Progress tracking for resume |

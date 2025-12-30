@@ -11,6 +11,7 @@ from .document import (
     ParsedAttachment,
 )
 from .chunk import Chunk, ChunkWithContext, SourceReference
+from .vessel import Vessel, VesselSummary
 
 __all__ = [
     "Document",
@@ -24,4 +25,6 @@ __all__ = [
     "Chunk",
     "ChunkWithContext",
     "SourceReference",
+    "Vessel",
+    "VesselSummary",
 ]

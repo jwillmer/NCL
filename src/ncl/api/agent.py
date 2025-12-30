@@ -206,6 +206,11 @@ async def search_node(
         settings = get_settings()
         citation_processor = CitationProcessor()
 
+        # Read vessel filter from CopilotKit properties (passed from frontend)
+        vessel_id = state.get("properties", {}).get("selected_vessel_id")
+        if vessel_id:
+            logger.debug("Filtering search by vessel_id: %s", vessel_id)
+
         # Progress callback to emit state updates
         async def on_progress(message: str) -> None:
             state["search_progress"] = message
@@ -216,6 +221,7 @@ async def search_node(
             question=question,
             top_k=settings.rerank_top_n if settings.rerank_enabled else 10,
             use_rerank=settings.rerank_enabled,
+            vessel_id=vessel_id,
             on_progress=on_progress,
         )
 

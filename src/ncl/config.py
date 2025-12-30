@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     chunk_size_tokens: int = Field(default=512, validation_alias="CHUNK_SIZE_TOKENS")
     chunk_overlap_tokens: int = Field(default=50, validation_alias="CHUNK_OVERLAP_TOKENS")
 
+    # Base data directory
+    data_dir: Path = Field(
+        default=Path("./data"), validation_alias="DATA_DIR"
+    )
+
     # File Storage Paths - Source Data (user-provided, read-only)
     data_source_dir: Path = Field(
         default=Path("./data/source"), validation_alias="DATA_SOURCE_DIR"
