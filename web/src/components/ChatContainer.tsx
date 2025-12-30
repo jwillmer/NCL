@@ -44,6 +44,24 @@ function SearchProgress({ message }: { message: string }) {
 }
 
 /**
+ * Transform raw [C:chunk_id] citation markers to <cite> tags.
+ * Fallback for messages where backend processing didn't occur.
+ */
+function transformRawCitations(content: string): string {
+  const citationPattern = /\[C:([a-f0-9]+)\]/gi;
+  let index = 1;
+  const indexMap = new Map<string, number>();
+
+  return content.replace(citationPattern, (_, chunkId) => {
+    const lowerChunkId = chunkId.toLowerCase();
+    if (!indexMap.has(lowerChunkId)) {
+      indexMap.set(lowerChunkId, index++);
+    }
+    return `<cite id="${lowerChunkId}">${indexMap.get(lowerChunkId)}</cite>`;
+  });
+}
+
+/**
  * Custom assistant message component that renders sources below each response.
  * Each message gets its own MessageCitationProvider to isolate citations per response.
  *
@@ -72,7 +90,7 @@ function CustomAssistantMessage(props: AssistantMessageProps) {
             rehypePlugins={[rehypeRaw as any]}
             components={sourceTagRenderers}
           >
-            {message?.content || ""}
+            {transformRawCitations(message?.content || "")}
           </ReactMarkdown>
         </div>
         {isLoading && (
