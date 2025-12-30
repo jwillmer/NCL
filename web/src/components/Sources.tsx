@@ -360,7 +360,71 @@ export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDial
 
             {citation?.content && !loading && (
               <div className="prose prose-sm max-w-none prose-headings:text-ncl-blue-dark prose-p:text-ncl-blue-dark prose-li:text-ncl-blue-dark prose-a:text-ncl-blue prose-a:underline prose-hr:my-4 [&_p]:mb-4 [&_br+br]:block [&_br+br]:h-2">
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkBreaks]}
+                  components={{
+                    // Rewrite relative URLs to use archive API path
+                    a: ({ href, children, ...props }) => {
+                      let resolvedHref = href || "";
+
+                      // Fix malformed mailto links (e.g., "foo@bar.commailto:foo@bar.com")
+                      if (resolvedHref.includes("mailto:") && !resolvedHref.startsWith("mailto:")) {
+                        const mailtoIndex = resolvedHref.indexOf("mailto:");
+                        resolvedHref = resolvedHref.slice(mailtoIndex);
+                      }
+
+                      // Skip mailto: and absolute URLs
+                      if (!resolvedHref.startsWith("mailto:") && !resolvedHref.startsWith("http")) {
+                        // Check if href is already an absolute archive path (starts with folder_id pattern)
+                        // folder_id is 16 hex chars like "9c6aae7aa8c0b9a9"
+                        const isAbsoluteArchivePath = /^[a-f0-9]{16}\//.test(resolvedHref);
+
+                        if (isAbsoluteArchivePath) {
+                          // Already absolute from archive root - just prepend API path
+                          resolvedHref = `/api/archive/${resolvedHref}`;
+                        } else {
+                          // Relative path - resolve from current document's directory
+                          const basePath = citation.archive_browse_uri
+                            ? citation.archive_browse_uri
+                                .replace(/^\/archive/, "")  // Strip leading /archive
+                                .replace(/\/[^/]+$/, "")     // Get directory path
+                            : "";
+                          resolvedHref = `/api/archive${basePath}/${resolvedHref}`;
+                        }
+                      }
+
+                      return (
+                        <a href={resolvedHref} target="_blank" rel="noopener noreferrer" {...props}>
+                          {children}
+                        </a>
+                      );
+                    },
+                    // Rewrite relative image URLs
+                    img: ({ src, alt, ...props }) => {
+                      let resolvedSrc = src || "";
+
+                      if (!resolvedSrc.startsWith("http")) {
+                        // Check if src is already an absolute archive path (starts with folder_id pattern)
+                        const isAbsoluteArchivePath = /^[a-f0-9]{16}\//.test(resolvedSrc);
+
+                        if (isAbsoluteArchivePath) {
+                          // Already absolute from archive root - just prepend API path
+                          resolvedSrc = `/api/archive/${resolvedSrc}`;
+                        } else {
+                          // Relative path - resolve from current document's directory
+                          const basePath = citation.archive_browse_uri
+                            ? citation.archive_browse_uri
+                                .replace(/^\/archive/, "")  // Strip leading /archive
+                                .replace(/\/[^/]+$/, "")     // Get directory path
+                            : "";
+                          resolvedSrc = `/api/archive${basePath}/${resolvedSrc}`;
+                        }
+                      }
+
+                      return <img src={resolvedSrc} alt={alt || ""} {...props} />;
+                    },
+                  }}
+                >
                   {citation.content}
                 </ReactMarkdown>
               </div>

@@ -33,7 +33,13 @@
       "Bash(uv sync:*)",
       "Bash(.venv/Scripts/python.exe:*)",
       "Bash(npx tsc:*)",
-      "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm install react-markdown\")"
+      "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm install react-markdown\")",
+      "Bash(cmd /c \"dir /s /b c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive\\\\*.md 2>nul\")",
+      "Bash(cmd /c \"dir /s c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive 2>nul | head -50\")",
+      "Bash(cmd /c \"if exist c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive \\(dir /s /b c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive\\) else \\(echo Archive directory does not exist\\)\")",
+      "Bash(uv run ncl ingest:*)",
+      "Bash(cmd /c \"dir c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\")",
+      "Bash(cmd /c \"dir c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive\\\\02c1307f24a6576d /a /s\")"
     ]
   }
 }

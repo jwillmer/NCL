@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
+from urllib.parse import quote
 from uuid import UUID
 
 from ..config import get_settings
@@ -87,12 +88,15 @@ class HierarchyManager:
 
         if archive_result:
             archive_path = archive_result.archive_path
+            # URL-encode paths to handle filenames with spaces
+            md_path_encoded = quote(archive_result.markdown_path, safe="/")
+            orig_path_encoded = quote(archive_result.original_path, safe="/")
             if self.archive_base_url:
-                archive_browse_uri = f"{self.archive_base_url}/{archive_result.markdown_path}"
-                archive_download_uri = f"{self.archive_base_url}/{archive_result.original_path}"
+                archive_browse_uri = f"{self.archive_base_url}/{md_path_encoded}"
+                archive_download_uri = f"{self.archive_base_url}/{orig_path_encoded}"
             else:
-                archive_browse_uri = f"/archive/{archive_result.markdown_path}"
-                archive_download_uri = f"/archive/{archive_result.original_path}"
+                archive_browse_uri = f"/archive/{md_path_encoded}"
+                archive_download_uri = f"/archive/{orig_path_encoded}"
 
         # Determine source title (email subject)
         source_title = parsed_email.metadata.subject or eml_path.stem
@@ -176,15 +180,19 @@ class HierarchyManager:
             # Use archive path as the actual file location
             actual_file_path = str(self.archive_dir / archive_file_result.download_uri)
             if archive_file_result.browse_uri:
+                # URL-encode paths to handle filenames with spaces
+                browse_uri_encoded = quote(archive_file_result.browse_uri, safe="/")
                 if self.archive_base_url:
-                    archive_browse_uri = f"{self.archive_base_url}/{archive_file_result.browse_uri}"
+                    archive_browse_uri = f"{self.archive_base_url}/{browse_uri_encoded}"
                 else:
-                    archive_browse_uri = f"/archive/{archive_file_result.browse_uri}"
+                    archive_browse_uri = f"/archive/{browse_uri_encoded}"
             if archive_file_result.download_uri:
+                # URL-encode paths to handle filenames with spaces
+                download_uri_encoded = quote(archive_file_result.download_uri, safe="/")
                 if self.archive_base_url:
-                    archive_download_uri = f"{self.archive_base_url}/{archive_file_result.download_uri}"
+                    archive_download_uri = f"{self.archive_base_url}/{download_uri_encoded}"
                 else:
-                    archive_download_uri = f"/archive/{archive_file_result.download_uri}"
+                    archive_download_uri = f"/archive/{download_uri_encoded}"
 
         doc = Document(
             parent_id=parent_doc.id,

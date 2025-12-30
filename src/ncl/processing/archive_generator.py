@@ -7,11 +7,15 @@ for download, enabling source citations with clickable links.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
 
 from ..models.document import ParsedEmail, EmailMessage
 
@@ -52,18 +56,22 @@ class ArchiveGenerator:
     - Download links to original files
     """
 
-    def __init__(self, archive_dir: Optional[Path] = None):
+    def __init__(self, archive_dir: Optional[Path] = None, ingest_root: Optional[Path] = None):
         """Initialize archive generator.
 
         Args:
             archive_dir: Root directory for generated archives. If None, uses settings.
+            ingest_root: Root directory for ingestion (for stable source IDs). If None, uses settings.
         """
+        from ..config import get_settings
+        settings = get_settings()
+
         if archive_dir is None:
-            from ..config import get_settings
-            settings = get_settings()
             archive_dir = settings.archive_dir
         self.archive_dir = archive_dir
         self.archive_dir.mkdir(parents=True, exist_ok=True)
+
+        self.ingest_root = ingest_root or settings.eml_source_dir
 
     async def generate_archive(
         self,
@@ -82,9 +90,7 @@ class ArchiveGenerator:
             ArchiveResult with paths and URIs for all generated files.
         """
         from ..utils import compute_doc_id, normalize_source_id
-        from ..config import get_settings
 
-        settings = get_settings()
         parsed_attachment_contents = parsed_attachment_contents or {}
 
         # Compute doc_id from source path and file hash
@@ -95,7 +101,7 @@ class ArchiveGenerator:
                 sha256.update(chunk)
         file_hash = sha256.hexdigest()
 
-        source_id = normalize_source_id(str(source_eml_path), settings.eml_source_dir)
+        source_id = normalize_source_id(str(source_eml_path), self.ingest_root)
         doc_id = compute_doc_id(source_id, file_hash)
 
         # Create archive folder using truncated doc_id
@@ -110,11 +116,7 @@ class ArchiveGenerator:
         email_original = folder / "email.eml"
         shutil.copy2(source_eml_path, email_original)
 
-        # Generate email markdown
-        email_md = folder / "email.eml.md"
-        self._write_email_markdown(parsed_email, email_md)
-
-        # Process attachments
+        # Process attachments to copy originals and create .md previews
         attachments_dir = folder / "attachments"
         attachment_files: List[ContentFileResult] = []
 
@@ -126,6 +128,11 @@ class ArchiveGenerator:
                 parsed_attachment_contents,
                 folder_id,
             )
+
+        # Generate email markdown now (without [View] links initially)
+        # Attachment .md files and [View] links are added later via update_attachment_markdown()
+        email_md = folder / "email.eml.md"
+        self._write_email_markdown(parsed_email, email_md, attachment_files, folder_id)
 
         # Write metadata JSON for programmatic access
         self._write_metadata(
@@ -145,8 +152,22 @@ class ArchiveGenerator:
             attachment_files=attachment_files,
         )
 
-    def _write_email_markdown(self, parsed_email: ParsedEmail, output_path: Path) -> None:
-        """Generate email markdown file with full conversation."""
+    def _write_email_markdown(
+        self,
+        parsed_email: ParsedEmail,
+        output_path: Path,
+        attachment_files: Optional[List[ContentFileResult]] = None,
+        folder_id: Optional[str] = None,
+    ) -> None:
+        """Generate email markdown file with full conversation.
+
+        Args:
+            parsed_email: Parsed email with metadata and messages.
+            output_path: Path to write the markdown file.
+            attachment_files: List of attachment file results (used to determine
+                which attachments have .md files for [View] links).
+            folder_id: Archive folder ID for full path links.
+        """
         meta = parsed_email.metadata
         lines: List[str] = []
 
@@ -171,7 +192,11 @@ class ArchiveGenerator:
 
         lines.append(f"**Messages:** {meta.message_count}")
         lines.append("")
-        lines.append("[Download Original](email.eml)")
+        # Full path for download link
+        if folder_id:
+            lines.append(f"[Download Original]({folder_id}/email.eml)")
+        else:
+            lines.append("[Download Original](email.eml)")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -193,12 +218,31 @@ class ArchiveGenerator:
             lines.append("")
             lines.append("## Attachments")
             lines.append("")
+
+            # Build lookup: filename -> has_markdown
+            has_md: Dict[str, bool] = {}
+            if attachment_files:
+                for f in attachment_files:
+                    # original_path is like "abc123/attachments/file.pdf"
+                    filename = Path(f.original_path).name
+                    has_md[filename] = f.markdown_path is not None
+
+            # Build attachment path prefix
+            att_prefix = f"{folder_id}/attachments" if folder_id else "attachments"
+
             for att in parsed_email.attachments:
                 att_name = att.filename
-                lines.append(
-                    f"- [{att_name}](attachments/{att_name}) "
-                    f"([View](attachments/{att_name}.md))"
-                )
+                # URL-encode filename for markdown links (spaces break markdown parsing)
+                att_name_encoded = quote(att_name)
+
+                # Only add [View] link if .md file was created
+                if has_md.get(att_name, False):
+                    lines.append(
+                        f"- [{att_name}]({att_prefix}/{att_name_encoded}) "
+                        f"([View]({att_prefix}/{att_name_encoded}.md))"
+                    )
+                else:
+                    lines.append(f"- [{att_name}]({att_prefix}/{att_name_encoded})")
             lines.append("")
 
         output_path.write_text("\n".join(lines), encoding="utf-8")
@@ -269,6 +313,7 @@ class ArchiveGenerator:
                         att.content_type,
                         att.size_bytes,
                         parsed_content,
+                        folder_id,
                     )
                     markdown_path = f"{folder_id}/attachments/{filename}.md"
                     browse_uri = markdown_path
@@ -295,6 +340,7 @@ class ArchiveGenerator:
         content_type: str,
         size_bytes: int,
         parsed_content: str,
+        folder_id: Optional[str] = None,
     ) -> None:
         """Write markdown preview for an attachment."""
         lines: List[str] = []
@@ -305,7 +351,12 @@ class ArchiveGenerator:
         lines.append(f"**Size:** {self._format_size(size_bytes)}")
         lines.append(f"**Extracted:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append("")
-        lines.append(f"[Download Original]({filename})")
+        # Full path from archive root for download link
+        if folder_id:
+            download_path = f"{folder_id}/attachments/{quote(filename)}"
+        else:
+            download_path = quote(filename)
+        lines.append(f"[Download Original]({download_path})")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -324,6 +375,106 @@ class ArchiveGenerator:
             return f"{size_bytes / 1024:.1f} KB"
         else:
             return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+    def update_attachment_markdown(
+        self,
+        doc_id: str,
+        filename: str,
+        content_type: str,
+        size_bytes: int,
+        parsed_content: str,
+    ) -> Optional[str]:
+        """Update or create an attachment's .md file with parsed content.
+
+        Call this after attachment content has been extracted to add the
+        .md file and update the email markdown to show [View] link.
+
+        Args:
+            doc_id: Document ID (truncated to 16 chars for folder).
+            filename: Original attachment filename.
+            content_type: MIME type of the attachment.
+            size_bytes: File size in bytes.
+            parsed_content: Extracted text content.
+
+        Returns:
+            Relative path to the created .md file, or None if failed.
+        """
+        logger.debug(f"update_attachment_markdown: doc_id={doc_id[:16]}, filename={filename}")
+
+        if self._should_skip_markdown(filename):
+            logger.debug(f"  Skipping - file is already markdown")
+            return None
+
+        if not parsed_content or not parsed_content.strip():
+            logger.debug(f"  Skipping - no parsed_content (len={len(parsed_content) if parsed_content else 0})")
+            return None
+
+        folder_id = doc_id[:16]
+        folder = self.archive_dir / folder_id
+        attachments_dir = folder / "attachments"
+
+        logger.debug(f"  attachments_dir={attachments_dir}, exists={attachments_dir.exists()}")
+
+        if not attachments_dir.exists():
+            logger.debug(f"  Skipping - attachments_dir does not exist")
+            return None
+
+        # Write the .md file
+        md_file = attachments_dir / f"{filename}.md"
+        logger.debug(f"  Writing to {md_file}")
+        self._write_content_markdown(
+            md_file,
+            filename,
+            content_type,
+            size_bytes,
+            parsed_content,
+            folder_id,
+        )
+
+        return f"{folder_id}/attachments/{filename}.md"
+
+    def regenerate_email_markdown(
+        self,
+        doc_id: str,
+        parsed_email: ParsedEmail,
+    ) -> None:
+        """Regenerate the email markdown with updated [View] links.
+
+        Call this after all attachments have been processed to update
+        the email markdown with correct [View] links based on which
+        attachments now have .md files.
+
+        Args:
+            doc_id: Document ID (truncated to 16 chars for folder).
+            parsed_email: Parsed email with metadata and messages.
+        """
+        folder_id = doc_id[:16]
+        folder = self.archive_dir / folder_id
+        attachments_dir = folder / "attachments"
+
+        if not folder.exists():
+            return
+
+        # Build list of attachments that have .md files
+        attachment_files: List[ContentFileResult] = []
+        if parsed_email.attachments and attachments_dir.exists():
+            for att in parsed_email.attachments:
+                filename = att.filename
+                md_file = attachments_dir / f"{filename}.md"
+                markdown_path = f"{folder_id}/attachments/{filename}.md" if md_file.exists() else None
+
+                attachment_files.append(ContentFileResult(
+                    original_path=f"{folder_id}/attachments/{filename}",
+                    markdown_path=markdown_path,
+                    download_uri=f"{folder_id}/attachments/{filename}",
+                    browse_uri=markdown_path,
+                    archive_path=folder_id,
+                    skipped=False,
+                ))
+
+        # Regenerate email markdown with updated attachment info
+        email_md = folder / "email.eml.md"
+        self._write_email_markdown(parsed_email, email_md, attachment_files, folder_id)
 
     def _write_metadata(
         self,

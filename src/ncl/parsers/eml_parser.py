@@ -474,6 +474,9 @@ class EMLParser:
         html = re.sub(
             r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE
         )
+        # Handle <a> tags: extract only the link text, discard href
+        # This prevents malformed output like "foo@bar.commailto:foo@bar.com"
+        html = re.sub(r"<a[^>]*>([^<]*)</a>", r"\1", html, flags=re.IGNORECASE)
         # Replace common block elements with newlines
         html = re.sub(r"<(br|p|div|h[1-6]|li)[^>]*>", "\n", html, flags=re.IGNORECASE)
         # Remove remaining HTML tags

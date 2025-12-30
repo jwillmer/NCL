@@ -159,10 +159,11 @@ def create_app() -> FastAPI:
         """
         # Security: Reject paths with traversal attempts or absolute paths
         if ".." in file_path or file_path.startswith("/") or file_path.startswith("\\"):
+            user = getattr(request.state, "user", None)
             logger.warning(
                 "Archive path traversal attempt: %s from user %s",
                 file_path,
-                getattr(request.state, "user", {}).get("email", "unknown"),
+                getattr(user, "email", "unknown") if user else "unknown",
             )
             raise HTTPException(status_code=400, detail="Invalid path")
 
@@ -174,11 +175,12 @@ def create_app() -> FastAPI:
         try:
             requested_path.relative_to(archive_dir)
         except ValueError:
+            user = getattr(request.state, "user", None)
             logger.warning(
                 "Archive path escape attempt: %s resolved to %s from user %s",
                 file_path,
                 requested_path,
-                getattr(request.state, "user", {}).get("email", "unknown"),
+                getattr(user, "email", "unknown") if user else "unknown",
             )
             raise HTTPException(status_code=400, detail="Invalid path")
 
@@ -198,10 +200,11 @@ def create_app() -> FastAPI:
             else:
                 content_type = "application/octet-stream"
 
+        user = getattr(request.state, "user", None)
         logger.debug(
             "Serving archive file: %s to user %s",
             file_path,
-            getattr(request.state, "user", {}).get("email", "unknown"),
+            getattr(user, "email", "unknown") if user else "unknown",
         )
 
         return FileResponse(

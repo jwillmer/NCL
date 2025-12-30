@@ -241,7 +241,7 @@ async def _ingest(
     attachment_processor = AttachmentProcessor()
     hierarchy_manager = HierarchyManager(db, ingest_root=source_dir)
     embeddings = EmbeddingGenerator()
-    archive_generator = ArchiveGenerator()
+    archive_generator = ArchiveGenerator(ingest_root=source_dir)
     context_generator = ContextGenerator()
     version_manager = VersionManager(db)
 
@@ -537,6 +537,7 @@ async def _process_single_email(
             unsupported_logger=unsupported_logger,
             archive_file_result=archive_file_result,
             context_generator=context_generator,
+            archive_generator=archive_generator,
         )
         attachment_chunk_count += len(attachment_chunks)
         email_chunks.extend(attachment_chunks)
@@ -553,6 +554,16 @@ async def _process_single_email(
             f"{attachment_chunk_count} chunks (+ {body_chunks} email body)",
             file_ctx,
         )
+
+    # Generate email markdown (always run - this is the single source of truth)
+    # generate_archive() sets up the folder structure but defers markdown generation
+    # so we can include correct [View] links based on which attachments have .md files
+    if archive_generator and email_doc.doc_id:
+        archive_generator.regenerate_email_markdown(email_doc.doc_id, parsed_email)
+        if parsed_email.attachments:
+            vprint("Email markdown generated with [View] links", file_ctx)
+        else:
+            vprint("Email markdown generated", file_ctx)
 
     # Generate embeddings for all chunks
     if email_chunks:
@@ -598,10 +609,12 @@ async def _process_attachment(
     unsupported_logger: UnsupportedFileLogger,
     archive_file_result=None,
     context_generator: ContextGenerator | None = None,
+    archive_generator: ArchiveGenerator | None = None,
 ) -> list[Chunk]:
     """Process a single attachment and return its chunks.
 
     Uses preprocessor for routing decisions.
+    Also updates the archive with .md files for parsed attachments.
     """
     chunks: list[Chunk] = []
     file_path = Path(attachment.saved_path)
@@ -657,6 +670,7 @@ async def _process_attachment(
                 hierarchy_manager=hierarchy_manager,
                 db=db,
                 unsupported_logger=unsupported_logger,
+                archive_generator=archive_generator,
             )
         )
         return chunks
@@ -672,12 +686,15 @@ async def _process_attachment(
     )
 
     try:
+        parsed_content: str | None = None
+
         if result.is_image and result.image_description:
             # Image was already classified and described during preprocessing
             chunk = attachment_processor.create_image_chunk(
                 file_path, attach_doc.id, result.image_description, "meaningful"
             )
             chunks.append(chunk)
+            parsed_content = result.image_description
             vprint(f"  -> 1 chunk created (image described)", file_ctx)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
         elif result.is_image:
@@ -686,6 +703,8 @@ async def _process_attachment(
                 file_path, attach_doc.id
             )
             chunks.extend(attach_chunks)
+            if attach_chunks:
+                parsed_content = attach_chunks[0].content
             vprint(f"  -> {len(attach_chunks)} chunks created (image described)", file_ctx)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
         else:
@@ -694,11 +713,31 @@ async def _process_attachment(
                 file_path, attach_doc.id, attachment.content_type
             )
             if attach_chunks:
+                # Combine all chunks for the .md file
+                parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
                 vprint(f"  -> {len(attach_chunks)} chunks created", file_ctx)
             else:
                 vprint(f"  -> 0 chunks (document has no extractable text)", file_ctx)
             chunks.extend(attach_chunks)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+
+        # Update archive with .md file for this attachment
+        vprint(f"  -> MD check: archive_gen={archive_generator is not None}, parsed_content={len(parsed_content) if parsed_content else 0} chars, doc_id={email_doc.doc_id[:16] if email_doc.doc_id else None}", file_ctx)
+        if archive_generator and parsed_content and email_doc.doc_id:
+            md_path = archive_generator.update_attachment_markdown(
+                doc_id=email_doc.doc_id,
+                filename=attachment.filename,
+                content_type=attachment.content_type or "application/octet-stream",
+                size_bytes=attachment.size_bytes or 0,
+                parsed_content=parsed_content,
+            )
+            if md_path:
+                vprint(f"  -> Archive updated: {md_path}", file_ctx)
+            else:
+                vprint(f"  -> update_attachment_markdown returned None", file_ctx)
+        else:
+            vprint(f"  -> Skipping .md creation", file_ctx)
+
     except Exception as e:
         track_issue(file_ctx, attachment.filename, str(e))
         await db.update_document_status(attach_doc.id, ProcessingStatus.FAILED, str(e))
@@ -724,6 +763,7 @@ async def _process_zip_attachment(
     hierarchy_manager: HierarchyManager,
     db: SupabaseClient,
     unsupported_logger: UnsupportedFileLogger,
+    archive_generator: ArchiveGenerator | None = None,
 ) -> list[Chunk]:
     """Extract and process files from a ZIP attachment."""
     chunks: list[Chunk] = []
@@ -757,20 +797,35 @@ async def _process_zip_attachment(
 
             # Process extracted file based on preprocess result
             try:
+                parsed_content = None
                 if result.is_image:
                     # Images from ZIPs - describe without classification
                     attach_chunks = await attachment_processor.process_document_image(
                         extracted_path, attach_doc.id
                     )
+                    if attach_chunks:
+                        parsed_content = attach_chunks[0].content
                 else:
                     # Documents - use parser registry
                     attach_chunks = await attachment_processor.process_attachment(
                         extracted_path, attach_doc.id, extracted_content_type
                     )
+                    if attach_chunks:
+                        parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
                 # Enrich chunks with document citation metadata
                 _enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
                 chunks.extend(attach_chunks)
                 await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+
+                # Update archive with .md file for this extracted file
+                if archive_generator and parsed_content and email_doc.doc_id:
+                    archive_generator.update_attachment_markdown(
+                        doc_id=email_doc.doc_id,
+                        filename=extracted_path.name,
+                        content_type=extracted_content_type,
+                        size_bytes=extracted_path.stat().st_size,
+                        parsed_content=parsed_content,
+                    )
             except Exception as e:
                 track_issue(file_ctx, f"{attachment.filename}/{extracted_path.name}", str(e))
                 await db.update_document_status(
