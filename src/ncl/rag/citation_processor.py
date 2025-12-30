@@ -100,6 +100,10 @@ Example response:
                 title += "..."
             parts.append(f'title:"{title}"')
 
+        # Include image URI for image attachments so agent can embed them
+        if result.image_uri:
+            parts.append(f"img:{result.image_uri}")
+
         return f"[{' | '.join(parts)}]"
 
     def get_citation_map(

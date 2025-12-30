@@ -129,6 +129,7 @@ class RetrievalResult:
     line_to: Optional[int] = None
     archive_browse_uri: Optional[str] = None
     archive_download_uri: Optional[str] = None
+    image_uri: Optional[str] = None  # For image chunks - path to display inline
 
     # Additional context
     document_type: Optional[str] = None

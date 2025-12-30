@@ -138,6 +138,73 @@ export function MessageCitationProvider({ children, onViewCitation }: MessageCit
 // CiteRenderer - Renders <cite> tags as inline citation badges
 // =============================================================================
 
+interface ImgCiteProps {
+  src?: string;
+  id?: string;  // Optional chunk ID for opening citation dialog
+}
+
+/**
+ * ImgCiteRenderer - Renders <img-cite> tags as inline images.
+ *
+ * The agent extracts image URLs from the content (e.g., markdown attachment links)
+ * and uses <img-cite src="path/to/image.jpg" id="chunk_id" /> to embed images inline.
+ *
+ * This component takes the src directly and renders the image via the archive API.
+ * If an id is provided, clicking the image opens the citation dialog.
+ */
+function ImgCiteRenderer(props: ImgCiteProps) {
+  const { src, id } = props;
+  const { onViewCitation } = useCitationContext();
+
+  if (!src) {
+    return (
+      <span className="inline-block text-xs text-ncl-gray bg-ncl-gray-light/30 px-2 py-1 rounded">
+        [Image unavailable]
+      </span>
+    );
+  }
+
+  // Build the image URL - clean up various prefixes that might be included
+  let cleanSrc = src;
+  // Remove "img:" prefix if agent included it from context header
+  cleanSrc = cleanSrc.replace(/^img:/, "");
+  // Remove /archive/ prefix if present
+  cleanSrc = cleanSrc.replace(/^\/archive\//, "");
+  const imageUrl = `/api/archive/${cleanSrc}`;
+
+  const handleClick = () => {
+    if (id) {
+      onViewCitation(id);
+    } else {
+      // If no citation ID, open image in new tab
+      window.open(imageUrl, "_blank");
+    }
+  };
+
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={handleClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleClick();
+        }
+      }}
+      className="inline-block my-2 cursor-pointer rounded overflow-hidden border border-ncl-gray-light hover:border-ncl-blue transition-colors"
+      title={id ? "Click to view source" : "Click to open full size"}
+    >
+      <img
+        src={imageUrl}
+        alt="Referenced image"
+        className="max-w-full max-h-64 object-contain"
+        loading="lazy"
+      />
+    </span>
+  );
+}
+
 function CiteRenderer(props: CiteProps) {
   const { id, title, page, lines, download, children } = props;
   const { addCitation, onViewCitation } = useCitationContext();
@@ -215,6 +282,7 @@ function CiteRenderer(props: CiteProps) {
 // Using 'as const' and explicit typing to satisfy CopilotKit's ComponentsMap
 export const sourceTagRenderers: Record<string, React.FC<Record<string, unknown>>> = {
   cite: CiteRenderer as React.FC<Record<string, unknown>>,
+  "img-cite": ImgCiteRenderer as React.FC<Record<string, unknown>>,
 };
 
 // =============================================================================

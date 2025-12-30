@@ -261,6 +261,12 @@ class RAGQueryEngine:
         retrieval_results = []
 
         for result in results:
+            # For image attachments, use archive_download_uri as the displayable image
+            image_uri = None
+            doc_type = result.get("document_type")
+            if doc_type == "attachment_image" and result.get("archive_download_uri"):
+                image_uri = result.get("archive_download_uri")
+
             retrieval_results.append(
                 RetrievalResult(
                     text=result["content"],
@@ -275,6 +281,7 @@ class RAGQueryEngine:
                     line_to=result.get("line_to"),
                     archive_browse_uri=result.get("archive_browse_uri"),
                     archive_download_uri=result.get("archive_download_uri"),
+                    image_uri=image_uri,
                     document_type=result.get("document_type"),
                     email_subject=result.get("email_subject"),
                     email_initiator=result.get("email_initiator"),

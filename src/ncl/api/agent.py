@@ -78,6 +78,7 @@ def _serialize_retrieval_result(result: RetrievalResult) -> Dict[str, Any]:
         "line_to": result.line_to,
         "archive_browse_uri": result.archive_browse_uri,
         "archive_download_uri": result.archive_download_uri,
+        "image_uri": result.image_uri,
     }
 
 
