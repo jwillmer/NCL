@@ -247,34 +247,35 @@ Each worker slot shows:
 
 ### 11. Source Attribution
 
-Every answer includes traced sources.
+Every answer includes traced sources with interactive citations in the web UI.
+
+**Citation Features:**
+- Inline citation badges `[1]`, `[2]` rendered as clickable elements
+- Tooltip preview showing source title on hover
+- Collapsible "Sources" accordion below each response
+- Full source viewer dialog with markdown content
+- Download original files directly from the UI
+
+**Web UI Interaction:**
+1. Citations appear as small numbered badges inline with the response text
+2. Hover over a citation to see the source title
+3. Click a citation or use the Sources accordion to view details
+4. The source dialog displays the full markdown content
+5. Download the original file (PDF, email, etc.) with one click
 
 **Source Information:**
-- File path (clickable in supported UIs)
-- Email subject
-- Participants list
-- Email date
-- Relevance score (reranked or similarity)
-- Section/heading path
+- Source document title
+- Page number (if applicable)
+- Line range within the document
+- Archive links for viewing and downloading
 
-**Example Output:**
+**Example Response:**
 ```
-Answer: The project deadline was moved to January 31st.
-
----
-Sources:
-
-[1] /emails/project-update.eml
-    Subject: Re: Project Timeline
-    Participants: alice@example.com, bob@example.com
-    Date: 2024-01-15
-    Relevance: 94.2% (reranked)
-
-[2] /emails/project-update.eml/schedule.pdf
-    Subject: Re: Project Timeline
-    Section: Timeline > Milestones
-    Relevance: 87.1% (reranked)
+The GPS system requires calibration before each flight [1].
+This was confirmed by the maintenance team [2].
 ```
+
+Where `[1]` and `[2]` are interactive badges that reveal source details on click.
 
 ## CLI Commands
 

@@ -309,6 +309,37 @@ class SupabaseClient:
 
         return [self._row_to_chunk(row) for row in result.data]
 
+    def get_chunk_by_id(self, chunk_id: str) -> Optional[Chunk]:
+        """Get a chunk by its chunk_id (the short hex ID used in citations).
+
+        Uses synchronous Supabase client (suitable for single-row lookups).
+        Excludes embedding field to avoid REST API string serialization issues.
+
+        Args:
+            chunk_id: The chunk's hex ID (e.g., "8f3a2b1c").
+
+        Returns:
+            Chunk if found, None otherwise.
+        """
+        # Select all fields except embedding (REST API returns vectors as strings)
+        fields = (
+            "id, document_id, chunk_id, content, chunk_index, context_summary, "
+            "embedding_text, section_path, section_title, source_title, source_id, "
+            "page_number, line_from, line_to, char_start, char_end, "
+            "archive_browse_uri, archive_download_uri, metadata"
+        )
+        result = (
+            self.client.table("chunks")
+            .select(fields)
+            .eq("chunk_id", chunk_id)
+            .limit(1)
+            .execute()
+        )
+
+        if result.data:
+            return self._row_to_chunk(result.data[0])
+        return None
+
     # ==================== Vector Search ====================
 
     async def search_similar_chunks(

@@ -31,7 +31,9 @@
       "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm ls @copilotkit/runtime\")",
       "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm ls @ag-ui/client @copilotkit/runtime\")",
       "Bash(uv sync:*)",
-      "Bash(.venv/Scripts/python.exe:*)"
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(npx tsc:*)",
+      "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm install react-markdown\")"
     ]
   }
 }

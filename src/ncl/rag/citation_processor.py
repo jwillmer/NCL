@@ -205,8 +205,9 @@ Example response:
         for invalid_id in invalid_citations:
             cleaned_response = cleaned_response.replace(f"[C:{invalid_id}]", "")
 
-        # Clean up any double spaces or orphaned punctuation
-        cleaned_response = re.sub(r"\s+", " ", cleaned_response)
+        # Clean up any double spaces (but preserve newlines for formatting)
+        cleaned_response = re.sub(r"[^\S\n]+", " ", cleaned_response)
+        cleaned_response = re.sub(r" +\n", "\n", cleaned_response)  # Remove trailing spaces before newlines
         cleaned_response = cleaned_response.strip()
 
         # Determine if retry is needed
@@ -285,22 +286,42 @@ Example response:
         response: str,
         citations: List[ValidatedCitation],
     ) -> str:
-        """Replace [C:chunk_id] markers with numbered references [1], [2], etc.
+        """Replace [C:chunk_id] markers with <cite> tags containing metadata.
+
+        Output format: <cite id="chunk_id" title="Source Title" page="5">1</cite>
+
+        These tags are rendered by the frontend via CopilotKit's markdownTagRenderers.
 
         Args:
             response: Response text with [C:chunk_id] markers.
             citations: List of validated citations with index numbers.
 
         Returns:
-            Response with numbered citation markers.
+            Response with <cite> tags containing citation metadata.
         """
         result = response
 
-        # Build mapping from chunk_id to citation index
-        id_to_index = {c.chunk_id: c.index for c in citations}
+        for c in citations:
+            old_marker = f"[C:{c.chunk_id}]"
 
-        # Replace each citation marker
-        for chunk_id, index in id_to_index.items():
-            result = result.replace(f"[C:{chunk_id}]", f"[{index}]")
+            # Build attributes for the cite tag
+            attrs = [f'id="{c.chunk_id}"']
+
+            if c.source_title:
+                # Escape quotes in title for HTML attribute
+                safe_title = c.source_title.replace('"', "&quot;")
+                attrs.append(f'title="{safe_title}"')
+
+            if c.page:
+                attrs.append(f'page="{c.page}"')
+
+            if c.lines:
+                attrs.append(f'lines="{c.lines[0]}-{c.lines[1]}"')
+
+            if c.archive_download_uri:
+                attrs.append(f'download="{c.archive_download_uri}"')
+
+            new_marker = f'<cite {" ".join(attrs)}>{c.index}</cite>'
+            result = result.replace(old_marker, new_marker)
 
         return result

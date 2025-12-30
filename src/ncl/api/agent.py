@@ -112,9 +112,10 @@ SEARCH_TOOL = {
 
 async def chat_node(
     state: AgentState, config: RunnableConfig
-) -> Command[Literal["search_node", "validate_response_node"]]:
-    """Main chat node - routes to search tool or validates response."""
-    model = ChatOpenAI(model="gpt-4o")
+) -> Command[Literal["search_node", "__end__"]]:
+    """Main chat node - routes to search tool or returns final response."""
+    settings = get_settings()
+    model = ChatOpenAI(model=settings.llm_model)
     model_with_tools = model.bind_tools([SEARCH_TOOL], parallel_tool_calls=False)
 
     system_message = SystemMessage(content=_load_system_prompt())
@@ -128,8 +129,28 @@ async def chat_node(
     if hasattr(response, "tool_calls") and response.tool_calls:
         return Command(goto="search_node", update={"messages": [response]})
 
-    # No tool call - go to validation node to process any citations
-    return Command(goto="validate_response_node", update={"messages": [response]})
+    # No tool call - process citations inline before returning
+    citation_map_data = state.get("citation_map")
+    if citation_map_data:
+        try:
+            # Deserialize and process citations
+            citation_map = {
+                k: _deserialize_retrieval_result(v) for k, v in citation_map_data.items()
+            }
+            citation_processor = CitationProcessor()
+            validation = citation_processor.process_response(
+                response.content, citation_map
+            )
+            formatted = citation_processor.replace_citation_markers(
+                validation.response, validation.citations
+            )
+            # Create new message with processed citations
+            response = AIMessage(content=formatted)
+        except Exception as e:
+            logger.error("Citation processing failed: %s", str(e), exc_info=True)
+            # Continue with original response on error
+
+    return Command(goto=END, update={"messages": [response], "citation_map": None})
 
 
 async def search_node(
@@ -262,70 +283,22 @@ async def search_node(
             await engine.close()
 
 
-async def validate_response_node(
-    state: AgentState, config: RunnableConfig
-) -> Command[Literal["__end__"]]:
-    """Validate citations in the agent's response before sending to client.
-
-    Replaces [C:chunk_id] markers with numbered references [1], [2], etc.
-    and appends a sources section with archive links.
-    """
-    last_message = state["messages"][-1]
-
-    # Skip validation if no AI message or no citation_map
-    if not isinstance(last_message, AIMessage):
-        return Command(goto=END, update={})
-
-    citation_map_data = state.get("citation_map")
-    if not citation_map_data:
-        # No citations to validate, pass through unchanged
-        return Command(goto=END, update={})
-
-    try:
-        # Deserialize citation_map
-        citation_map = {
-            k: _deserialize_retrieval_result(v) for k, v in citation_map_data.items()
-        }
-
-        citation_processor = CitationProcessor()
-
-        # Validate citations in the response
-        validation = citation_processor.process_response(
-            last_message.content, citation_map
-        )
-
-        # Replace [C:chunk_id] with [1], [2] and add sources section
-        formatted = citation_processor.replace_citation_markers(
-            validation.response, validation.citations
-        )
-        sources_section = citation_processor.format_sources_section(validation.citations)
-
-        if sources_section:
-            formatted = formatted + sources_section
-
-        # Create updated message with validated citations
-        updated_message = AIMessage(content=formatted)
-
-        # Clear citation_map after validation
-        return Command(
-            goto=END,
-            update={"messages": [updated_message], "citation_map": None},
-        )
-
-    except Exception as e:
-        logger.error("Citation validation failed: %s", str(e), exc_info=True)
-        # On error, pass through original message unchanged
-        return Command(goto=END, update={"citation_map": None})
-
-
 def create_graph() -> StateGraph:
-    """Create the LangGraph agent graph."""
+    """Create the LangGraph agent graph.
+
+    Flow:
+        chat_node -> search_node -> chat_node -> END
+                  -> END (if no tool call needed)
+
+    Citation validation and processing happens inline in chat_node before
+    returning the final response, ensuring citations are validated against
+    the citation_map and formatted with <cite> tags.
+    """
     graph = StateGraph(AgentState)
 
     # Add nodes
     graph.add_node("chat_node", chat_node)
     graph.add_node("search_node", search_node)
-    graph.add_node("validate_response_node", validate_response_node)
 
     # Set entry point
     graph.set_entry_point("chat_node")

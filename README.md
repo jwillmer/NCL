@@ -239,7 +239,7 @@ AGENT_URL=http://localhost:8000/copilotkit
 - **Chat Interface:** Conversational AI for document Q&A powered by CopilotKit
 - **Streaming Progress:** Real-time search progress updates (Searching → Reranking → Formatting)
 - **Authentication:** Supabase Auth with JWT validation in API route
-- **Source Attribution:** View sources with confidence scores
+- **Interactive Citations:** Clickable citation badges with source viewer dialog and file downloads
 - **Agent State Sync:** Bidirectional state between frontend and Python agent via LangGraph
 - **Professional Design:** NCL brand colors and responsive layout
 
@@ -275,6 +275,29 @@ curl -H "Authorization: Bearer $TOKEN" \
 # Download original attachment
 curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:8000/archive/abc123def456/attachments/report.pdf
+```
+
+### Citations Endpoint
+
+The citations endpoint returns source details for inline citation references:
+
+```
+GET /citations/{chunk_id}
+```
+
+**Authentication:** Requires Supabase JWT token
+
+**Response:**
+```json
+{
+  "chunk_id": "8f3a2b1c",
+  "source_title": "Technical Manual",
+  "page": 5,
+  "lines": [10, 25],
+  "archive_browse_uri": "abc123/email.eml.md",
+  "archive_download_uri": "abc123/email.eml",
+  "content": "Full markdown content of the source..."
+}
 ```
 
 ## Technology Stack

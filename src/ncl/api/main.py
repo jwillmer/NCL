@@ -22,6 +22,7 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..config import get_settings
+from ..storage.supabase_client import SupabaseClient
 from .agent import agent_graph
 from .middleware.auth import SupabaseJWTBearer
 
@@ -208,6 +209,70 @@ def create_app() -> FastAPI:
             media_type=content_type,
             filename=requested_path.name,
         )
+
+    # Citation details endpoint for fetching source content
+    @app.get("/citations/{chunk_id}")
+    @limiter.limit("100/minute")
+    async def get_citation(request: Request, chunk_id: str):
+        """Get citation details including metadata and markdown content.
+
+        Used by the frontend to display source content when user clicks a citation.
+
+        Args:
+            request: FastAPI request object (user available in request.state.user)
+            chunk_id: The chunk's hex ID (e.g., "8f3a2b1c")
+
+        Returns:
+            Citation details including source_title, page, lines, and content
+
+        Raises:
+            HTTPException: 400 for invalid chunk_id, 404 if not found
+        """
+        import re
+
+        # Validate chunk_id format (hex string, defense-in-depth)
+        if not re.match(r"^[a-f0-9]+$", chunk_id, re.IGNORECASE):
+            raise HTTPException(status_code=400, detail="Invalid chunk ID format")
+
+        # Fetch chunk from database (synchronous call, no pool needed)
+        client = SupabaseClient()
+        chunk = client.get_chunk_by_id(chunk_id)
+
+        if not chunk:
+            raise HTTPException(status_code=404, detail="Citation not found")
+
+        # Fetch markdown content if archive exists
+        content = None
+        if chunk.archive_browse_uri:
+            # Strip /archive/ prefix if present (URI is for web, not filesystem)
+            relative_path = chunk.archive_browse_uri
+            if relative_path.startswith("/archive/"):
+                relative_path = relative_path[len("/archive/"):]
+            archive_path = settings.archive_dir / relative_path
+            if archive_path.exists():
+                try:
+                    content = archive_path.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning("Failed to read archive content: %s", e)
+
+        user = getattr(request.state, "user", None)
+        logger.debug(
+            "Serving citation %s to user %s",
+            chunk_id,
+            getattr(user, "email", "unknown") if user else "unknown",
+        )
+
+        return {
+            "chunk_id": chunk_id,
+            "source_title": chunk.source_title,
+            "page": chunk.page_number,
+            "lines": [chunk.line_from, chunk.line_to]
+            if chunk.line_from is not None and chunk.line_to is not None
+            else None,
+            "archive_browse_uri": chunk.archive_browse_uri,
+            "archive_download_uri": chunk.archive_download_uri,
+            "content": content,
+        }
 
     # Add LangGraph agent endpoint via AG-UI protocol
     add_langgraph_fastapi_endpoint(
