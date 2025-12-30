@@ -48,8 +48,7 @@ export function MainLayout({ children }: MainLayoutProps) {
       </main>
       <footer className="border-t border-ncl-gray-light bg-white py-4 px-6">
         <div className="flex items-center justify-between text-xs text-ncl-gray">
-          <span>MTSS v0.1.0 | Developed for NCL</span>
-          <span>Powered by AI with source attribution</span>
+          <span>MTSS v0.1.0 | Development Version</span>
         </div>
       </footer>
     </div>
