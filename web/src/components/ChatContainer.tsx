@@ -130,7 +130,7 @@ export function ChatContainer({ onMessageSent, disabled }: ChatContainerProps) {
 
   return (
     <CitationProvider onViewCitation={handleViewCitation}>
-      <div className="flex-1 flex flex-col h-[calc(100vh-8rem)]">
+      <div className="flex-1 flex flex-col h-[calc(100vh-3.5rem)]">
         {state.error_message && (
           <div className="px-4 py-2 bg-red-50 border-b border-red-200">
             <div className="text-sm text-red-700">
@@ -146,7 +146,7 @@ export function ChatContainer({ onMessageSent, disabled }: ChatContainerProps) {
               ? "This conversation is archived (read-only)"
               : "Describe an issue or search for technical information...",
           }}
-          className={`flex-1 [&_.copilotKitChat]:h-full [&_.copilotKitMessages]:max-h-[calc(100vh-16rem)] ${
+          className={`flex-1 flex flex-col [&_.copilotKitChat]:flex-1 [&_.copilotKitChat]:flex [&_.copilotKitChat]:flex-col [&_.copilotKitMessages]:flex-1 [&_.copilotKitMessages]:overflow-y-auto ${
             disabled ? "[&_.copilotKitInput]:opacity-50 [&_.copilotKitInput]:pointer-events-none" : ""
           }`}
           markdownTagRenderers={sourceTagRenderers}
