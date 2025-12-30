@@ -13,11 +13,12 @@
  * its own sources accordion below the message content.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useChatContext } from "@copilotkit/react-ui";
 import type { AssistantMessageProps } from "@copilotkit/react-ui";
-import { useCoAgent, useCoAgentStateRender } from "@copilotkit/react-core";
+import { useCoAgent, useCoAgentStateRender, useCopilotChatInternal } from "@copilotkit/react-core";
+import type { Message } from "@copilotkit/shared";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -31,6 +32,7 @@ import {
   SourceViewDialog,
   useCitationContext,
 } from "./Sources";
+import { getMessages, touchConversation, generateTitle } from "@/lib/conversations";
 
 function SearchProgress({ message }: { message: string }) {
   return (
@@ -89,17 +91,87 @@ function CustomAssistantMessage(props: AssistantMessageProps) {
 }
 
 interface ChatContainerProps {
-  /** Callback when user sends a message (for title generation and timestamp updates) */
-  onMessageSent?: (content: string) => void;
+  /** Thread ID for loading conversation history */
+  threadId?: string;
   /** Whether the chat is read-only (e.g., archived conversations) */
   disabled?: boolean;
 }
 
-export function ChatContainer({ onMessageSent, disabled }: ChatContainerProps) {
+export function ChatContainer({ threadId, disabled }: ChatContainerProps) {
   const { state } = useCoAgent<RAGState>({
     name: "default",
     initialState: initialRAGState,
   });
+
+  // CopilotKit hooks for history loading and reactive sync
+  // Using useCopilotChatInternal to get access to setMessages which updates agent state
+  const { messages, setMessages } = useCopilotChatInternal();
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const prevMessageCount = useRef(0);
+  const titleGenerated = useRef(false);
+
+  // Load message history on mount
+  // Using setTimeout to ensure CopilotChat is fully mounted
+  useEffect(() => {
+    if (!threadId || historyLoaded) return;
+
+    async function loadHistory() {
+      try {
+        const history = await getMessages(threadId!);
+        console.log("[ChatContainer] Loaded history:", history.length, "messages");
+        if (history.length > 0) {
+          // Use setTimeout to ensure CopilotChat is fully mounted
+          setTimeout(() => {
+            // AG-UI Message format (plain objects, not class instances)
+            const copilotMessages: Message[] = history.map((msg) => ({
+              id: msg.id,
+              role: msg.role as "user" | "assistant",
+              content: msg.content,
+            }));
+            console.log("[ChatContainer] Setting messages after delay:", copilotMessages);
+            setMessages(copilotMessages);
+          }, 100);
+          // Check if title was already generated (has user messages)
+          titleGenerated.current = history.some((m) => m.role === "user");
+        }
+        prevMessageCount.current = history.length;
+      } catch (error) {
+        console.error("Failed to load message history:", error);
+      } finally {
+        setHistoryLoaded(true);
+      }
+    }
+
+    loadHistory();
+  }, [threadId, historyLoaded, setMessages]);
+
+  // Debug: log messages state changes
+  useEffect(() => {
+    console.log("[ChatContainer] Messages state changed:", messages.length, messages);
+  }, [messages]);
+
+  // Auto-sync metadata when messages change (replaces onMessageSent callback)
+  useEffect(() => {
+    if (!threadId || !historyLoaded) return;
+    if (messages.length > prevMessageCount.current) {
+      // New message added - touch conversation to update timestamp
+      touchConversation(threadId).catch(console.error);
+
+      // Generate title on first user message
+      if (!titleGenerated.current) {
+        const userMessages = messages.filter((m) => m.role === "user");
+        if (userMessages.length > 0) {
+          const firstUserContent = userMessages[0].content;
+          const content = typeof firstUserContent === "string" ? firstUserContent : "";
+          if (content) {
+            titleGenerated.current = true;
+            generateTitle(threadId, content).catch(console.error);
+          }
+        }
+      }
+    }
+    prevMessageCount.current = messages.length;
+  }, [messages.length, threadId, historyLoaded]);
 
   // Citation dialog state
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
@@ -109,13 +181,6 @@ export function ChatContainer({ onMessageSent, disabled }: ChatContainerProps) {
     setSelectedChunkId(chunkId);
     setDialogOpen(true);
   }, []);
-
-  const handleSubmitMessage = useCallback(
-    (message: string) => {
-      onMessageSent?.(message);
-    },
-    [onMessageSent]
-  );
 
   // Render search progress during agent execution
   useCoAgentStateRender<RAGState>({
@@ -151,7 +216,6 @@ export function ChatContainer({ onMessageSent, disabled }: ChatContainerProps) {
           }`}
           markdownTagRenderers={sourceTagRenderers}
           AssistantMessage={CustomAssistantMessage}
-          onSubmitMessage={disabled ? undefined : handleSubmitMessage}
         />
 
         {/* Dialog for viewing full source content */}

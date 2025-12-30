@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 import litellm
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 # Drop unsupported parameters for models that don't support them
@@ -75,6 +75,20 @@ class GenerateTitleRequest(BaseModel):
 
     content: str = Field(..., max_length=500)
     force: bool = Field(default=False, description="Force regeneration even if title exists")
+
+
+class MessageResponse(BaseModel):
+    """Message response for history loading."""
+
+    id: str
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class MessagesListResponse(BaseModel):
+    """List of messages for a conversation."""
+
+    messages: list[MessageResponse]
 
 
 # ============================================
@@ -405,6 +419,75 @@ async def touch_conversation(
         updated_at=row["updated_at"],
         last_message_at=row.get("last_message_at"),
     )
+
+
+@router.get("/{thread_id}/messages", response_model=MessagesListResponse)
+async def get_messages(
+    request: Request,
+    thread_id: UUID,
+    user: UserPayload = Depends(get_current_user),
+):
+    """Get all messages for a conversation from LangGraph checkpoints.
+
+    Used by frontend to load conversation history on page mount.
+    Returns messages in CopilotKit-compatible format (id, role, content).
+    Only returns user and assistant messages with actual content.
+    """
+    client = SupabaseClient()
+
+    # Verify conversation exists and belongs to user
+    check_result = (
+        client.client.table("conversations")
+        .select("id")
+        .eq("thread_id", str(thread_id))
+        .eq("user_id", user.sub)
+        .maybe_single()
+        .execute()
+    )
+
+    if not check_result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    # Get checkpointer from app state
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    if not checkpointer:
+        logger.warning("Checkpointer not available in app.state")
+        return MessagesListResponse(messages=[])
+
+    try:
+        # Use LangGraph's API to get the checkpoint with deserialized messages
+        config = {"configurable": {"thread_id": str(thread_id), "checkpoint_ns": ""}}
+        checkpoint_tuple = await checkpointer.aget_tuple(config)
+
+        if not checkpoint_tuple:
+            return MessagesListResponse(messages=[])
+
+        # Get messages from the properly deserialized checkpoint
+        lc_messages = checkpoint_tuple.checkpoint.get("channel_values", {}).get("messages", [])
+
+        # Convert LangChain messages to response format
+        messages: list[MessageResponse] = []
+        for msg in lc_messages:
+            msg_id = getattr(msg, "id", None) or str(len(messages))
+            if isinstance(msg, HumanMessage):
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                if content.strip():
+                    messages.append(MessageResponse(id=msg_id, role="user", content=content))
+            elif isinstance(msg, AIMessage):
+                # Skip tool call messages (they have tool_calls but often empty content)
+                if hasattr(msg, "tool_calls") and msg.tool_calls and not msg.content:
+                    continue
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                if content.strip():
+                    messages.append(MessageResponse(id=msg_id, role="assistant", content=content))
+
+        logger.debug("Returning %d messages for thread %s", len(messages), thread_id)
+        return MessagesListResponse(messages=messages)
+
+    except Exception as e:
+        logger.error("Failed to get messages for thread %s: %s", thread_id, e)
+        # Return empty list instead of failing - better UX
+        return MessagesListResponse(messages=[])
 
 
 def _is_fallback_title(title: str, content: str) -> bool:

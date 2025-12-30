@@ -41,7 +41,10 @@
       "Bash(cmd /c \"dir c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\")",
       "Bash(cmd /c \"dir c:\\\\Projects\\\\GitHub\\\\NCL\\\\data\\\\archive\\\\02c1307f24a6576d /a /s\")",
       "Bash(xargs ls:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(cmd /c \"cd c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm run build 2>&1\")",
+      "Bash(cmd /c \"cd /d c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm run build\")",
+      "Bash(cmd /c \"cd /d c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm ls:*)"
     ]
   }
 }
