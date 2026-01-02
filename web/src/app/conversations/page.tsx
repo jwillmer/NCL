@@ -57,8 +57,8 @@ function ConversationItem({
         </p>
         <p className="text-xs text-ncl-gray mt-0.5">
           {formatRelativeTime(conversation.last_message_at || conversation.created_at)}
-          {conversation.vessel_filter && (
-            <span className="ml-2 text-ncl-blue">{conversation.vessel_filter}</span>
+          {conversation.vessel_id && (
+            <span className="ml-2 text-ncl-blue">{conversation.vessel_id}</span>
           )}
         </p>
       </div>
