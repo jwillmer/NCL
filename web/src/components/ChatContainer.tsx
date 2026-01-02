@@ -113,13 +113,22 @@ interface ChatContainerProps {
   threadId?: string;
   /** Whether the chat is read-only (e.g., archived conversations) */
   disabled?: boolean;
+  /** Selected vessel ID for filtering search results */
+  vesselId?: string | null;
 }
 
-export function ChatContainer({ threadId, disabled }: ChatContainerProps) {
-  const { state } = useCoAgent<RAGState>({
+export function ChatContainer({ threadId, disabled, vesselId }: ChatContainerProps) {
+  const { state, setState } = useCoAgent<RAGState>({
     name: "default",
     initialState: initialRAGState,
   });
+
+  // Sync vessel filter to agent state when it changes
+  useEffect(() => {
+    if (state.selected_vessel_id !== vesselId) {
+      setState({ ...state, selected_vessel_id: vesselId ?? null });
+    }
+  }, [vesselId, state, setState]);
 
   // CopilotKit hooks for history loading and reactive sync
   // Using useCopilotChatInternal to get access to setMessages which updates agent state

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from supabase import Client, create_client
+
+logger = logging.getLogger(__name__)
 
 from ..config import get_settings
 from ..models.chunk import Chunk

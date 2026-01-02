@@ -37,10 +37,15 @@ from langgraph.types import Command
 
 from ..config import get_settings
 from ..models.chunk import RetrievalResult
+from ..models.vessel import Vessel
 from ..rag.citation_processor import CitationProcessor
 from ..rag.query_engine import RAGQueryEngine
+from ..storage.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
+
+# Cache for vessel lookups to avoid repeated DB queries
+_vessel_cache: Dict[str, Optional[Vessel]] = {}
 
 
 class AgentState(CopilotKitState):
@@ -51,12 +56,54 @@ class AgentState(CopilotKitState):
 
     search_progress: str = ""
     error_message: Optional[str] = None
+    selected_vessel_id: Optional[str] = None
 
 
 def _load_system_prompt() -> str:
     """Load system prompt from file."""
     prompt_path = Path(__file__).parent / "prompts" / "system.md"
     return prompt_path.read_text(encoding="utf-8")
+
+
+async def _get_vessel_info(vessel_id: Optional[str]) -> Optional[Vessel]:
+    """Get vessel info from cache or database."""
+    if not vessel_id:
+        return None
+
+    if vessel_id in _vessel_cache:
+        return _vessel_cache[vessel_id]
+
+    try:
+        from uuid import UUID
+        client = SupabaseClient()
+        vessel = await client.get_vessel_by_id(UUID(vessel_id))
+        _vessel_cache[vessel_id] = vessel
+        return vessel
+    except Exception as e:
+        logger.warning("Failed to fetch vessel info for %s: %s", vessel_id, e)
+        return None
+
+
+def _build_system_prompt(vessel: Optional[Vessel] = None) -> str:
+    """Build system prompt with optional vessel context."""
+    base_prompt = _load_system_prompt()
+
+    if vessel:
+        vessel_context = f"""
+## Current Vessel Filter
+
+You are currently searching within documents related to a specific vessel:
+- **Vessel Name:** {vessel.name}
+- **IMO Number:** {vessel.imo}
+
+All search results are filtered to this vessel. When responding:
+- Acknowledge that information is specific to {vessel.name}
+- If the user asks about other vessels, remind them that results are filtered to this vessel
+- Use the vessel name when referencing findings (e.g., "On {vessel.name}, the issue was...")
+"""
+        return base_prompt + vessel_context
+
+    return base_prompt
 
 
 def _serialize_retrieval_result(result: RetrievalResult) -> Dict[str, Any]:
@@ -115,7 +162,10 @@ async def chat_node(
     model = ChatOpenAI(model=settings.llm_model)
     model_with_tools = model.bind_tools([SEARCH_TOOL], parallel_tool_calls=False)
 
-    system_message = SystemMessage(content=_load_system_prompt())
+    # Build system prompt with vessel context if a vessel filter is active
+    vessel_id = state.get("selected_vessel_id")
+    vessel = await _get_vessel_info(vessel_id)
+    system_message = SystemMessage(content=_build_system_prompt(vessel))
 
     # Check if we have search context (coming back from search_node)
     citation_map_data = state.get("citation_map")
@@ -206,10 +256,8 @@ async def search_node(
         settings = get_settings()
         citation_processor = CitationProcessor()
 
-        # Read vessel filter from CopilotKit properties (passed from frontend)
-        vessel_id = state.get("properties", {}).get("selected_vessel_id")
-        if vessel_id:
-            logger.debug("Filtering search by vessel_id: %s", vessel_id)
+        # Read vessel filter from shared state (synced from frontend via useCoAgent)
+        vessel_id = state.get("selected_vessel_id")
 
         # Progress callback to emit state updates
         async def on_progress(message: str) -> None:

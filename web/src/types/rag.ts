@@ -5,11 +5,13 @@
 export interface RAGState {
   search_progress: string;
   error_message: string | null;
+  selected_vessel_id: string | null;
 }
 
 export const initialRAGState: RAGState = {
   search_progress: "",
   error_message: null,
+  selected_vessel_id: null,
 };
 
 /**

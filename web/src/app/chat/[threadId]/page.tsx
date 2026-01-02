@@ -324,6 +324,7 @@ function ChatPageContent() {
           <ChatContainer
             threadId={threadId}
             disabled={isArchived}
+            vesselId={vesselId}
           />
         </main>
       </div>
