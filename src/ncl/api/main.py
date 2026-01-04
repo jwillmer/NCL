@@ -29,6 +29,7 @@ from ..storage.supabase_client import SupabaseClient
 from .agent import create_graph
 from .conversations import router as conversations_router
 from .middleware.auth import SupabaseJWTBearer
+from .patches import apply_agui_thread_patch
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,10 @@ async def lifespan(app: FastAPI):
 
         # Create agent graph with checkpointer
         app.state.agent_graph = create_graph(checkpointer)
+
+        # Apply patch for ag-ui-langgraph thread continuation bug
+        # See: https://github.com/CopilotKit/CopilotKit/issues/2402
+        apply_agui_thread_patch()
 
         # Add LangGraph agent endpoint via AG-UI protocol
         add_langgraph_fastapi_endpoint(
