@@ -361,6 +361,8 @@ def create_graph(checkpointer: BaseCheckpointSaver) -> StateGraph:
     returning the final response, ensuring citations are validated against
     the citation_map and formatted with <cite> tags.
     """
+    from ..observability import get_langfuse_handler
+
     graph = StateGraph(AgentState)
 
     # Add nodes
@@ -371,4 +373,11 @@ def create_graph(checkpointer: BaseCheckpointSaver) -> StateGraph:
     graph.set_entry_point("chat_node")
 
     # Compile with provided checkpointer for conversation persistence
-    return graph.compile(checkpointer=checkpointer)
+    compiled = graph.compile(checkpointer=checkpointer)
+
+    # Add Langfuse callback for tracing (if enabled)
+    langfuse_handler = get_langfuse_handler()
+    if langfuse_handler:
+        compiled = compiled.with_config({"callbacks": [langfuse_handler]})
+
+    return compiled

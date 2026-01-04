@@ -158,6 +158,18 @@ class Settings(BaseSettings):
         default="http://localhost:5173,http://127.0.0.1:5173", validation_alias="CORS_ORIGINS"
     )
 
+    # Langfuse Observability (optional)
+    langfuse_enabled: bool = Field(default=False, validation_alias="LANGFUSE_ENABLED")
+    langfuse_public_key: Optional[str] = Field(
+        default=None, validation_alias="LANGFUSE_PUBLIC_KEY"
+    )
+    langfuse_secret_key: Optional[str] = Field(
+        default=None, validation_alias="LANGFUSE_SECRET_KEY"
+    )
+    langfuse_base_url: str = Field(
+        default="https://cloud.langfuse.com", validation_alias="LANGFUSE_BASE_URL"
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

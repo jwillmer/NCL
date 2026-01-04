@@ -46,7 +46,10 @@
       "Bash(cmd /c \"cd /d c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm run build\")",
       "Bash(cmd /c \"cd /d c:\\\\Projects\\\\GitHub\\\\NCL\\\\web && npm ls:*)",
       "Bash(dir /s /b \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\web\\\\node_modules\\\\@copilotkit\")",
-      "Bash(npm run dev --help:*)"
+      "Bash(npm run dev --help:*)",
+      "Bash(uv pip show:*)",
+      "Bash(pip index:*)",
+      "Bash(uv pip:*)"
     ]
   }
 }

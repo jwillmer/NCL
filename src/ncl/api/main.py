@@ -102,6 +102,18 @@ async def lifespan(app: FastAPI):
     """
     settings = get_settings()
 
+    # Initialize Langfuse observability (if enabled)
+    if settings.langfuse_enabled:
+        from ..observability import init_langfuse
+
+        logger.info("Initializing Langfuse with host: %s", settings.langfuse_base_url)
+        if init_langfuse():
+            logger.info("Langfuse observability enabled")
+        else:
+            logger.warning("Langfuse initialization failed - check credentials")
+    else:
+        logger.debug("Langfuse disabled")
+
     # Initialize AsyncPostgresSaver for LangGraph conversation persistence
     logger.info("Initializing LangGraph checkpointer...")
     async with AsyncPostgresSaver.from_conn_string(settings.supabase_db_url) as checkpointer:

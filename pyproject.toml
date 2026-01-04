@@ -47,12 +47,15 @@ dev = [
 api = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
-    "langgraph>=0.2.0",
+    "langgraph>=0.3.25,<1.0.0",
+    "langchain-core>=0.3.0,<1.0.0",
     "langchain-openai>=0.3.0",
-    "copilotkit>=0.1.74",
-    "ag-ui-langgraph>=0.0.1",
+    "copilotkit>=0.1.73,<0.2.0",
+    "ag-ui-langgraph>=0.0.22",
     "python-jose[cryptography]>=3.3.0",
     "slowapi>=0.1.9",
+    "langfuse>=3.0.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.0.0",
 ]
 
 [project.scripts]
