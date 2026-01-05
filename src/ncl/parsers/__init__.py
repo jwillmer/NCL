@@ -7,9 +7,11 @@ from .eml_parser import EMLParser
 from .llamaparse_parser import LlamaParseParser
 from .preprocessor import DocumentPreprocessor, PreprocessResult
 from .registry import ParserRegistry
+from .text_parser import TextParser
 
 # Register built-in parsers
 ParserRegistry.register(LlamaParseParser)
+ParserRegistry.register(TextParser)
 
 __all__ = [
     "AttachmentProcessor",
@@ -21,4 +23,5 @@ __all__ = [
     "LlamaParseParser",
     "ParserRegistry",
     "PreprocessResult",
+    "TextParser",
 ]

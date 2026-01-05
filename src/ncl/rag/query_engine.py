@@ -46,7 +46,7 @@ class RAGQueryEngine:
         self.embeddings = EmbeddingGenerator()
         self.reranker = Reranker()
         self.citation_processor = CitationProcessor()
-        self.llm_model = settings.llm_model
+        self.llm_model = settings.get_model(settings.rag_llm_model)
         self.chunk_display_max_chars = settings.chunk_display_max_chars
 
     async def query(

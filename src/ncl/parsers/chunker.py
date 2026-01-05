@@ -30,6 +30,10 @@ class ContextGenerator:
     Creates 2-3 sentence summaries of documents that are prepended to each
     chunk before embedding. This technique (contextual chunking) improves
     retrieval accuracy by 35-67% according to Anthropic research.
+
+    Uses a two-tier model approach:
+    - Primary model for most content (fast/cheap)
+    - Fallback model with larger context for long content
     """
 
     CONTEXT_PROMPT = """Summarize this document in 2-3 sentences for context.
@@ -42,25 +46,39 @@ Document:
     def __init__(self):
         """Initialize context generator with settings."""
         settings = get_settings()
-        self.model = settings.context_llm_model
+        self.model = settings.get_model(settings.context_llm_model)
+        self.fallback_model = settings.get_model(settings.context_llm_fallback)
+        self.max_input_tokens = settings.context_llm_max_tokens
+        self._encoding = tiktoken.get_encoding("cl100k_base")
 
-    async def generate_context(
-        self,
-        document: Document,
-        content_preview: str,
-        max_preview_chars: int = 4000,
+    def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
+        """Truncate text to fit within token limit.
+
+        Args:
+            text: Text to truncate.
+            max_tokens: Maximum number of tokens.
+
+        Returns:
+            Truncated text.
+        """
+        tokens = self._encoding.encode(text)
+        if len(tokens) <= max_tokens:
+            return text
+        return self._encoding.decode(tokens[:max_tokens])
+
+    def _build_prompt_content(
+        self, document: Document, content_preview: str, max_preview_chars: int
     ) -> str:
-        """Generate a 2-3 sentence context summary for a document.
+        """Build the content portion of the prompt with metadata hints.
 
         Args:
             document: Document object with metadata.
-            content_preview: Text content to summarize (will be truncated).
-            max_preview_chars: Maximum characters to send to LLM.
+            content_preview: Text content to summarize.
+            max_preview_chars: Maximum characters for preview.
 
         Returns:
-            Context summary string.
+            Formatted content string with hints.
         """
-        # Build context hints from document metadata
         hints = []
         if document.document_type:
             hints.append(f"Type: {document.document_type.value}")
@@ -72,18 +90,43 @@ Document:
             if document.email_metadata.date_start:
                 hints.append(f"Date: {document.email_metadata.date_start.strftime('%Y-%m-%d')}")
 
-        # Truncate content preview
         truncated_content = content_preview[:max_preview_chars]
         if hints:
             truncated_content = "\n".join(hints) + "\n\n" + truncated_content
 
+        return truncated_content
+
+    async def generate_context(
+        self,
+        document: Document,
+        content_preview: str,
+        max_preview_chars: int = 4000,
+    ) -> str:
+        """Generate a 2-3 sentence context summary for a document.
+
+        Uses two-tier model approach: tries primary model first, falls back
+        to larger context model if context window is exceeded.
+
+        Args:
+            document: Document object with metadata.
+            content_preview: Text content to summarize (will be truncated).
+            max_preview_chars: Maximum characters to send to LLM.
+
+        Returns:
+            Context summary string.
+        """
+        prompt_content = self._build_prompt_content(
+            document, content_preview, max_preview_chars
+        )
+
+        # Try primary model first
         try:
             response = await litellm.acompletion(
                 model=self.model,
                 messages=[
                     {
                         "role": "user",
-                        "content": self.CONTEXT_PROMPT.format(content=truncated_content),
+                        "content": self.CONTEXT_PROMPT.format(content=prompt_content),
                     }
                 ],
                 max_tokens=150,
@@ -91,8 +134,53 @@ Document:
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.warning(f"Failed to generate context: {e}")
-            # Fallback to basic metadata-based context
+            error_str = str(e).lower()
+            # Check if context window error
+            if "context" in error_str or "token" in error_str:
+                logger.warning(
+                    f"Context window exceeded with {self.model}, trying fallback model..."
+                )
+                return await self._try_fallback_model(document, content_preview)
+            else:
+                logger.warning(f"Failed to generate context: {e}")
+                return self._fallback_context(document)
+
+    async def _try_fallback_model(
+        self, document: Document, content_preview: str
+    ) -> str:
+        """Try generating context with fallback model and token truncation.
+
+        Args:
+            document: Document object with metadata.
+            content_preview: Full text content.
+
+        Returns:
+            Context summary string.
+        """
+        # Apply token truncation for fallback model (reserve 500 for prompt + response)
+        safe_limit = self.max_input_tokens - 500
+        truncated_content = self._truncate_to_tokens(content_preview, safe_limit)
+
+        # Rebuild prompt with truncated content
+        prompt_content = self._build_prompt_content(
+            document, truncated_content, len(truncated_content)
+        )
+
+        try:
+            response = await litellm.acompletion(
+                model=self.fallback_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": self.CONTEXT_PROMPT.format(content=prompt_content),
+                    }
+                ],
+                max_tokens=150,
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as fallback_error:
+            logger.warning(f"Fallback model also failed: {fallback_error}")
             return self._fallback_context(document)
 
     def _fallback_context(self, document: Document) -> str:

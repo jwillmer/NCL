@@ -43,12 +43,33 @@ class Settings(BaseSettings):
         default="text-embedding-3-small", validation_alias="EMBEDDING_MODEL"
     )
     embedding_dimensions: int = Field(default=1536, validation_alias="EMBEDDING_DIMENSIONS")
+
+    # Default LLM model (fallback when specific model not set)
     llm_model: str = Field(default="gpt-4o-mini", validation_alias="LLM_MODEL")
 
-    # Contextual Chunking Configuration
-    context_llm_model: str = Field(
-        default="gpt-5-nano", validation_alias="CONTEXT_LLM_MODEL"
+    # Dedicated models per functionality (None = fallback to llm_model)
+    context_llm_model: Optional[str] = Field(
+        default=None, validation_alias="CONTEXT_LLM_MODEL"
     )
+    context_llm_fallback: Optional[str] = Field(
+        default=None, validation_alias="CONTEXT_LLM_FALLBACK"
+    )
+    context_llm_max_tokens: int = Field(
+        default=120000, validation_alias="CONTEXT_LLM_MAX_TOKENS"
+    )
+    email_cleaner_model: Optional[str] = Field(
+        default=None, validation_alias="EMAIL_CLEANER_MODEL"
+    )
+    image_llm_model: Optional[str] = Field(
+        default=None, validation_alias="IMAGE_LLM_MODEL"
+    )
+    rag_llm_model: Optional[str] = Field(
+        default=None, validation_alias="RAG_LLM_MODEL"
+    )
+
+    def get_model(self, specific_model: Optional[str]) -> str:
+        """Return specific model if set, otherwise fallback to llm_model."""
+        return specific_model or self.llm_model
 
     # Chunking Configuration
     chunk_size_tokens: int = Field(default=512, validation_alias="CHUNK_SIZE_TOKENS")

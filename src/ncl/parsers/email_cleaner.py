@@ -15,6 +15,8 @@ from typing import Optional, Tuple
 
 from litellm import completion
 
+from ..config import get_settings
+
 logger = logging.getLogger(__name__)
 
 # System prompt for content extraction using word anchors
@@ -88,7 +90,7 @@ async def extract_content_bounds(
 
     Args:
         text: Raw email body text.
-        model: LLM model to use (defaults to gpt-4o-mini for speed/cost).
+        model: LLM model to use (defaults to configured email_cleaner_model).
 
     Returns:
         Tuple of (start, end) positions.
@@ -97,7 +99,9 @@ async def extract_content_bounds(
     if not text or not text.strip():
         return (0, len(text))
 
-    model = model or "gpt-4o-mini"
+    if model is None:
+        settings = get_settings()
+        model = settings.get_model(settings.email_cleaner_model)
 
     try:
         response = completion(

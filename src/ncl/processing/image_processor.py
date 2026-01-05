@@ -100,6 +100,9 @@ class ImageProcessor:
         """Initialize the image processor with agents."""
         self.settings = get_settings()
 
+        # Get model for image processing
+        image_model = self.settings.get_model(self.settings.image_llm_model)
+
         # Agent for classifying email images
         self._classifier_agent = Agent(
             name="Image Classifier",
@@ -114,7 +117,7 @@ Classify images as:
 - meaningful: Screenshots, diagrams, charts, photos of documents, whiteboard photos, or any image with substantive information
 
 For meaningful images, provide a detailed description. For non-meaningful images, skip the description.""",
-            model=self.settings.llm_model,
+            model=image_model,
             output_type=ImageClassifyResponse,
         )
 
@@ -130,7 +133,7 @@ Include:
 - Key information that would be useful for search and retrieval
 
 Be thorough but concise.""",
-            model=self.settings.llm_model,
+            model=image_model,
             output_type=ImageDescribeResponse,
         )
 
