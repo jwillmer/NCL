@@ -129,6 +129,10 @@ uv run ncl ingest --reprocess-outdated
 MAX_CONCURRENT_FILES=10 uv run ncl ingest
 ```
 
+### Graceful Shutdown
+
+Press `Ctrl+C` once during ingest to stop gracefully - all in-progress emails will complete before stopping. Press `Ctrl+C` twice to force exit immediately.
+
 ### Ingest Reports
 
 After each ingest run, a report is exported to `data/reports/`:

@@ -71,8 +71,8 @@ def _handle_interrupt(signum, frame):
         console.print("\n[red]Force exiting...[/red]")
         sys.exit(1)
     _shutdown_requested = True
-    console.print("\n[yellow]Interrupted! Cleaning up... (press Ctrl+C again to force exit)[/yellow]")
-    raise KeyboardInterrupt
+    console.print("\n[yellow]Graceful shutdown requested - completing in-progress files... (press Ctrl+C again to force exit)[/yellow]")
+    # Don't raise KeyboardInterrupt - let the loop finish gracefully
 
 
 def vprint(msg: str, file_ctx: str | None = None):
@@ -215,8 +215,6 @@ def ingest(
 
     try:
         asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed, reprocess_outdated))
-    except KeyboardInterrupt:
-        console.print("[yellow]Processing stopped by user[/yellow]")
     finally:
         # Restore original signal handler
         signal.signal(signal.SIGINT, original_handler)
@@ -287,13 +285,10 @@ async def _ingest(
         # Reset issues list for this run
         _processing_issues.clear()
 
-        # Create semaphore for concurrency control
-        semaphore = asyncio.Semaphore(settings.max_concurrent_files)
-
-        # Create a queue of available slot indices for worker progress bars
-        slot_queue: asyncio.Queue[int] = asyncio.Queue()
-        for i in range(settings.max_concurrent_files):
-            slot_queue.put_nowait(i)
+        # Create file queue for worker pool
+        file_queue: asyncio.Queue[Path | None] = asyncio.Queue()
+        for f in files:
+            file_queue.put_nowait(f)
 
         # Process files with progress tracking
         with Progress(
@@ -314,23 +309,27 @@ async def _ingest(
             # Total progress bar
             total_task = progress.add_task("[bold]Total[/bold]", total=len(files))
 
-            async def process_with_limit(file_path: Path) -> tuple[Path, bool, str | None]:
-                """Process a file with concurrency limiting and real-time progress."""
+            async def worker(worker_idx: int) -> None:
+                """Worker that pulls files from queue and processes them."""
                 nonlocal processed_count
-                async with semaphore:
-                    # Acquire a worker slot from queue
-                    slot_idx = await slot_queue.get()
-                    worker_task = worker_tasks[slot_idx]
+                worker_task = worker_tasks[worker_idx]
+
+                while True:
+                    # Check shutdown before getting next file
+                    if _shutdown_requested:
+                        return
+
+                    # Try to get next file (non-blocking check)
+                    try:
+                        file_path = file_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return  # No more files
 
                     try:
-                        if _shutdown_requested:
-                            progress.update(total_task, advance=1)
-                            return (file_path, False, "shutdown")
-
                         # Show starting state
                         progress.update(
                             worker_task,
-                            description=f"[{slot_idx + 1}] {file_path.name}",
+                            description=f"[{worker_idx + 1}] {file_path.name}",
                             total=1,
                             completed=0,
                         )
@@ -350,32 +349,29 @@ async def _ingest(
                             vessel_matcher=vessel_matcher,
                             progress=progress,
                             worker_task=worker_task,
-                            slot_idx=slot_idx,
+                            slot_idx=worker_idx,
                         )
                         processed_count += 1
-                        progress.update(total_task, advance=1)
-                        return (file_path, True, None)
                     except Exception as e:
                         await tracker.mark_failed(file_path, str(e))
                         console.print(f"[red]Error processing {file_path.name}: {e}[/red]")
-                        progress.update(total_task, advance=1)
-                        return (file_path, False, str(e))
                     finally:
-                        # Release slot - mark as idle
+                        progress.update(total_task, advance=1)
+                        # Mark as idle between files
                         progress.update(
                             worker_task,
-                            description=f"[dim][{slot_idx + 1}] (idle)[/dim]",
+                            description=f"[dim][{worker_idx + 1}] (idle)[/dim]",
                             total=1,
                             completed=0,
                         )
-                        slot_queue.put_nowait(slot_idx)
 
-            # Process all files concurrently (semaphore limits to max_concurrent_files at a time)
-            tasks = [process_with_limit(f) for f in files]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Start worker pool
+            workers = [worker(i) for i in range(settings.max_concurrent_files)]
+            await asyncio.gather(*workers)
 
             if _shutdown_requested:
-                console.print(f"[yellow]Stopped after {processed_count} files[/yellow]")
+                skipped = file_queue.qsize()
+                console.print(f"[yellow]Stopped after {processed_count} files ({skipped} skipped)[/yellow]")
 
         # Show final stats and issue summary
         stats = await tracker.get_processing_stats()
