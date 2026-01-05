@@ -46,6 +46,137 @@ class FailureReport:
     files_succeeded: int = 0
 
 
+class IngestReportWriter:
+    """Writes ingest report continuously during processing.
+
+    Creates the report file at initialization and updates it after each failure,
+    ensuring error details are preserved even if the process crashes.
+    """
+
+    def __init__(self, source_dir: Optional[str] = None):
+        self.settings = get_settings()
+        self.source_dir = source_dir
+        self.run_timestamp = datetime.now(timezone.utc)
+        self.failures: List[FailureRecord] = []
+        self.files_processed = 0
+        self.files_succeeded = 0
+
+        # Validate and create reports directory
+        reports_dir = self.settings.failure_reports_dir.resolve()
+        if ".." in str(self.settings.failure_reports_dir):
+            raise ValueError(
+                f"Invalid reports directory path: {self.settings.failure_reports_dir}"
+            )
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create file paths
+        timestamp_str = self.run_timestamp.strftime("%Y%m%d_%H%M%S")
+        self._json_path = reports_dir / f"ingest_{timestamp_str}.json"
+        self._csv_path = reports_dir / f"ingest_{timestamp_str}.csv"
+
+        # Write initial empty report
+        self._write_report()
+
+    def add_eml_failure(self, file_path: str, error: str) -> None:
+        """Add an EML file failure and write to disk immediately."""
+        self.failures.append(
+            FailureRecord(
+                type="eml_file",
+                file_path=file_path,
+                file_name=Path(file_path).name,
+                error=error,
+                attempts=1,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        self._write_report()
+
+    def update_stats(self, processed: int, succeeded: int) -> None:
+        """Update processing statistics and write to disk."""
+        self.files_processed = processed
+        self.files_succeeded = succeeded
+        self._write_report()
+
+    def _write_report(self) -> None:
+        """Write report to JSON and CSV files (overwrites each time)."""
+        eml_failures = sum(1 for f in self.failures if f.type == "eml_file")
+        attachment_failures = len(self.failures) - eml_failures
+
+        # Build report data
+        data = {
+            "run_timestamp": self.run_timestamp.isoformat(),
+            "summary": {
+                "total_failures": len(self.failures),
+                "eml_failures": eml_failures,
+                "attachment_failures": attachment_failures,
+                "files_processed": self.files_processed,
+                "files_succeeded": self.files_succeeded,
+            },
+            "source_dir": self.source_dir,
+            "failures": [asdict(f) for f in self.failures],
+        }
+
+        # Write JSON
+        with open(self._json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+        # Set restrictive file permissions
+        try:
+            os.chmod(self._json_path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass  # Ignore permission errors on Windows
+
+        # Write CSV
+        fieldnames = [
+            "type",
+            "file_name",
+            "parent_eml",
+            "mime_type",
+            "reason",
+            "error",
+            "attempts",
+            "file_path",
+            "timestamp",
+        ]
+        with open(self._csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for failure in self.failures:
+                writer.writerow(asdict(failure))
+
+        try:
+            os.chmod(self._csv_path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+    def get_path(self) -> Path:
+        """Return the JSON report path."""
+        return self._json_path
+
+    def cleanup_old_reports(self) -> None:
+        """Remove old reports beyond the configured keep count."""
+        keep_count = self.settings.failure_reports_keep_count
+        reports_dir = self._json_path.parent
+
+        # Get all report files sorted by modification time
+        json_files = sorted(
+            reports_dir.glob("ingest_*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        csv_files = sorted(
+            reports_dir.glob("ingest_*.csv"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        # Remove files beyond keep count
+        for old_file in json_files[keep_count:]:
+            old_file.unlink()
+        for old_file in csv_files[keep_count:]:
+            old_file.unlink()
+
+
 class FailureReportGenerator:
     """Generates failure reports from multiple data sources."""
 

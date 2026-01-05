@@ -259,6 +259,11 @@ async def _ingest(
     else:
         vprint("No vessels in registry - vessel tagging disabled")
 
+    # Initialize continuous report writer
+    from .storage.failure_report import IngestReportWriter
+    report_writer = IngestReportWriter(source_dir=str(source_dir))
+    console.print(f"[dim]Report: {report_writer.get_path()}[/dim]")
+
     try:
         # Get files to process
         if reprocess_outdated:
@@ -354,6 +359,7 @@ async def _ingest(
                         processed_count += 1
                     except Exception as e:
                         await tracker.mark_failed(file_path, str(e))
+                        report_writer.add_eml_failure(str(file_path), str(e))
                         console.print(f"[red]Error processing {file_path.name}: {e}[/red]")
                     finally:
                         progress.update(total_task, advance=1)
@@ -378,20 +384,10 @@ async def _ingest(
         _show_stats(stats)
         _show_issue_summary(_processing_issues)
 
-        # Generate and export failure report
-        from .storage.failure_report import FailureReportGenerator
-
-        report_generator = FailureReportGenerator(db)
-        report = await report_generator.generate_report(
-            in_memory_issues=_processing_issues,
-            source_dir=str(source_dir),
-            files_processed=len(files),
-            files_succeeded=processed_count,
-        )
-
-        if files:
-            paths = report_generator.export_report(report)
-            console.print(f"\nReport: {paths['json']}")
+        # Finalize report with stats and cleanup old reports
+        report_writer.update_stats(len(files), processed_count)
+        report_writer.cleanup_old_reports()
+        console.print(f"\nReport: {report_writer.get_path()}")
 
     finally:
         await db.close()
