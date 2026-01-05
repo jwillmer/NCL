@@ -104,7 +104,7 @@ def _enrich_chunks_with_document_metadata(
 ) -> None:
     """Enrich chunks with citation metadata from their document.
 
-    Sets source_id, source_title, and archive URIs on each chunk.
+    Sets chunk_id, source_id, source_title, and archive URIs on each chunk.
     Modifies chunks in-place.
 
     Args:
@@ -113,6 +113,11 @@ def _enrich_chunks_with_document_metadata(
     """
     from .models.document import Document  # Avoid circular import at top level
     for chunk in chunks:
+        # Generate stable chunk_id if not already set
+        if not chunk.chunk_id and doc.doc_id:
+            char_start = chunk.char_start or (chunk.chunk_index * 1000)
+            char_end = chunk.char_end or (char_start + len(chunk.content))
+            chunk.chunk_id = compute_chunk_id(doc.doc_id, char_start, char_end)
         chunk.source_id = doc.source_id
         chunk.source_title = doc.source_title
         chunk.archive_browse_uri = doc.archive_browse_uri
@@ -1125,6 +1130,8 @@ async def _clean():
     """Async implementation of clean command."""
     import shutil
 
+    from .storage.archive_storage import ArchiveStorage, ArchiveStorageError
+
     settings = get_settings()
     db = SupabaseClient()
 
@@ -1167,29 +1174,17 @@ async def _clean():
         else:
             console.print("[dim]Processed directory does not exist[/dim]")
 
-        # Delete archive files
-        archive_dir = settings.archive_dir
-        archive_files_deleted = 0
-
-        if archive_dir.exists():
-            vprint(f"Cleaning {archive_dir}...")
-            for item in archive_dir.iterdir():
-                if item.is_dir():
-                    file_count = sum(1 for _ in item.rglob("*") if _.is_file())
-                    archive_files_deleted += file_count
-                    shutil.rmtree(item)
-                    vprint(f"  Deleted {item.name}/ ({file_count} files)")
-                elif item.is_file():
-                    item.unlink()
-                    archive_files_deleted += 1
-                    vprint(f"  Deleted {item.name}")
-
+        # Delete archive files from Supabase Storage bucket
+        vprint("Cleaning Supabase Storage bucket...")
+        try:
+            storage = ArchiveStorage()
+            archive_files_deleted = storage.delete_all()
             if archive_files_deleted > 0:
-                console.print(f"[green]Deleted {archive_files_deleted} archive files[/green]")
+                console.print(f"[green]Deleted {archive_files_deleted} archive files from storage bucket[/green]")
             else:
-                console.print("[dim]No archive files to delete[/dim]")
-        else:
-            console.print("[dim]Archive directory does not exist[/dim]")
+                console.print("[dim]No archive files to delete from storage bucket[/dim]")
+        except ArchiveStorageError as e:
+            console.print(f"[yellow]Warning: Failed to clean storage bucket: {e}[/yellow]")
 
         console.print("[green]✓ Clean complete[/green]")
 

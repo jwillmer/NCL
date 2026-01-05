@@ -15,9 +15,9 @@ from pathlib import Path
 
 from ag_ui_langgraph import add_langgraph_fastapi_endpoint
 from copilotkit import LangGraphAGUIAgent
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -25,6 +25,7 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..config import get_settings
+from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
 from ..storage.supabase_client import SupabaseClient
 from .agent import create_graph
 from .conversations import router as conversations_router
@@ -195,23 +196,23 @@ def create_app() -> FastAPI:
 
     # Archive file serving endpoint
     # Uses same JWT auth as all other endpoints (via AuthMiddleware)
+    # Proxies files from Supabase Storage bucket
     @app.get("/archive/{file_path:path}")
     @limiter.limit("100/minute")
     async def serve_archive(request: Request, file_path: str):
-        """Serve archive files (markdown previews and original downloads).
+        """Serve archive files from Supabase Storage (markdown previews and original downloads).
 
         Security measures:
         - Uses same Supabase JWT auth as UI endpoints (via AuthMiddleware)
         - Path validation to prevent traversal attacks (rejects '..', absolute paths)
-        - Validates resolved path stays within ARCHIVE_DIR
         - Rate limited to prevent abuse
 
         Args:
             request: FastAPI request object (user available in request.state.user)
-            file_path: Relative path within the archive directory
+            file_path: Relative path within the archive bucket
 
         Returns:
-            FileResponse for the requested file
+            Response with file content
 
         Raises:
             HTTPException: 400 for invalid path, 404 for file not found
@@ -226,35 +227,18 @@ def create_app() -> FastAPI:
             )
             raise HTTPException(status_code=400, detail="Invalid path")
 
-        # Resolve the full path
-        archive_dir = settings.archive_dir.resolve()
-        requested_path = (archive_dir / file_path).resolve()
-
-        # Security: Ensure the resolved path is within archive_dir
+        # Download from Supabase Storage
         try:
-            requested_path.relative_to(archive_dir)
-        except ValueError:
-            user = getattr(request.state, "user", None)
-            logger.warning(
-                "Archive path escape attempt: %s resolved to %s from user %s",
-                file_path,
-                requested_path,
-                getattr(user, "email", "unknown") if user else "unknown",
-            )
-            raise HTTPException(status_code=400, detail="Invalid path")
-
-        # Check if file exists
-        if not requested_path.exists():
+            storage = ArchiveStorage()
+            content = storage.download_file(file_path)
+        except ArchiveStorageError:
             raise HTTPException(status_code=404, detail="File not found")
 
-        if not requested_path.is_file():
-            raise HTTPException(status_code=400, detail="Path is not a file")
-
         # Determine content type
-        content_type, _ = mimetypes.guess_type(str(requested_path))
+        content_type, _ = mimetypes.guess_type(file_path)
         if content_type is None:
-            # Default to text/plain for markdown, octet-stream for others
-            if requested_path.suffix.lower() == ".md":
+            # Default to text/markdown for .md, octet-stream for others
+            if file_path.endswith(".md"):
                 content_type = "text/markdown; charset=utf-8"
             else:
                 content_type = "application/octet-stream"
@@ -266,10 +250,13 @@ def create_app() -> FastAPI:
             getattr(user, "email", "unknown") if user else "unknown",
         )
 
-        return FileResponse(
-            path=requested_path,
+        # Get filename from path
+        filename = Path(file_path).name
+
+        return Response(
+            content=content,
             media_type=content_type,
-            filename=requested_path.name,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
 
     # Citation details endpoint for fetching source content
@@ -303,19 +290,21 @@ def create_app() -> FastAPI:
         if not chunk:
             raise HTTPException(status_code=404, detail="Citation not found")
 
-        # Fetch markdown content if archive exists
+        # Fetch markdown content from Supabase Storage if archive exists
         content = None
         if chunk.archive_browse_uri:
             # Strip /archive/ prefix if present (URI is for web, not filesystem)
             relative_path = chunk.archive_browse_uri
             if relative_path.startswith("/archive/"):
                 relative_path = relative_path[len("/archive/"):]
-            archive_path = settings.archive_dir / relative_path
-            if archive_path.exists():
-                try:
-                    content = archive_path.read_text(encoding="utf-8")
-                except Exception as e:
-                    logger.warning("Failed to read archive content: %s", e)
+            try:
+                storage = ArchiveStorage()
+                content_bytes = storage.download_file(relative_path)
+                content = content_bytes.decode("utf-8")
+            except ArchiveStorageError:
+                logger.warning("Archive file not found: %s", relative_path)
+            except Exception as e:
+                logger.warning("Failed to read archive content: %s", e)
 
         user = getattr(request.state, "user", None)
         logger.debug(

@@ -88,9 +88,9 @@ class Settings(BaseSettings):
         """Directory for extracted ZIP contents."""
         return self.data_processed_dir / "extracted"
 
-    # Archive Configuration (for browsable content)
-    archive_dir: Path = Field(
-        default=Path("./data/archive"), validation_alias="ARCHIVE_DIR"
+    # Archive Configuration (Supabase Storage)
+    archive_bucket: str = Field(
+        default="archive", validation_alias="ARCHIVE_BUCKET"
     )
     archive_base_url: str = Field(
         default="", validation_alias="ARCHIVE_BASE_URL"

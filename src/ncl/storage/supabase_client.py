@@ -724,6 +724,16 @@ class SupabaseClient:
             file_path=row["file_path"],
             file_name=row["file_name"],
             file_hash=row.get("file_hash"),
+            # Stable identification for citations and version tracking
+            source_id=row.get("source_id"),
+            doc_id=row.get("doc_id"),
+            content_version=row.get("content_version", 1),
+            ingest_version=row.get("ingest_version", 1),
+            source_title=row.get("source_title"),
+            # Archive links
+            archive_path=row.get("archive_path"),
+            archive_browse_uri=row.get("archive_browse_uri"),
+            archive_download_uri=row.get("archive_download_uri"),
             email_metadata=email_metadata,
             attachment_metadata=attachment_metadata,
             status=status,

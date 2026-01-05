@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from ..config import get_settings
 from ..models.chunk import (
     CitationValidationResult,
     RetrievalResult,
     ValidatedCitation,
 )
+from ..storage.archive_storage import ArchiveStorage
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +43,9 @@ Example response:
 "The GPS system requires calibration before each flight [C:8f3a2b1c]. This was confirmed by the maintenance team on Tuesday [C:9a4b3c2d]."
 """
 
-    def __init__(self, archive_dir: Optional[Path] = None):
-        """Initialize citation processor.
-
-        Args:
-            archive_dir: Directory where archive files are stored for verification.
-        """
-        settings = get_settings()
-        self.archive_dir = archive_dir or settings.archive_dir
+    def __init__(self):
+        """Initialize citation processor."""
+        self.storage = ArchiveStorage()
 
     def get_system_prompt(self) -> str:
         """Get system prompt with citation rules."""
@@ -120,7 +114,7 @@ Example response:
         return {r.chunk_id: r for r in results}
 
     def verify_archive_exists(self, archive_uri: Optional[str]) -> bool:
-        """Check if the archive file actually exists on disk.
+        """Check if the archive file exists in Supabase Storage.
 
         Args:
             archive_uri: Relative URI to archive file.
@@ -131,8 +125,7 @@ Example response:
         if not archive_uri:
             return False
 
-        archive_path = self.archive_dir / archive_uri
-        return archive_path.exists()
+        return self.storage.file_exists(archive_uri)
 
     def process_response(
         self,

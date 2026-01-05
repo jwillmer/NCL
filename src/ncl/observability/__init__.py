@@ -38,9 +38,11 @@ def init_langfuse() -> bool:
         os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key
         os.environ["LANGFUSE_HOST"] = settings.langfuse_base_url
 
-        # Configure LiteLLM with Langfuse OTEL callback (v3 compatible)
-        # Using langfuse_otel instead of langfuse to avoid sdk_integration error
+        # Configure LiteLLM with Langfuse OTEL callback (required for Langfuse v3)
+        # Note: Native "langfuse" callback is incompatible with Langfuse SDK v3
         # See: https://github.com/BerriAI/litellm/issues/13137
+        # Known limitation: input/output may not display fully in Langfuse UI
+        # See: https://github.com/langfuse/langfuse/issues/9474
         if "langfuse_otel" not in litellm.success_callback:
             litellm.success_callback.append("langfuse_otel")
         if "langfuse_otel" not in litellm.failure_callback:

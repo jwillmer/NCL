@@ -40,7 +40,6 @@ class HierarchyManager:
         self.db = db_client
         settings = get_settings()
         self.ingest_root = ingest_root or settings.eml_source_dir
-        self.archive_dir = settings.archive_dir
         self.archive_base_url = settings.archive_base_url
         self.current_ingest_version = settings.current_ingest_version
 
@@ -177,8 +176,8 @@ class HierarchyManager:
 
         if archive_file_result:
             archive_path = archive_file_result.archive_path
-            # Use archive path as the actual file location
-            actual_file_path = str(self.archive_dir / archive_file_result.download_uri)
+            # Use archive path as the file reference (files are in Supabase Storage)
+            actual_file_path = archive_file_result.download_uri or str(attachment_path)
             if archive_file_result.browse_uri:
                 # URL-encode paths to handle filenames with spaces
                 browse_uri_encoded = quote(archive_file_result.browse_uri, safe="/")

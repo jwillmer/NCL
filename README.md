@@ -63,7 +63,7 @@ cp .env.template .env
 #
 # Optional new settings:
 #    - CONTEXT_LLM_MODEL=gpt-4o-mini (for contextual chunking)
-#    - ARCHIVE_DIR=./data/archive (browsable content archive)
+#    - ARCHIVE_BUCKET=archive (Supabase Storage bucket for browsable archive)
 #    - ARCHIVE_BASE_URL= (custom base URL for archive links)
 #    - CURRENT_INGEST_VERSION=1 (increment when upgrading processing logic)
 
@@ -312,7 +312,7 @@ POST   /conversations/{thread_id}/generate-title # Auto-generate title from mess
 
 ### Archive Endpoint
 
-The archive endpoint serves browsable markdown previews and original file downloads:
+The archive endpoint proxies files from Supabase Storage, serving browsable markdown previews and original file downloads:
 
 ```
 GET /archive/{path}
@@ -321,6 +321,7 @@ GET /archive/{path}
 **Authentication:** Requires Supabase JWT token (same as UI auth)
 
 **Security:**
+- Files stored in private Supabase Storage bucket (not publicly accessible)
 - Path traversal prevention (rejects `..`, absolute paths)
 - JWT validation for all requests
 - Rate limited to 100 requests/minute
