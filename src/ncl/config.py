@@ -146,6 +146,14 @@ class Settings(BaseSettings):
         default=1000, validation_alias="ERROR_MESSAGE_MAX_LENGTH"
     )
 
+    # Failure Report Configuration
+    failure_reports_dir: Path = Field(
+        default=Path("./data/reports"), validation_alias="FAILURE_REPORTS_DIR"
+    )
+    failure_reports_keep_count: int = Field(
+        default=30, validation_alias="FAILURE_REPORTS_KEEP_COUNT"
+    )
+
     # Chunk content display truncation (for source references in responses)
     chunk_display_max_chars: int = Field(
         default=500, validation_alias="CHUNK_DISPLAY_MAX_CHARS"

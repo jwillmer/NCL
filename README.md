@@ -103,6 +103,7 @@ See the [docs/](docs/) folder for detailed documentation:
 | `uv run ncl query` | Ask questions with AI-generated answers |
 | `uv run ncl search` | Search without generating an answer |
 | `uv run ncl stats` | View processing statistics |
+| `uv run ncl failures` | View/export ingest reports |
 | `uv run ncl reset-stale` | Reset files stuck in processing |
 | `uv run ncl reprocess` | Re-ingest documents with older ingest version |
 | `uv run ncl vessels import` | Import vessel register from CSV |
@@ -127,6 +128,23 @@ uv run ncl ingest --reprocess-outdated
 # Process 10 emails concurrently (default: 5)
 MAX_CONCURRENT_FILES=10 uv run ncl ingest
 ```
+
+### Ingest Reports
+
+After each ingest run, a report is exported to `data/reports/`:
+
+```bash
+# View recent reports
+uv run ncl failures
+
+# Show details of latest report
+uv run ncl failures --latest
+
+# Export fresh report from current database state
+uv run ncl failures --export
+```
+
+Reports are saved as JSON and CSV. The system keeps the last 30 reports.
 
 ### Reprocess Command
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import email
 import hashlib
 import re
+from datetime import datetime, timezone
 from email import policy
 from email.message import EmailMessage as EmailMsg
 from email.utils import parsedate_to_datetime
@@ -12,9 +13,17 @@ from html import unescape
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+
 from ..config import get_settings
 from ..models.document import EmailMessage, EmailMetadata, ParsedAttachment, ParsedEmail
 from ..utils import sanitize_filename
+
+
+def _normalize_datetime(dt: datetime) -> datetime:
+    """Normalize datetime to timezone-aware UTC for safe comparison."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class EMLParser:
@@ -129,8 +138,8 @@ class EMLParser:
         if not initiator:
             initiator = from_addr
 
-        # Get dates
-        dates = [m.date for m in messages if m.date]
+        # Get dates (normalize to UTC for safe comparison of mixed tz-aware/naive)
+        dates = [_normalize_datetime(m.date) for m in messages if m.date]
         date_start = min(dates) if dates else None
         date_end = max(dates) if dates else None
 

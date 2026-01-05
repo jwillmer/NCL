@@ -382,6 +382,21 @@ async def _ingest(
         _show_stats(stats)
         _show_issue_summary(_processing_issues)
 
+        # Generate and export failure report
+        from .storage.failure_report import FailureReportGenerator
+
+        report_generator = FailureReportGenerator(db)
+        report = await report_generator.generate_report(
+            in_memory_issues=_processing_issues,
+            source_dir=str(source_dir),
+            files_processed=len(files),
+            files_succeeded=processed_count,
+        )
+
+        if files:
+            paths = report_generator.export_report(report)
+            console.print(f"\nReport: {paths['json']}")
+
     finally:
         await db.close()
 
@@ -619,19 +634,16 @@ async def _process_single_email(
     await db.update_document_status(email_doc.id, ProcessingStatus.COMPLETED)
     await tracker.mark_completed(eml_path)
 
-    # Clean up processed attachments (archive has the originals for download)
-    if archive_result and parsed_email.attachments:
-        for attachment in parsed_email.attachments:
-            try:
-                processed_path = Path(attachment.saved_path)
-                if processed_path.exists():
-                    processed_path.unlink()
-                # Clean up parent directory if empty
-                parent = processed_path.parent
-                if parent.exists() and not any(parent.iterdir()):
-                    parent.rmdir()
-            except Exception as e:
-                vprint(f"Warning: Failed to clean up {attachment.saved_path}: {e}", file_ctx)
+    # Clean up attachment folder after successful processing
+    if parsed_email.attachments:
+        import shutil
+        attachment_folder = Path(parsed_email.attachments[0].saved_path).parent
+        # Safety: only delete if under managed attachments dir
+        if (attachment_folder.exists()
+            and attachment_folder != settings.attachments_dir
+            and settings.attachments_dir in attachment_folder.parents):
+            shutil.rmtree(attachment_folder, ignore_errors=True)
+            vprint(f"Cleaned up: {attachment_folder.name}", file_ctx)
 
 
 async def _process_attachment(
@@ -1072,6 +1084,101 @@ async def _show_processing_stats():
                     table.add_row(mime_type or "unknown", str(count))
 
                 console.print(table)
+    finally:
+        await db.close()
+
+
+@app.command()
+def failures(
+    latest: bool = typer.Option(
+        False, "--latest", "-l", help="Show details of latest report"
+    ),
+    export: bool = typer.Option(
+        False, "--export", "-e", help="Export current failures from database"
+    ),
+    limit: int = typer.Option(10, "--limit", "-n", help="Number of reports to list"),
+):
+    """View ingest reports from past runs."""
+    asyncio.run(_failures(latest, export, limit))
+
+
+async def _failures(latest: bool, export: bool, limit: int):
+    """Async implementation of failures command."""
+    import json
+
+    from .storage.failure_report import FailureReportGenerator
+
+    db = SupabaseClient()
+
+    try:
+        generator = FailureReportGenerator(db)
+
+        if export:
+            # Generate fresh report from current database state
+            report = await generator.generate_report()
+            paths = generator.export_report(report)
+            console.print(f"Report: {paths['json']}")
+            return
+
+        reports = generator.list_reports()
+
+        if not reports:
+            console.print("[dim]No ingest reports found[/dim]")
+            return
+
+        if latest:
+            # Show details of latest report
+            latest_report = reports[0]
+            console.print(f"\n[bold]Latest Ingest Report[/bold]")
+            console.print(f"Timestamp: {latest_report['timestamp']}")
+            console.print(f"Issues: {latest_report['total_failures']}")
+            console.print(f"File: {latest_report['json_path']}")
+
+            # Show failure breakdown from JSON
+            with open(latest_report["json_path"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if data.get("failures"):
+                console.print()
+                table = Table(title=f"Failures ({len(data['failures'])} total)")
+                table.add_column("Type", style="yellow")
+                table.add_column("File", style="cyan")
+                table.add_column("Parent EML", style="dim")
+                table.add_column("Reason/Error", style="red", max_width=40)
+
+                for failure in data["failures"][:20]:  # Limit display
+                    error_text = failure.get("error") or failure.get("reason") or ""
+                    if len(error_text) > 40:
+                        error_text = error_text[:40] + "..."
+                    table.add_row(
+                        failure["type"],
+                        failure["file_name"],
+                        failure.get("parent_eml") or "-",
+                        error_text,
+                    )
+
+                console.print(table)
+
+                if len(data["failures"]) > 20:
+                    console.print(
+                        f"[dim]... and {len(data['failures']) - 20} more[/dim]"
+                    )
+        else:
+            # List recent reports
+            table = Table(title="Ingest Reports")
+            table.add_column("Timestamp", style="cyan")
+            table.add_column("Issues", justify="right")
+            table.add_column("File")
+
+            for report in reports[:limit]:
+                timestamp_str = report["timestamp"][:19] if report["timestamp"] else "-"
+                table.add_row(
+                    timestamp_str,
+                    str(report["total_failures"]),
+                    Path(report["json_path"]).name,
+                )
+
+            console.print(table)
     finally:
         await db.close()
 
