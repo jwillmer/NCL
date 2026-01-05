@@ -58,6 +58,31 @@ class EMLParser:
 
         return self._parse_message(msg, eml_path)
 
+    def peek_attachments(self, eml_path: Path) -> List[Tuple[str, str]]:
+        """Peek at attachment info without extracting them.
+
+        This is a lightweight method for classifying emails by attachment type
+        without the overhead of full parsing and extraction.
+
+        Args:
+            eml_path: Path to the EML file.
+
+        Returns:
+            List of (filename, content_type) tuples for each attachment.
+        """
+        with open(eml_path, "rb") as f:
+            msg = email.message_from_binary_file(f, policy=policy.default)
+
+        attachments = []
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_disposition = str(part.get("Content-Disposition", ""))
+                filename = part.get_filename()
+                if "attachment" in content_disposition or filename:
+                    content_type = part.get_content_type()
+                    attachments.append((filename or "unnamed", content_type))
+        return attachments
+
     def _parse_message(self, msg: EmailMsg, source_path: Path) -> ParsedEmail:
         """Parse an EmailMessage object.
 

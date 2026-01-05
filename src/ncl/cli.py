@@ -40,6 +40,7 @@ from .parsers.eml_parser import EMLParser
 from .processing.archive_generator import ArchiveGenerator
 from .processing.embeddings import EmbeddingGenerator
 from .processing.hierarchy_manager import HierarchyManager
+from .processing.lane_classifier import LaneClassifier
 from .processing.version_manager import VersionManager
 from .processing.vessel_matcher import VesselMatcher
 from .rag.query_engine import RAGQueryEngine, format_response_with_sources
@@ -290,10 +291,37 @@ async def _ingest(
         # Reset issues list for this run
         _processing_issues.clear()
 
-        # Create file queue for worker pool
-        file_queue: asyncio.Queue[Path | None] = asyncio.Queue()
+        # Classify files into fast/slow queues
+        # Fast: no attachments or only images (no LlamaParse needed)
+        # Slow: documents requiring LlamaParse (PDFs, Office files, ZIPs)
+        lane_classifier = LaneClassifier(eml_parser)
+        fast_queue: asyncio.Queue[Path] = asyncio.Queue()
+        slow_queue: asyncio.Queue[Path] = asyncio.Queue()
+
         for f in files:
-            file_queue.put_nowait(f)
+            lane = lane_classifier.classify(f)
+            if lane == "fast":
+                fast_queue.put_nowait(f)
+            else:
+                slow_queue.put_nowait(f)
+
+        fast_count = fast_queue.qsize()
+        slow_count = slow_queue.qsize()
+        vprint(f"Lane assignment: {fast_count} fast, {slow_count} slow")
+
+        # Split workers: 60% fast, 40% slow (minimum 1 each if both queues have items)
+        total_workers = settings.max_concurrent_files
+        if fast_count > 0 and slow_count > 0:
+            fast_worker_count = max(1, round(total_workers * 0.6))
+            slow_worker_count = max(1, total_workers - fast_worker_count)
+        elif fast_count > 0:
+            fast_worker_count = total_workers
+            slow_worker_count = 0
+        else:
+            fast_worker_count = 0
+            slow_worker_count = total_workers
+
+        vprint(f"Worker split: {fast_worker_count} fast workers, {slow_worker_count} slow workers")
 
         # Process files with progress tracking
         with Progress(
@@ -311,73 +339,101 @@ async def _ingest(
                 )
                 worker_tasks.append(task_id)
 
+            # Slot queue for dynamic worker assignment
+            slot_queue: asyncio.Queue[int] = asyncio.Queue()
+            for i in range(settings.max_concurrent_files):
+                slot_queue.put_nowait(i)
+
             # Total progress bar
             total_task = progress.add_task("[bold]Total[/bold]", total=len(files))
 
-            async def worker(worker_idx: int) -> None:
-                """Worker that pulls files from queue and processes them."""
+            async def process_one(file_path: Path) -> None:
+                """Process a single file, acquiring a display slot."""
                 nonlocal processed_count
-                worker_task = worker_tasks[worker_idx]
 
+                if _shutdown_requested:
+                    return
+
+                slot_idx = await slot_queue.get()
+                worker_task = worker_tasks[slot_idx]
+
+                try:
+                    progress.update(
+                        worker_task,
+                        description=f"[{slot_idx + 1}] {file_path.name}",
+                        total=1,
+                        completed=0,
+                    )
+
+                    await _process_single_email(
+                        file_path,
+                        eml_parser,
+                        attachment_processor,
+                        hierarchy_manager,
+                        embeddings,
+                        db,
+                        tracker,
+                        unsupported_logger,
+                        archive_generator=archive_generator,
+                        context_generator=context_generator,
+                        version_manager=version_manager,
+                        vessel_matcher=vessel_matcher,
+                        progress=progress,
+                        worker_task=worker_task,
+                        slot_idx=slot_idx,
+                    )
+                    processed_count += 1
+                except Exception as e:
+                    await tracker.mark_failed(file_path, str(e))
+                    report_writer.add_eml_failure(str(file_path), str(e))
+                    console.print(f"[red]Error processing {file_path.name}: {e}[/red]")
+                finally:
+                    progress.update(total_task, advance=1)
+                    progress.update(
+                        worker_task,
+                        description=f"[dim][{slot_idx + 1}] (idle)[/dim]",
+                        total=1,
+                        completed=0,
+                    )
+                    slot_queue.put_nowait(slot_idx)
+
+            async def fast_worker() -> None:
+                """Worker for fast queue. Helps slow queue when fast is empty."""
                 while True:
-                    # Check shutdown before getting next file
                     if _shutdown_requested:
                         return
-
-                    # Try to get next file (non-blocking check)
                     try:
-                        file_path = file_queue.get_nowait()
+                        file_path = fast_queue.get_nowait()
+                        await process_one(file_path)
                     except asyncio.QueueEmpty:
-                        return  # No more files
+                        # Fast queue empty - help with slow queue
+                        try:
+                            file_path = slow_queue.get_nowait()
+                            await process_one(file_path)
+                        except asyncio.QueueEmpty:
+                            return  # Both queues empty
 
+            async def slow_worker() -> None:
+                """Worker dedicated to slow queue."""
+                while True:
+                    if _shutdown_requested:
+                        return
                     try:
-                        # Show starting state
-                        progress.update(
-                            worker_task,
-                            description=f"[{worker_idx + 1}] {file_path.name}",
-                            total=1,
-                            completed=0,
-                        )
+                        file_path = slow_queue.get_nowait()
+                        await process_one(file_path)
+                    except asyncio.QueueEmpty:
+                        return  # Slow queue empty
 
-                        await _process_single_email(
-                            file_path,
-                            eml_parser,
-                            attachment_processor,
-                            hierarchy_manager,
-                            embeddings,
-                            db,
-                            tracker,
-                            unsupported_logger,
-                            archive_generator=archive_generator,
-                            context_generator=context_generator,
-                            version_manager=version_manager,
-                            vessel_matcher=vessel_matcher,
-                            progress=progress,
-                            worker_task=worker_task,
-                            slot_idx=worker_idx,
-                        )
-                        processed_count += 1
-                    except Exception as e:
-                        await tracker.mark_failed(file_path, str(e))
-                        report_writer.add_eml_failure(str(file_path), str(e))
-                        console.print(f"[red]Error processing {file_path.name}: {e}[/red]")
-                    finally:
-                        progress.update(total_task, advance=1)
-                        # Mark as idle between files
-                        progress.update(
-                            worker_task,
-                            description=f"[dim][{worker_idx + 1}] (idle)[/dim]",
-                            total=1,
-                            completed=0,
-                        )
-
-            # Start worker pool
-            workers = [worker(i) for i in range(settings.max_concurrent_files)]
-            await asyncio.gather(*workers)
+            # Start both worker pools in parallel
+            all_workers = (
+                [fast_worker() for _ in range(fast_worker_count)] +
+                [slow_worker() for _ in range(slow_worker_count)]
+            )
+            await asyncio.gather(*all_workers)
 
             if _shutdown_requested:
-                skipped = file_queue.qsize()
-                console.print(f"[yellow]Stopped after {processed_count} files ({skipped} skipped)[/yellow]")
+                remaining = fast_queue.qsize() + slow_queue.qsize()
+                console.print(f"[yellow]Stopped after {processed_count} files ({remaining} skipped)[/yellow]")
 
         # Show final stats and issue summary
         stats = await tracker.get_processing_stats()
