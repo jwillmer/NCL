@@ -121,7 +121,7 @@ function transformRawCitations(content: string): string {
  */
 function CustomAssistantMessage(props: AssistantMessageProps) {
   const { icons } = useChatContext();
-  const { message, isLoading } = props;
+  const { message, isLoading, isCurrentMessage } = props;
   const { onViewCitation } = useCitationContext();
 
   // generativeUI contains output from useCoAgentStateRender (e.g., SearchProgress)
@@ -129,11 +129,15 @@ function CustomAssistantMessage(props: AssistantMessageProps) {
   const generativeUI = message?.generativeUI;
   const renderedGenerativeUI = typeof generativeUI === "function" ? generativeUI() : generativeUI;
 
+  // Only show generativeUI (progress indicators) on the current/last message
+  // This prevents progress from appearing in the middle of loaded conversation history
+  const shouldShowGenerativeUI = renderedGenerativeUI && isCurrentMessage;
+
   return (
     <MessageCitationProvider onViewCitation={onViewCitation}>
       <div>
         {/* Render generative UI (e.g., search progress from useCoAgentStateRender) */}
-        {renderedGenerativeUI && <div className="mb-2">{renderedGenerativeUI}</div>}
+        {shouldShowGenerativeUI && <div className="mb-2">{renderedGenerativeUI}</div>}
 
         <div className="prose prose-sm max-w-none prose-p:my-2 prose-headings:my-3 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5">
           <ReactMarkdown

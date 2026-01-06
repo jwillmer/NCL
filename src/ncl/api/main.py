@@ -25,6 +25,7 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..config import get_settings
+from ..observability import set_user_id
 from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
 from ..storage.supabase_client import SupabaseClient
 from .agent import create_graph
@@ -74,6 +75,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Store user in request state for downstream use
         request.state.user = user
+
+        # Set user_id for Langfuse tracking (uses Supabase user ID for aggregation)
+        set_user_id(user.sub)
+
         logger.debug("Auth successful for user: %s", user.email or user.sub)
         return await call_next(request)
 

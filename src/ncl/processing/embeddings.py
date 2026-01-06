@@ -10,7 +10,7 @@ from litellm import aembedding
 
 from ..config import get_settings
 from ..models.chunk import Chunk
-from ..observability import get_session_id
+from ..observability import get_session_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +42,22 @@ class EmbeddingGenerator:
                 self._encoding = tiktoken.get_encoding("cl100k_base")
 
     def _get_langfuse_metadata(self) -> Dict[str, Any]:
-        """Get metadata dict with session_id for Langfuse OTEL tracing."""
+        """Get metadata dict with session_id and user_id for Langfuse tracing.
+
+        LiteLLM uses specific key names for Langfuse integration:
+        - session_id: Groups traces into a session
+        - trace_user_id: Associates traces with a user for analytics
+
+        See: https://docs.litellm.ai/docs/observability/langfuse_integration
+        """
+        metadata: Dict[str, Any] = {}
         session_id = get_session_id()
         if session_id:
-            return {"session_id": session_id}
-        return {}
+            metadata["session_id"] = session_id
+        user_id = get_user_id()
+        if user_id:
+            metadata["trace_user_id"] = user_id
+        return metadata
 
     def _truncate_to_max_tokens(self, text: str) -> str:
         """Truncate text to fit within embedding model's token limit.

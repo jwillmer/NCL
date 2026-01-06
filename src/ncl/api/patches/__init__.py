@@ -12,7 +12,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from ...observability import get_langfuse_handler, set_session_id
+from ...observability import get_langfuse_handler, get_user_id, set_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +61,20 @@ def apply_agui_thread_patch() -> None:
             # Add handler if not already present
             if langfuse_handler not in config["callbacks"]:
                 config["callbacks"].append(langfuse_handler)
-            # Set session_id via metadata - must use camelCase "langfuseSessionId"
+            # Set session_id and user_id via metadata
+            # See: https://langfuse.com/docs/observability/features/users
+            if "metadata" not in config:
+                config["metadata"] = {}
             if thread_id:
-                if "metadata" not in config:
-                    config["metadata"] = {}
                 config["metadata"]["langfuseSessionId"] = thread_id
-                logger.debug("Langfuse callback configured: langfuseSessionId=%s", thread_id)
+            user_id = get_user_id()
+            if user_id:
+                config["metadata"]["langfuseUserId"] = user_id
+            logger.debug(
+                "Langfuse callback configured: session=%s, user=%s",
+                thread_id,
+                user_id,
+            )
 
         state_input["messages"] = agent_state.values.get("messages", [])
         self.active_run["current_graph_state"] = agent_state.values.copy()

@@ -17,7 +17,7 @@ from ..models.chunk import (
     RetrievalResult,
     SourceReference,
 )
-from ..observability import get_session_id
+from ..observability import get_session_id, get_user_id
 from ..processing.embeddings import EmbeddingGenerator
 from ..processing.reranker import Reranker
 from ..storage.supabase_client import SupabaseClient
@@ -51,11 +51,22 @@ class RAGQueryEngine:
         self.chunk_display_max_chars = settings.chunk_display_max_chars
 
     def _get_langfuse_metadata(self) -> Dict[str, Any]:
-        """Get metadata dict with session_id for Langfuse OTEL tracing."""
+        """Get metadata dict with session_id and user_id for Langfuse tracing.
+
+        LiteLLM uses specific key names for Langfuse integration:
+        - session_id: Groups traces into a session
+        - trace_user_id: Associates traces with a user for analytics
+
+        See: https://docs.litellm.ai/docs/observability/langfuse_integration
+        """
+        metadata: Dict[str, Any] = {}
         session_id = get_session_id()
         if session_id:
-            return {"session_id": session_id}
-        return {}
+            metadata["session_id"] = session_id
+        user_id = get_user_id()
+        if user_id:
+            metadata["trace_user_id"] = user_id
+        return metadata
 
     async def query(
         self,

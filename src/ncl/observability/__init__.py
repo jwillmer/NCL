@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 # This allows any LiteLLM call within the same async context to access the session_id
 _session_id_var: ContextVar[str | None] = ContextVar("langfuse_session_id", default=None)
 
+# Context variable for user_id propagation to LiteLLM calls
+# Enables Langfuse user tracking for cost aggregation and usage analytics
+# See: https://langfuse.com/docs/observability/features/users
+_user_id_var: ContextVar[str | None] = ContextVar("langfuse_user_id", default=None)
+
 
 def set_session_id(session_id: str | None) -> None:
     """Set the current session_id for LiteLLM metadata propagation.
@@ -33,6 +38,25 @@ def get_session_id() -> str | None:
     Use this when making LiteLLM calls to include session_id in metadata.
     """
     return _session_id_var.get()
+
+
+def set_user_id(user_id: str | None) -> None:
+    """Set the current user_id for Langfuse user tracking.
+
+    Call this at the start of a request to ensure all LiteLLM calls
+    (embeddings, completions) within that request get the user_id.
+
+    The user_id should be a stable identifier (e.g., Supabase user ID).
+    """
+    _user_id_var.set(user_id)
+
+
+def get_user_id() -> str | None:
+    """Get the current user_id for Langfuse user tracking.
+
+    Use this when making LiteLLM calls to include user_id in metadata.
+    """
+    return _user_id_var.get()
 
 # Global Langfuse client instance
 _langfuse_client: "Optional[Langfuse]" = None
