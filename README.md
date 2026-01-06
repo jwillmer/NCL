@@ -108,6 +108,7 @@ See the [docs/](docs/) folder for detailed documentation:
 | `uv run ncl reprocess` | Re-ingest documents with older ingest version |
 | `uv run ncl vessels import` | Import vessel register from CSV |
 | `uv run ncl vessels list` | List all vessels in registry |
+| `uv run ncl vessels retag` | Re-tag existing chunks with vessel IDs |
 | `uv run ncl clean` | Delete all data (database + processed files) |
 
 ### Ingest Options
@@ -181,6 +182,15 @@ uv run ncl vessels import --clear
 
 # List all vessels in registry
 uv run ncl vessels list
+
+# Re-tag existing chunks after adding new vessels (without re-ingesting)
+uv run ncl vessels retag
+
+# Preview what would be updated
+uv run ncl vessels retag --dry-run
+
+# Limit to first N documents
+uv run ncl vessels retag --limit 100
 ```
 
 CSV format (semicolon-delimited):

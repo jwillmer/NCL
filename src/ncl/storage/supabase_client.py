@@ -752,6 +752,96 @@ class SupabaseClient:
         )
         return len(result.data) if result.data else 0
 
+    async def update_chunks_vessel_ids(
+        self, document_id: UUID, vessel_ids: List[str]
+    ) -> int:
+        """Update vessel_ids in chunk metadata for all chunks of a document.
+
+        Uses JSONB set operation to update the vessel_ids field in metadata.
+        Also updates chunks for child documents (attachments).
+
+        Args:
+            document_id: Root document UUID.
+            vessel_ids: List of vessel UUID strings to set.
+
+        Returns:
+            Number of chunks updated.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            # Update chunks for the root document and all its children
+            # Using a subquery to get all document IDs in the hierarchy
+            result = await conn.execute(
+                """
+                UPDATE chunks
+                SET metadata = CASE
+                    WHEN $2::text[] = '{}'::text[] THEN
+                        metadata - 'vessel_ids'
+                    ELSE
+                        jsonb_set(
+                            COALESCE(metadata, '{}'::jsonb),
+                            '{vessel_ids}',
+                            to_jsonb($2::text[])
+                        )
+                END
+                WHERE document_id IN (
+                    SELECT id FROM documents
+                    WHERE id = $1 OR root_id = $1
+                )
+                """,
+                document_id,
+                vessel_ids,
+            )
+            # Extract count from "UPDATE N" result
+            count_str = result.split()[-1] if result else "0"
+            return int(count_str)
+
+    async def get_root_documents_for_retagging(
+        self, limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Get root documents (emails) for vessel retagging.
+
+        Returns documents with their archive paths for content retrieval.
+
+        Args:
+            limit: Optional limit on number of documents.
+
+        Returns:
+            List of document records with id, doc_id, archive_browse_uri.
+        """
+        query = (
+            self.client.table("documents")
+            .select("id, doc_id, archive_browse_uri, file_name")
+            .eq("depth", 0)
+            .eq("status", "completed")
+            .order("created_at", desc=True)
+        )
+        if limit:
+            query = query.limit(limit)
+
+        result = query.execute()
+        return result.data or []
+
+    async def get_current_vessel_ids(self, document_id: UUID) -> List[str]:
+        """Get current vessel_ids from a document's chunks.
+
+        Args:
+            document_id: Document UUID.
+
+        Returns:
+            List of vessel UUID strings currently tagged on the document's chunks.
+        """
+        result = (
+            self.client.table("chunks")
+            .select("metadata")
+            .eq("document_id", str(document_id))
+            .limit(1)
+            .execute()
+        )
+        if result.data and result.data[0].get("metadata"):
+            return result.data[0]["metadata"].get("vessel_ids", [])
+        return []
+
     def _row_to_vessel(self, row: Dict[str, Any]) -> Vessel:
         """Convert database row to Vessel model.
 
