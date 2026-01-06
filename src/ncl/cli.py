@@ -11,6 +11,12 @@ import nest_asyncio
 
 # Apply nest_asyncio to allow nested event loops (required for LlamaParse)
 nest_asyncio.apply()
+
+# Disable Langfuse tracing for CLI operations (only used for API)
+# This prevents "[non-fatal] Tracing: server error 503" messages during ingest
+import litellm
+litellm.success_callback = [cb for cb in litellm.success_callback if "langfuse" not in cb]
+litellm.failure_callback = [cb for cb in litellm.failure_callback if "langfuse" not in cb]
 from pathlib import Path
 from typing import Optional
 
