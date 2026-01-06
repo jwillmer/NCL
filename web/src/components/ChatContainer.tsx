@@ -55,7 +55,7 @@ function FeedbackButtons({ message }: { message: Message }) {
   const feedback = useContext(FeedbackContext);
   const [selected, setSelected] = useState<"up" | "down" | null>(null);
 
-  if (!feedback || !message) return null;
+  if (!feedback || !message || !message.content) return null;
 
   const handleThumbsUp = () => {
     if (selected === "up") return;
@@ -135,7 +135,7 @@ function CustomAssistantMessage(props: AssistantMessageProps) {
         {/* Render generative UI (e.g., search progress from useCoAgentStateRender) */}
         {renderedGenerativeUI && <div className="mb-2">{renderedGenerativeUI}</div>}
 
-        <div className="prose prose-sm max-w-none prose-p:my-2 prose-headings:my-3">
+        <div className="prose prose-sm max-w-none prose-p:my-2 prose-headings:my-3 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -155,7 +155,8 @@ function CustomAssistantMessage(props: AssistantMessageProps) {
             <div className="mt-3 mb-2">
               <SourcesAccordion />
             </div>
-            <FeedbackButtons message={message} />
+            {/* Verify we have content before showing feedback to avoid duplicates or empty state issues */}
+            {message && message.content && <FeedbackButtons message={message as Message} />}
           </>
         )}
       </div>
@@ -294,7 +295,7 @@ export function ChatContainer({ threadId, disabled, vesselId }: ChatContainerPro
   return (
     <FeedbackContext.Provider value={feedbackValue}>
       <CitationProvider onViewCitation={handleViewCitation}>
-        <div className="flex-1 flex flex-col h-[calc(100vh-3.5rem)]">
+        <div className="flex-1 flex flex-col h-[calc(100vh-3.5rem)] overflow-hidden">
           {state.error_message && (
             <div className="px-4 py-2 bg-red-50 border-b border-red-200">
               <div className="text-sm text-red-700">
@@ -310,12 +311,22 @@ export function ChatContainer({ threadId, disabled, vesselId }: ChatContainerPro
                 ? "This conversation is archived (read-only)"
                 : "Describe an issue or search for technical information...",
             }}
-            className={`flex-1 flex flex-col [&_.copilotKitChat]:flex-1 [&_.copilotKitChat]:flex [&_.copilotKitChat]:flex-col [&_.copilotKitMessages]:flex-1 [&_.copilotKitMessages]:overflow-y-auto ${
+            className={`flex-1 flex flex-col min-h-0 [&_.copilotKitChat]:flex-1 [&_.copilotKitChat]:flex [&_.copilotKitChat]:flex-col [&_.copilotKitChat]:min-h-0 [&_.copilotKitMessages]:flex-1 [&_.copilotKitMessages]:overflow-y-auto [&_.copilotKitMessages]:min-h-0 ${
               disabled ? "[&_.copilotKitInput]:opacity-50 [&_.copilotKitInput]:pointer-events-none" : ""
             }`}
             markdownTagRenderers={sourceTagRenderers}
             AssistantMessage={CustomAssistantMessage}
-          />
+          >
+            {/* Show spinner while history is loading */}
+            {!historyLoaded && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/50 backdrop-blur-sm">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="animate-spin rounded-full border-2 border-ncl-blue border-t-transparent h-8 w-8" />
+                  <span className="text-sm text-ncl-blue font-medium">Loading history...</span>
+                </div>
+              </div>
+            )}
+          </CopilotChat>
 
           {/* Dialog for viewing full source content */}
           <SourceViewDialog
