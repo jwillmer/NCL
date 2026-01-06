@@ -43,6 +43,7 @@ class Settings(BaseSettings):
         default="text-embedding-3-small", validation_alias="EMBEDDING_MODEL"
     )
     embedding_dimensions: int = Field(default=1536, validation_alias="EMBEDDING_DIMENSIONS")
+    embedding_max_tokens: int = Field(default=8000, validation_alias="EMBEDDING_MAX_TOKENS")
 
     # Default LLM model (fallback when specific model not set)
     llm_model: str = Field(default="gpt-4o-mini", validation_alias="LLM_MODEL")

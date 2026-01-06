@@ -63,6 +63,9 @@ _verbose = False
 # Flag to track if shutdown was requested
 _shutdown_requested = False
 
+# Files in PROCESSING state longer than this are considered stale and reset on --retry-failed
+STALE_PROCESSING_THRESHOLD_MINUTES = 5
+
 
 def _handle_interrupt(signum, frame):
     """Handle Ctrl+C gracefully."""
@@ -271,6 +274,12 @@ async def _ingest(
             files = await tracker.get_outdated_files(source_dir, settings.current_ingest_version)
             console.print(f"[yellow]Reprocessing {len(files)} outdated files (ingest_version < {settings.current_ingest_version})[/yellow]")
         elif retry_failed:
+            # Reset stale files stuck in "processing" state before getting failed files
+            stale_count = await tracker.reset_stale_processing(
+                max_age_minutes=STALE_PROCESSING_THRESHOLD_MINUTES
+            )
+            if stale_count:
+                console.print(f"[yellow]Reset {stale_count} stale processing files[/yellow]")
             files = await tracker.get_failed_files()
             console.print(f"[yellow]Retrying {len(files)} failed files[/yellow]")
         elif resume:
@@ -432,8 +441,23 @@ async def _ingest(
             await asyncio.gather(*all_workers)
 
             if _shutdown_requested:
-                remaining = fast_queue.qsize() + slow_queue.qsize()
-                console.print(f"[yellow]Stopped after {processed_count} files ({remaining} skipped)[/yellow]")
+                # Mark remaining queued files as failed so they can be retried
+                remaining_files: list[Path] = []
+                while True:
+                    try:
+                        remaining_files.append(fast_queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                while True:
+                    try:
+                        remaining_files.append(slow_queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+
+                for file_path in remaining_files:
+                    await tracker.mark_failed(file_path, "interrupted_during_shutdown")
+
+                console.print(f"[yellow]Stopped after {processed_count} files ({len(remaining_files)} marked for retry)[/yellow]")
 
         # Show final stats and issue summary
         stats = await tracker.get_processing_stats()
@@ -470,17 +494,29 @@ async def _process_single_email(
     file_hash = tracker.compute_file_hash(eml_path)
     source_eml_path = str(eml_path)
     file_ctx = eml_path.name  # Short filename for logging
+    settings = get_settings()
 
     # Check using version manager if available
+    # Use hierarchy_manager's ingest_root to ensure consistent doc_id computation
+    from .utils import normalize_source_id, compute_doc_id
+    source_id = normalize_source_id(source_eml_path, hierarchy_manager.ingest_root)
+
     if version_manager:
-        from .utils import normalize_source_id
-        settings = get_settings()
-        source_id = normalize_source_id(source_eml_path, settings.eml_source_dir)
         decision = await version_manager.check_document(source_id, file_hash)
 
         if decision.action == "skip":
-            vprint(f"Skipping (already processed): {eml_path}", file_ctx)
-            return
+            # Check if it's actually completed - partial failures need cleanup
+            if decision.existing_doc_id:
+                existing = await db.get_document_by_id(decision.existing_doc_id)
+                if existing and existing.status != ProcessingStatus.COMPLETED:
+                    vprint(f"Cleaning up partial document for retry: {eml_path}", file_ctx)
+                    db.delete_document_for_reprocess(decision.existing_doc_id)
+                else:
+                    vprint(f"Skipping (already processed): {eml_path}", file_ctx)
+                    return
+            else:
+                vprint(f"Skipping (already processed): {eml_path}", file_ctx)
+                return
         elif decision.action == "reprocess":
             vprint(f"Reprocessing: {decision.reason}", file_ctx)
             # Delete old document (cascades to child docs and chunks)
@@ -488,12 +524,31 @@ async def _process_single_email(
                 db.delete_document_for_reprocess(decision.existing_doc_id)
         elif decision.action == "update":
             vprint(f"Updating: {decision.reason}", file_ctx)
+            # Delete old document before inserting updated version
+            if decision.existing_doc_id:
+                db.delete_document_for_reprocess(decision.existing_doc_id)
     else:
         # Fallback to legacy check
         existing = await db.get_document_by_hash(file_hash)
-        if existing and existing.status == ProcessingStatus.COMPLETED:
-            vprint(f"Skipping (already processed): {eml_path}", file_ctx)
+        if existing:
+            if existing.status == ProcessingStatus.COMPLETED:
+                vprint(f"Skipping (already processed): {eml_path}", file_ctx)
+                return
+            else:
+                # Partial failure - clean up old document before retry
+                vprint(f"Cleaning up partial document for retry: {eml_path}", file_ctx)
+                db.delete_document_for_reprocess(existing.id)
+
+    # Final safety check: clean up any orphaned document with same doc_id
+    # This catches edge cases where version_manager didn't find it but it exists
+    target_doc_id = compute_doc_id(source_id, file_hash)
+    orphaned = await db.get_document_by_doc_id(target_doc_id)
+    if orphaned:
+        if orphaned.status == ProcessingStatus.COMPLETED:
+            vprint(f"Skipping (found completed by doc_id): {eml_path}", file_ctx)
             return
+        vprint(f"Cleaning up orphaned document {target_doc_id}: {eml_path}", file_ctx)
+        db.delete_document_for_reprocess(orphaned.id)
 
     await tracker.mark_started(eml_path, file_hash)
     vprint(f"Processing: {eml_path}", file_ctx)
@@ -1247,6 +1302,129 @@ async def _reset_stale(max_age: int):
     try:
         await tracker.reset_stale_processing(max_age)
         console.print(f"[green]Reset stale processing entries older than {max_age} minutes[/green]")
+    finally:
+        await db.close()
+
+
+@app.command()
+def reset_failures(
+    report_file: Path = typer.Argument(
+        ...,
+        help="Path to JSON report file containing failed documents",
+    ),
+    eml_only: bool = typer.Option(
+        False,
+        "--eml-only",
+        "-e",
+        help="Only reset EML file failures (skip attachment failures)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Show what would be reset without making changes",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation prompt",
+    ),
+):
+    """Reset failed documents from a JSON report file for reprocessing.
+
+    Reads a failure report JSON file (generated during ingest) and removes
+    the failed EML documents from the database, allowing them to be
+    reprocessed on the next ingest run.
+
+    This command deletes:
+    - processing_log entries (file processing state)
+    - documents and their children (attachments, chunks)
+    - unsupported_files records
+    - archive folders from Supabase Storage
+
+    Workflow:
+        1. ncl failures --latest          # View latest failure report
+        2. ncl reset-failures <file> -n   # Preview what will be reset
+        3. ncl reset-failures <file> -y   # Reset the failed documents
+        4. ncl ingest                     # Reprocess the files
+
+    Examples:
+        ncl reset-failures data/reports/ingest_20260105_170109.json
+        ncl reset-failures data/reports/ingest_20260105_170109.json --dry-run
+        ncl reset-failures data/reports/ingest_20260105_170109.json -y
+    """
+    asyncio.run(_reset_failures(report_file, eml_only, dry_run, yes))
+
+
+async def _reset_failures(report_file: Path, eml_only: bool, dry_run: bool, yes: bool):
+    """Async implementation of reset-failures command."""
+    import json
+
+    if not report_file.exists():
+        console.print(f"[red]Report file not found: {report_file}[/red]")
+        raise typer.Exit(1)
+
+    # Load the report
+    try:
+        with open(report_file, "r", encoding="utf-8") as f:
+            report_data = json.load(f)
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Invalid JSON file: {e}[/red]")
+        raise typer.Exit(1)
+
+    failures = report_data.get("failures", [])
+    if not failures:
+        console.print("[yellow]No failures found in report[/yellow]")
+        return
+
+    # Filter to EML failures only if requested
+    if eml_only:
+        failures = [f for f in failures if f.get("type") == "eml_file"]
+
+    # Extract unique file paths for EML files
+    eml_failures = [f for f in failures if f.get("type") == "eml_file"]
+    eml_paths = list(set(f.get("file_path") for f in eml_failures if f.get("file_path")))
+
+    if not eml_paths:
+        console.print("[yellow]No EML file failures to reset[/yellow]")
+        return
+
+    # Show what will be reset
+    console.print(f"\n[bold]Files to reset ({len(eml_paths)} EML files):[/bold]")
+    table = Table()
+    table.add_column("File", style="cyan")
+    table.add_column("Error", style="red", max_width=60)
+
+    for failure in eml_failures:
+        file_path = failure.get("file_path", "")
+        error = failure.get("error") or ""
+        if len(error) > 60:
+            error = error[:60] + "..."
+        table.add_row(Path(file_path).name, error)
+
+    console.print(table)
+
+    if dry_run:
+        console.print("\n[dim]Dry run - no changes made[/dim]")
+        return
+
+    if not yes:
+        console.print()
+        confirm = typer.confirm(f"Reset {len(eml_paths)} failed documents from database?")
+        if not confirm:
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+    # Reset the documents
+    db = SupabaseClient()
+    try:
+        counts = await db.reset_failed_documents(eml_paths)
+        console.print(f"\n[green]Reset complete:[/green]")
+        console.print(f"  Documents deleted: {counts['documents']}")
+        console.print(f"  Processing log entries deleted: {counts['processing_log']}")
+        console.print(f"  Archive folders deleted: {counts['archives']}")
+        console.print(f"\n[dim]Run 'ncl ingest' to reprocess these files[/dim]")
     finally:
         await db.close()
 

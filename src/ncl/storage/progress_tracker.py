@@ -130,13 +130,26 @@ class ProgressTracker:
 
     def _mark_started_sync(self, file_path: Path, file_hash: str):
         """Synchronous implementation of mark_started."""
+        # Check if entry exists to preserve attempt count
+        result = (
+            self.db.client.table("processing_log")
+            .select("attempts")
+            .eq("file_path", str(file_path))
+            .limit(1)
+            .execute()
+        )
+
+        # Preserve existing attempts, default to 0 for new entries
+        # (mark_failed will increment when processing fails)
+        current_attempts = result.data[0].get("attempts", 0) if result.data else 0
+
         self.db.client.table("processing_log").upsert(
             {
                 "file_path": str(file_path),
                 "file_hash": file_hash,
                 "status": ProcessingStatus.PROCESSING.value,
                 "started_at": datetime.utcnow().isoformat(),
-                "attempts": 1,
+                "attempts": current_attempts,
                 "updated_at": datetime.utcnow().isoformat(),
             },
             on_conflict="file_path",
@@ -173,10 +186,10 @@ class ProgressTracker:
         """Synchronous implementation of mark_failed."""
         settings = get_settings()
 
-        # Get current attempts
+        # Get current attempts and file_hash if entry exists
         result = (
             self.db.client.table("processing_log")
-            .select("attempts")
+            .select("attempts, file_hash")
             .eq("file_path", str(file_path))
             .limit(1)
             .execute()
@@ -184,14 +197,26 @@ class ProgressTracker:
 
         attempts = (result.data[0].get("attempts", 0) if result.data else 0) + 1
 
-        self.db.client.table("processing_log").update(
-            {
-                "status": ProcessingStatus.FAILED.value,
-                "last_error": error[: settings.error_message_max_length],
-                "attempts": attempts,
-                "updated_at": datetime.utcnow().isoformat(),
-            }
-        ).eq("file_path", str(file_path)).execute()
+        # Use upsert to handle files that may not have a processing_log entry yet
+        # (e.g., interrupted before mark_started was called)
+        upsert_data = {
+            "file_path": str(file_path),
+            "status": ProcessingStatus.FAILED.value,
+            "last_error": error[: settings.error_message_max_length],
+            "attempts": attempts,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        # Include file_hash if we have it from existing record, or compute it for new entries
+        if result.data and result.data[0].get("file_hash"):
+            upsert_data["file_hash"] = result.data[0]["file_hash"]
+        else:
+            upsert_data["file_hash"] = self.compute_file_hash(file_path)
+
+        self.db.client.table("processing_log").upsert(
+            upsert_data,
+            on_conflict="file_path"
+        ).execute()
 
     async def get_failed_files(self, max_attempts: int = 3) -> List[Path]:
         """Get files that failed but haven't exceeded retry limit.
@@ -282,21 +307,25 @@ class ProgressTracker:
                 sha256.update(chunk)
         return sha256.hexdigest()
 
-    async def reset_stale_processing(self, max_age_minutes: int = 60):
+    async def reset_stale_processing(self, max_age_minutes: int = 60) -> int:
         """Reset files stuck in 'processing' state for too long.
 
         Args:
             max_age_minutes: Maximum age in minutes before considering stale.
+
+        Returns:
+            Number of files reset.
         """
-        await anyio.to_thread.run_sync(
+        return await anyio.to_thread.run_sync(
             partial(self._reset_stale_processing_sync, max_age_minutes)
         )
 
-    def _reset_stale_processing_sync(self, max_age_minutes: int):
+    def _reset_stale_processing_sync(self, max_age_minutes: int) -> int:
         """Synchronous implementation of reset_stale_processing."""
         from datetime import timezone
 
         cutoff = datetime.utcnow()
+        reset_count = 0
 
         result = (
             self.db.client.table("processing_log")
@@ -315,10 +344,14 @@ class ProgressTracker:
                 ).total_seconds() / 60
 
                 if age_minutes > max_age_minutes:
-                    # Reset to pending
+                    # Reset to failed so they can be retried with --retry-failed
                     self.db.client.table("processing_log").update(
                         {
-                            "status": ProcessingStatus.PENDING.value,
+                            "status": ProcessingStatus.FAILED.value,
+                            "last_error": "stale_processing_reset",
                             "updated_at": datetime.utcnow().isoformat(),
                         }
                     ).eq("file_path", row["file_path"]).execute()
+                    reset_count += 1
+
+        return reset_count

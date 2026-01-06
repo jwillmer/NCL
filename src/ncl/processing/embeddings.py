@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Callable, List, Optional
+
+import tiktoken
 
 from ..config import get_settings
 from ..models.chunk import Chunk
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingGenerator:
@@ -13,6 +18,7 @@ class EmbeddingGenerator:
 
     Supports batch processing with configurable batch sizes for efficiency.
     API keys are initialized via ncl.__init__ at module load.
+    Automatically truncates text to fit within model's context window.
     """
 
     def __init__(self):
@@ -20,8 +26,33 @@ class EmbeddingGenerator:
         settings = get_settings()
         self.model = settings.embedding_model
         self.dimensions = settings.embedding_dimensions
+        self.max_tokens = settings.embedding_max_tokens
         self.max_concurrent = settings.max_concurrent_embeddings
         self.batch_size = settings.embedding_batch_size
+
+        # Initialize tokenizer for truncation
+        if self.model.startswith("text-embedding-"):
+            self._encoding = tiktoken.get_encoding("cl100k_base")
+        else:
+            try:
+                self._encoding = tiktoken.encoding_for_model(self.model)
+            except KeyError:
+                self._encoding = tiktoken.get_encoding("cl100k_base")
+
+    def _truncate_to_max_tokens(self, text: str) -> str:
+        """Truncate text to fit within embedding model's token limit.
+
+        Args:
+            text: Text to truncate.
+
+        Returns:
+            Truncated text that fits within max_tokens.
+        """
+        tokens = self._encoding.encode(text)
+        if len(tokens) <= self.max_tokens:
+            return text
+        logger.debug(f"Truncating text from {len(tokens)} to {self.max_tokens} tokens")
+        return self._encoding.decode(tokens[: self.max_tokens])
 
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a single text.
@@ -34,9 +65,10 @@ class EmbeddingGenerator:
         """
         from litellm import embedding
 
+        truncated = self._truncate_to_max_tokens(text)
         response = embedding(
             model=self.model,
-            input=[text],
+            input=[truncated],
             dimensions=self.dimensions,
         )
         return response.data[0]["embedding"]
@@ -55,11 +87,14 @@ class EmbeddingGenerator:
         if not texts:
             return []
 
+        # Truncate all texts to fit within token limit
+        truncated_texts = [self._truncate_to_max_tokens(t) for t in texts]
+
         # Process in batches to respect API limits
         all_embeddings = []
 
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i : i + self.batch_size]
+        for i in range(0, len(truncated_texts), self.batch_size):
+            batch = truncated_texts[i : i + self.batch_size]
             response = embedding(
                 model=self.model,
                 input=batch,
@@ -118,7 +153,7 @@ class EmbeddingGenerator:
             batch = chunks[i : i + self.batch_size]
             # Use embedding_text if available (contains cleaned/enriched content),
             # otherwise fall back to raw content
-            texts = [chunk.embedding_text or chunk.content for chunk in batch]
+            texts = [self._truncate_to_max_tokens(chunk.embedding_text or chunk.content) for chunk in batch]
 
             response = embedding(
                 model=self.model,
@@ -134,4 +169,3 @@ class EmbeddingGenerator:
                 progress_callback(len(embedded_chunks), total)
 
         return embedded_chunks
-

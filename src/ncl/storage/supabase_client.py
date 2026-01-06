@@ -68,10 +68,16 @@ class SupabaseClient:
 
         Child documents (attachments) and chunks are automatically deleted
         due to ON DELETE CASCADE constraints in the database schema.
+        unsupported_files must be deleted explicitly as it lacks CASCADE.
 
         Args:
             doc_id: UUID of the document to delete.
         """
+        # Delete unsupported_files first (no CASCADE constraint)
+        self.client.table("unsupported_files").delete().eq(
+            "parent_document_id", str(doc_id)
+        ).execute()
+        # Now delete the document (cascades to child docs and chunks)
         self.client.table("documents").delete().eq("id", str(doc_id)).execute()
 
     # ==================== Document Operations ====================
@@ -467,6 +473,98 @@ class SupabaseClient:
         return result.count or 0
 
     # ==================== Cleanup Operations ====================
+
+    async def reset_failed_documents(self, file_paths: List[str]) -> Dict[str, int]:
+        """Reset failed documents by deleting their database entries.
+
+        This allows them to be reprocessed on the next ingest run.
+        Used by the `ncl reset-failures` command to clear failed documents
+        from a JSON failure report.
+
+        Deletion order:
+        1. processing_log entries (tracks file processing state)
+        2. Query child document IDs (attachments)
+        3. unsupported_files for root + children (no CASCADE)
+        4. documents (CASCADE deletes children and chunks)
+        5. archive folders from Supabase Storage
+
+        Args:
+            file_paths: List of absolute file paths to reset (e.g., from
+                failure report JSON). These match the file_path column in
+                both processing_log and documents tables.
+
+        Returns:
+            Dictionary with counts of deleted records:
+            - "documents": Number of document records deleted
+            - "processing_log": Number of processing log entries deleted
+            - "archives": Number of archive folders deleted from storage
+        """
+        if not file_paths:
+            return {"documents": 0, "processing_log": 0, "archives": 0}
+
+        counts: Dict[str, int] = {"documents": 0, "processing_log": 0, "archives": 0}
+
+        # Batch delete from processing_log (Supabase supports .in_() for batch ops)
+        result = (
+            self.client.table("processing_log")
+            .delete()
+            .in_("file_path", file_paths)
+            .execute()
+        )
+        counts["processing_log"] = len(result.data) if result.data else 0
+
+        # Get all document IDs and doc_ids for these file paths
+        doc_result = (
+            self.client.table("documents")
+            .select("id, doc_id")
+            .in_("file_path", file_paths)
+            .execute()
+        )
+        doc_ids = [doc["id"] for doc in doc_result.data]
+        doc_id_strings = [doc["doc_id"] for doc in doc_result.data if doc.get("doc_id")]
+
+        if doc_ids:
+            # Get all child document IDs (attachments) - these will be CASCADE deleted
+            # but we need their IDs to clean up unsupported_files first
+            child_result = (
+                self.client.table("documents")
+                .select("id")
+                .in_("parent_id", doc_ids)
+                .execute()
+            )
+            child_doc_ids = [doc["id"] for doc in child_result.data]
+            all_doc_ids = doc_ids + child_doc_ids
+
+            # Delete unsupported_files for root docs AND their children (no CASCADE)
+            self.client.table("unsupported_files").delete().in_(
+                "parent_document_id", all_doc_ids
+            ).execute()
+
+            # Delete root documents (CASCADE handles child documents and all chunks)
+            result = (
+                self.client.table("documents")
+                .delete()
+                .in_("id", doc_ids)
+                .execute()
+            )
+            counts["documents"] = len(result.data) if result.data else 0
+
+        # Delete archive folders from Supabase Storage
+        if doc_id_strings:
+            from .archive_storage import ArchiveStorage, ArchiveStorageError
+
+            try:
+                storage = ArchiveStorage()
+                for doc_id in doc_id_strings:
+                    try:
+                        storage.delete_folder(doc_id)
+                        counts["archives"] += 1
+                    except ArchiveStorageError:
+                        pass  # Folder may not exist
+            except ArchiveStorageError:
+                pass  # Storage not configured or bucket doesn't exist
+
+        return counts
 
     async def delete_all_data(self) -> Dict[str, int]:
         """Delete all data from all tables.
