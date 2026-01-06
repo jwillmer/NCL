@@ -6,6 +6,7 @@ import logging
 from typing import Callable, List, Optional
 
 import tiktoken
+from litellm import aembedding
 
 from ..config import get_settings
 from ..models.chunk import Chunk
@@ -63,10 +64,8 @@ class EmbeddingGenerator:
         Returns:
             Embedding vector as list of floats.
         """
-        from litellm import embedding
-
         truncated = self._truncate_to_max_tokens(text)
-        response = embedding(
+        response = await aembedding(
             model=self.model,
             input=[truncated],
             dimensions=self.dimensions,
@@ -82,8 +81,6 @@ class EmbeddingGenerator:
         Returns:
             List of embedding vectors.
         """
-        from litellm import embedding
-
         if not texts:
             return []
 
@@ -95,7 +92,7 @@ class EmbeddingGenerator:
 
         for i in range(0, len(truncated_texts), self.batch_size):
             batch = truncated_texts[i : i + self.batch_size]
-            response = embedding(
+            response = await aembedding(
                 model=self.model,
                 input=batch,
                 dimensions=self.dimensions,
@@ -141,8 +138,6 @@ class EmbeddingGenerator:
         Returns:
             Same chunks with embeddings added.
         """
-        from litellm import embedding
-
         if not chunks:
             return chunks
 
@@ -155,7 +150,7 @@ class EmbeddingGenerator:
             # otherwise fall back to raw content
             texts = [self._truncate_to_max_tokens(chunk.embedding_text or chunk.content) for chunk in batch]
 
-            response = embedding(
+            response = await aembedding(
                 model=self.model,
                 input=texts,
                 dimensions=self.dimensions,

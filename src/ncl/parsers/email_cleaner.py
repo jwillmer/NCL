@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Optional, Tuple
 
-from litellm import completion
+from litellm import acompletion
 
 from ..config import get_settings
 
@@ -104,7 +104,7 @@ async def extract_content_bounds(
         model = settings.get_model(settings.email_cleaner_model)
 
     try:
-        response = completion(
+        response = await acompletion(
             model=model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
