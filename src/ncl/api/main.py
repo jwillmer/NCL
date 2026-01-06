@@ -29,6 +29,7 @@ from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
 from ..storage.supabase_client import SupabaseClient
 from .agent import create_graph
 from .conversations import router as conversations_router
+from .feedback import router as feedback_router
 from .middleware.auth import SupabaseJWTBearer
 from .patches import apply_agui_thread_patch
 
@@ -360,8 +361,9 @@ def create_app() -> FastAPI:
         finally:
             await client.close()
 
-    # Include conversations router
+    # Include routers
     app.include_router(conversations_router)
+    app.include_router(feedback_router, prefix="/feedback")
 
     return app
 

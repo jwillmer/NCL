@@ -2,6 +2,8 @@
 
 Patches the "Message ID not found in history" bug in thread continuation.
 See: https://github.com/CopilotKit/CopilotKit/issues/2402
+
+Also adds Langfuse session tracking for user feedback integration.
 """
 
 import logging
@@ -9,6 +11,8 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
+
+from ...observability import get_langfuse_handler, set_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,29 @@ def apply_agui_thread_patch() -> None:
         messages = input.messages or []
         forwarded_props = input.forwarded_props or {}
         thread_id = input.thread_id
+
+        # Set up Langfuse tracing with session tracking for user feedback integration
+        # Uses thread_id as session_id so all traces in a conversation are grouped
+        # 1. Set context variable for LiteLLM calls (embeddings, completions)
+        # 2. Add LangChain callback handler with session_id metadata for LangGraph traces
+        if thread_id:
+            set_session_id(thread_id)
+            logger.debug("Session ID set for LiteLLM calls: %s", thread_id)
+
+        langfuse_handler = get_langfuse_handler()
+        if langfuse_handler:
+            # Ensure callbacks list exists
+            if "callbacks" not in config:
+                config["callbacks"] = []
+            # Add handler if not already present
+            if langfuse_handler not in config["callbacks"]:
+                config["callbacks"].append(langfuse_handler)
+            # Set session_id via metadata - must use camelCase "langfuseSessionId"
+            if thread_id:
+                if "metadata" not in config:
+                    config["metadata"] = {}
+                config["metadata"]["langfuseSessionId"] = thread_id
+                logger.debug("Langfuse callback configured: langfuseSessionId=%s", thread_id)
 
         state_input["messages"] = agent_state.values.get("messages", [])
         self.active_run["current_graph_state"] = agent_state.values.copy()

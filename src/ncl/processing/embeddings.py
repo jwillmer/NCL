@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import tiktoken
 from litellm import aembedding
 
 from ..config import get_settings
 from ..models.chunk import Chunk
+from ..observability import get_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,13 @@ class EmbeddingGenerator:
             except KeyError:
                 self._encoding = tiktoken.get_encoding("cl100k_base")
 
+    def _get_langfuse_metadata(self) -> Dict[str, Any]:
+        """Get metadata dict with session_id for Langfuse OTEL tracing."""
+        session_id = get_session_id()
+        if session_id:
+            return {"session_id": session_id}
+        return {}
+
     def _truncate_to_max_tokens(self, text: str) -> str:
         """Truncate text to fit within embedding model's token limit.
 
@@ -69,6 +77,7 @@ class EmbeddingGenerator:
             model=self.model,
             input=[truncated],
             dimensions=self.dimensions,
+            metadata=self._get_langfuse_metadata(),
         )
         return response.data[0]["embedding"]
 
@@ -89,6 +98,7 @@ class EmbeddingGenerator:
 
         # Process in batches to respect API limits
         all_embeddings = []
+        metadata = self._get_langfuse_metadata()
 
         for i in range(0, len(truncated_texts), self.batch_size):
             batch = truncated_texts[i : i + self.batch_size]
@@ -96,6 +106,7 @@ class EmbeddingGenerator:
                 model=self.model,
                 input=batch,
                 dimensions=self.dimensions,
+                metadata=metadata,
             )
             batch_embeddings = [item["embedding"] for item in response.data]
             all_embeddings.extend(batch_embeddings)
@@ -143,6 +154,7 @@ class EmbeddingGenerator:
 
         total = len(chunks)
         embedded_chunks: List[Chunk] = []
+        metadata = self._get_langfuse_metadata()
 
         for i in range(0, total, self.batch_size):
             batch = chunks[i : i + self.batch_size]
@@ -154,6 +166,7 @@ class EmbeddingGenerator:
                 model=self.model,
                 input=texts,
                 dimensions=self.dimensions,
+                metadata=metadata,
             )
 
             for chunk, item in zip(batch, response.data):

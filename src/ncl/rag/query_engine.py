@@ -17,6 +17,7 @@ from ..models.chunk import (
     RetrievalResult,
     SourceReference,
 )
+from ..observability import get_session_id
 from ..processing.embeddings import EmbeddingGenerator
 from ..processing.reranker import Reranker
 from ..storage.supabase_client import SupabaseClient
@@ -48,6 +49,13 @@ class RAGQueryEngine:
         self.citation_processor = CitationProcessor()
         self.llm_model = settings.get_model(settings.rag_llm_model)
         self.chunk_display_max_chars = settings.chunk_display_max_chars
+
+    def _get_langfuse_metadata(self) -> Dict[str, Any]:
+        """Get metadata dict with session_id for Langfuse OTEL tracing."""
+        session_id = get_session_id()
+        if session_id:
+            return {"session_id": session_id}
+        return {}
 
     async def query(
         self,
@@ -365,6 +373,7 @@ Please provide a comprehensive answer based on the above context. Remember to ci
             ],
             temperature=0.3,
             max_tokens=1000,
+            metadata=self._get_langfuse_metadata(),
         )
 
         return response.choices[0].message.content
@@ -440,6 +449,7 @@ Please provide a comprehensive answer based on the above context. If you referen
             ],
             temperature=0.3,
             max_tokens=1000,
+            metadata=self._get_langfuse_metadata(),
         )
 
         return response.choices[0].message.content

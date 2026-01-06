@@ -13,7 +13,7 @@
  * its own sources accordion below the message content.
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, createContext, useContext } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useChatContext } from "@copilotkit/react-ui";
 import type { AssistantMessageProps } from "@copilotkit/react-ui";
@@ -32,13 +32,65 @@ import {
   SourceViewDialog,
   useCitationContext,
 } from "./Sources";
-import { getMessages, touchConversation, generateTitle } from "@/lib/conversations";
+import { getMessages, touchConversation, generateTitle, submitFeedback } from "@/lib/conversations";
+import { ThumbsUp, ThumbsDown } from "lucide-react";
 
 function SearchProgress({ message }: { message: string }) {
   return (
     <div className="flex items-center gap-2 px-4 py-3 bg-blue-50 border border-blue-200 rounded-lg mx-4 my-2">
       <div className="animate-spin h-4 w-4 border-2 border-blue-500 border-t-transparent rounded-full" />
       <span className="text-sm text-blue-700">{message}</span>
+    </div>
+  );
+}
+
+// Context for passing feedback handlers to custom AssistantMessage
+type FeedbackContextType = {
+  onThumbsUp: (message: Message) => void;
+  onThumbsDown: (message: Message) => void;
+};
+const FeedbackContext = createContext<FeedbackContextType | null>(null);
+
+function FeedbackButtons({ message }: { message: Message }) {
+  const feedback = useContext(FeedbackContext);
+  const [selected, setSelected] = useState<"up" | "down" | null>(null);
+
+  if (!feedback || !message) return null;
+
+  const handleThumbsUp = () => {
+    if (selected === "up") return;
+    setSelected("up");
+    feedback.onThumbsUp(message);
+  };
+
+  const handleThumbsDown = () => {
+    if (selected === "down") return;
+    setSelected("down");
+    feedback.onThumbsDown(message);
+  };
+
+  return (
+    <div className="flex items-center gap-1 mt-2">
+      <button
+        onClick={handleThumbsUp}
+        className={`p-1.5 rounded hover:bg-gray-100 transition-colors ${
+          selected === "up" ? "text-green-600 bg-green-50" : "text-gray-400 hover:text-gray-600"
+        }`}
+        title="Helpful"
+        disabled={selected !== null}
+      >
+        <ThumbsUp className="h-4 w-4" />
+      </button>
+      <button
+        onClick={handleThumbsDown}
+        className={`p-1.5 rounded hover:bg-gray-100 transition-colors ${
+          selected === "down" ? "text-red-600 bg-red-50" : "text-gray-400 hover:text-gray-600"
+        }`}
+        title="Not helpful"
+        disabled={selected !== null}
+      >
+        <ThumbsDown className="h-4 w-4" />
+      </button>
     </div>
   );
 }
@@ -99,9 +151,12 @@ function CustomAssistantMessage(props: AssistantMessageProps) {
           </div>
         )}
         {!isLoading && (
-          <div className="mt-3 mb-4">
-            <SourcesAccordion />
-          </div>
+          <>
+            <div className="mt-3 mb-2">
+              <SourcesAccordion />
+            </div>
+            <FeedbackButtons message={message} />
+          </>
         )}
       </div>
     </MessageCitationProvider>
@@ -213,38 +268,63 @@ export function ChatContainer({ threadId, disabled, vesselId }: ChatContainerPro
     },
   });
 
-  return (
-    <CitationProvider onViewCitation={handleViewCitation}>
-      <div className="flex-1 flex flex-col h-[calc(100vh-3.5rem)]">
-        {state.error_message && (
-          <div className="px-4 py-2 bg-red-50 border-b border-red-200">
-            <div className="text-sm text-red-700">
-              Error: {state.error_message}
-            </div>
-          </div>
-        )}
-        <CopilotChat
-          labels={{
-            title: "MTSS Assistant",
-            initial: "Hello! I can help you find solutions to technical issues on your vessel. Ask me about past maintenance problems, equipment failures, or search our knowledge base for technical documentation and procedures.",
-            placeholder: disabled
-              ? "This conversation is archived (read-only)"
-              : "Describe an issue or search for technical information...",
-          }}
-          className={`flex-1 flex flex-col [&_.copilotKitChat]:flex-1 [&_.copilotKitChat]:flex [&_.copilotKitChat]:flex-col [&_.copilotKitMessages]:flex-1 [&_.copilotKitMessages]:overflow-y-auto ${
-            disabled ? "[&_.copilotKitInput]:opacity-50 [&_.copilotKitInput]:pointer-events-none" : ""
-          }`}
-          markdownTagRenderers={sourceTagRenderers}
-          AssistantMessage={CustomAssistantMessage}
-        />
+  // Feedback handlers for thumbs up/down
+  const handleThumbsUp = useCallback(
+    (message: Message) => {
+      if (!threadId || !message.id) return;
+      submitFeedback(threadId, message.id, 1).catch((error) => {
+        console.error("Failed to submit positive feedback:", error);
+      });
+    },
+    [threadId]
+  );
 
-        {/* Dialog for viewing full source content */}
-        <SourceViewDialog
-          chunkId={selectedChunkId}
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-        />
-      </div>
-    </CitationProvider>
+  const handleThumbsDown = useCallback(
+    (message: Message) => {
+      if (!threadId || !message.id) return;
+      submitFeedback(threadId, message.id, 0).catch((error) => {
+        console.error("Failed to submit negative feedback:", error);
+      });
+    },
+    [threadId]
+  );
+
+  const feedbackValue = { onThumbsUp: handleThumbsUp, onThumbsDown: handleThumbsDown };
+
+  return (
+    <FeedbackContext.Provider value={feedbackValue}>
+      <CitationProvider onViewCitation={handleViewCitation}>
+        <div className="flex-1 flex flex-col h-[calc(100vh-3.5rem)]">
+          {state.error_message && (
+            <div className="px-4 py-2 bg-red-50 border-b border-red-200">
+              <div className="text-sm text-red-700">
+                Error: {state.error_message}
+              </div>
+            </div>
+          )}
+          <CopilotChat
+            labels={{
+              title: "MTSS Assistant",
+              initial: "Hello! I can help you find solutions to technical issues on your vessel. Ask me about past maintenance problems, equipment failures, or search our knowledge base for technical documentation and procedures.",
+              placeholder: disabled
+                ? "This conversation is archived (read-only)"
+                : "Describe an issue or search for technical information...",
+            }}
+            className={`flex-1 flex flex-col [&_.copilotKitChat]:flex-1 [&_.copilotKitChat]:flex [&_.copilotKitChat]:flex-col [&_.copilotKitMessages]:flex-1 [&_.copilotKitMessages]:overflow-y-auto ${
+              disabled ? "[&_.copilotKitInput]:opacity-50 [&_.copilotKitInput]:pointer-events-none" : ""
+            }`}
+            markdownTagRenderers={sourceTagRenderers}
+            AssistantMessage={CustomAssistantMessage}
+          />
+
+          {/* Dialog for viewing full source content */}
+          <SourceViewDialog
+            chunkId={selectedChunkId}
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+          />
+        </div>
+      </CitationProvider>
+    </FeedbackContext.Provider>
   );
 }

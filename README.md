@@ -291,6 +291,7 @@ AGENT_URL=http://localhost:8000/copilotkit
 - **Authentication:** Supabase Auth with JWT validation in API route
 - **Interactive Citations:** Clickable citation badges with source viewer dialog and file downloads
 - **Agent State Sync:** Bidirectional state between frontend and Python agent via LangGraph
+- **User Feedback:** Thumbs up/down feedback on assistant responses, tracked in Langfuse
 - **Professional Design:** NCL brand colors and responsive layout
 
 ### Conversation History
@@ -381,6 +382,32 @@ GET /citations/{chunk_id}
   "content": "Full markdown content of the source..."
 }
 ```
+
+### Feedback Endpoint
+
+Submit user feedback (thumbs up/down) for assistant responses. Feedback is stored in Langfuse linked to the conversation session for quality analysis.
+
+```
+POST /feedback
+```
+
+**Request Body:**
+```json
+{
+  "thread_id": "uuid-of-conversation",
+  "message_id": "message-id",
+  "value": 1
+}
+```
+
+- `value`: `1` for positive (thumbs up), `0` for negative (thumbs down)
+
+**Authentication:** Requires Supabase JWT token
+
+**Langfuse Integration:**
+- Each conversation (`thread_id`) maps to a Langfuse session
+- Feedback scores are attached to traces for quality tracking
+- View aggregated feedback in Langfuse dashboard under Sessions
 
 ## Technology Stack
 
