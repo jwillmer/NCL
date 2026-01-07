@@ -1,7 +1,7 @@
 """FastAPI application with LangGraph Agent integration.
 
-This server exposes the LangGraph agent endpoint with defense-in-depth authentication.
-JWT tokens are validated both at the CopilotKit runtime (Node.js) and here.
+This server exposes the LangGraph agent endpoint via AG-UI protocol with defense-in-depth
+authentication. JWT tokens are validated both at the Next.js API route and here.
 
 Conversation history is persisted via LangGraph's AsyncPostgresSaver checkpointer.
 """
@@ -13,8 +13,7 @@ import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from ag_ui_langgraph import add_langgraph_fastapi_endpoint
-from copilotkit import LangGraphAGUIAgent
+from ag_ui_langgraph import LangGraphAgent, add_langgraph_fastapi_endpoint
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -136,20 +135,20 @@ async def lifespan(app: FastAPI):
         app.state.agent_graph = create_graph(checkpointer)
 
         # Apply patch for ag-ui-langgraph thread continuation bug
-        # See: https://github.com/CopilotKit/CopilotKit/issues/2402
+        # See: https://github.com/ag-ui-protocol/ag-ui/issues/2402
         apply_agui_thread_patch()
 
         # Add LangGraph agent endpoint via AG-UI protocol
         add_langgraph_fastapi_endpoint(
             app=app,
-            agent=LangGraphAGUIAgent(
+            agent=LangGraphAgent(
                 name="default",
                 description="NCL Email RAG Agent for document Q&A",
                 graph=app.state.agent_graph,
             ),
-            path="/copilotkit",
+            path="/agent",
         )
-        logger.info("LangGraph agent endpoint registered at /copilotkit")
+        logger.info("LangGraph agent endpoint registered at /agent")
 
         yield
 

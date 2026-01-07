@@ -11,8 +11,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
-const BACKEND_URL = (process.env.AGENT_URL || "http://localhost:8000/copilotkit").replace(
-  "/copilotkit",
+const BACKEND_URL = (process.env.AGENT_URL || "http://localhost:8000/agent").replace(
+  "/agent",
   ""
 );
 

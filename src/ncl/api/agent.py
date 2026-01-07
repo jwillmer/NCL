@@ -26,13 +26,12 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, cast
 
-from copilotkit import CopilotKitState
-from copilotkit.langgraph import copilotkit_emit_state
+from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import Command
 
 from ..config import get_settings
@@ -48,15 +47,35 @@ logger = logging.getLogger(__name__)
 _vessel_cache: Dict[str, Optional[Vessel]] = {}
 
 
-class AgentState(CopilotKitState):
+class AgentState(MessagesState):
     """Shared state for progress tracking between agent and frontend.
 
-    Extends CopilotKitState to enable bidirectional state sync with frontend.
+    Extends MessagesState for LangGraph message handling.
+    State is synced to frontend via emit_state() which triggers STATE_SNAPSHOT events.
     """
 
     search_progress: str = ""
     error_message: Optional[str] = None
     selected_vessel_id: Optional[str] = None
+    # Citation map for response validation (internal use)
+    citation_map: Optional[Dict[str, Any]] = None
+
+
+async def emit_state(config: RunnableConfig, state: Dict[str, Any]) -> None:
+    """Emit state to frontend via AG-UI protocol.
+
+    Dispatches a custom event named 'manually_emit_state' which ag-ui-langgraph
+    converts to a STATE_SNAPSHOT event for the frontend.
+
+    Args:
+        config: LangGraph runnable config with callbacks
+        state: State dictionary to emit to frontend
+    """
+    await adispatch_custom_event(
+        name="manually_emit_state",
+        data=state,
+        config=config,
+    )
 
 
 def _load_system_prompt() -> str:
@@ -175,7 +194,7 @@ async def chat_node(
         # Update progress - generating answer
         logger.debug("Emitting 'Generating answer...' progress")
         state["search_progress"] = "Generating answer..."
-        await copilotkit_emit_state(config, state)
+        await emit_state(config, state)
 
     response = await model_with_tools.ainvoke(
         [system_message, *state["messages"]],
@@ -192,7 +211,7 @@ async def chat_node(
             # Update progress - validating citations
             logger.debug("Emitting 'Validating citations...' progress")
             state["search_progress"] = "Validating citations..."
-            await copilotkit_emit_state(config, state)
+            await emit_state(config, state)
 
             # Deserialize and process citations
             citation_map = {
@@ -214,7 +233,7 @@ async def chat_node(
             # Clear progress
             logger.debug("Clearing progress indicators")
             state["search_progress"] = ""
-            await copilotkit_emit_state(config, state)
+            await emit_state(config, state)
 
     return Command(goto=END, update={"messages": [response], "citation_map": None})
 
@@ -248,7 +267,7 @@ async def search_node(
     # Update state - starting search
     state["search_progress"] = "Initializing search..."
     state["error_message"] = None
-    await copilotkit_emit_state(config, state)
+    await emit_state(config, state)
 
     engine: Optional[RAGQueryEngine] = None
     try:
@@ -262,7 +281,7 @@ async def search_node(
         # Progress callback to emit state updates
         async def on_progress(message: str) -> None:
             state["search_progress"] = message
-            await copilotkit_emit_state(config, state)
+            await emit_state(config, state)
 
         # Get raw search results (no LLM generation)
         retrieval_results = await engine.search_only(
@@ -276,7 +295,7 @@ async def search_node(
         if not retrieval_results:
             # No results found
             state["search_progress"] = ""
-            await copilotkit_emit_state(config, state)
+            await emit_state(config, state)
 
             tool_response = ToolMessage(
                 content=json.dumps({
@@ -310,7 +329,7 @@ async def search_node(
 
         # Update state - search complete, moving to answer generation
         state["search_progress"] = "Processing results..."
-        await copilotkit_emit_state(config, state)
+        await emit_state(config, state)
 
         return Command(
             goto="chat_node",
@@ -326,7 +345,7 @@ async def search_node(
         # Update state with error
         state["search_progress"] = ""
         state["error_message"] = str(e)
-        await copilotkit_emit_state(config, state)
+        await emit_state(config, state)
 
         tool_response = ToolMessage(
             content=json.dumps({

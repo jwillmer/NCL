@@ -1,7 +1,7 @@
 """Monkey patches for ag-ui-langgraph bugs.
 
 Patches the "Message ID not found in history" bug in thread continuation.
-See: https://github.com/CopilotKit/CopilotKit/issues/2402
+See: https://github.com/ag-ui-protocol/ag-ui/issues/2402
 
 Also adds Langfuse session tracking for user feedback integration.
 """
@@ -55,21 +55,20 @@ def apply_agui_thread_patch() -> None:
 
         langfuse_handler = get_langfuse_handler()
         if langfuse_handler:
-            # Ensure callbacks list exists
-            if "callbacks" not in config:
+            # Ensure callbacks list exists (can be None even if key exists)
+            if not config.get("callbacks"):
                 config["callbacks"] = []
             # Add handler if not already present
             if langfuse_handler not in config["callbacks"]:
                 config["callbacks"].append(langfuse_handler)
-            # Set session_id and user_id via metadata
+            # Set session_id and user_id via set_trace_params() (Langfuse v3 API)
+            # See: https://langfuse.com/docs/observability/features/sessions
             # See: https://langfuse.com/docs/observability/features/users
-            if "metadata" not in config:
-                config["metadata"] = {}
-            if thread_id:
-                config["metadata"]["langfuseSessionId"] = thread_id
             user_id = get_user_id()
-            if user_id:
-                config["metadata"]["langfuseUserId"] = user_id
+            langfuse_handler.set_trace_params(
+                session_id=thread_id,
+                user_id=user_id,
+            )
             logger.debug(
                 "Langfuse callback configured: session=%s, user=%s",
                 thread_id,

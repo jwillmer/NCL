@@ -9,13 +9,13 @@ import { useState, useEffect, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { ArrowLeft, Ship, ChevronDown, Archive } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { CopilotKit } from "@copilotkit/react-core";
 
 import { useAuth, LoginForm } from "@/components/auth";
 import { ChatContainer } from "@/components/ChatContainer";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { initLangfuse } from "@/lib/langfuse";
 import {
   Conversation,
   Vessel,
@@ -25,6 +25,11 @@ import {
   listVessels,
   ConversationApiError,
 } from "@/lib/conversations";
+
+// Initialize Langfuse browser SDK on module load
+if (typeof window !== "undefined") {
+  initLangfuse();
+}
 
 // ============================================
 // Vessel Selector
@@ -300,35 +305,24 @@ function ChatPageContent() {
   const isArchived = conversation?.is_archived ?? false;
 
   return (
-    <CopilotKit
-      runtimeUrl="/api/copilotkit"
-      agent="default"
-      threadId={threadId}
-      headers={{
-        Authorization: `Bearer ${session.access_token}`,
-      }}
-      properties={{
-        selected_vessel_id: vesselId,  // Pass vessel selection to agent
-      }}
-    >
-      <div className="flex min-h-screen flex-col bg-gray-50">
-        <ChatHeader
-          conversation={conversation}
+    <div className="flex min-h-screen flex-col bg-gray-50">
+      <ChatHeader
+        conversation={conversation}
+        vesselId={vesselId}
+        vessels={vessels}
+        vesselsLoading={vesselsLoading}
+        onBack={handleBack}
+        onVesselChange={handleVesselChange}
+      />
+      <main className="flex-1 flex flex-col">
+        <ChatContainer
+          threadId={threadId}
+          authToken={session.access_token}
+          disabled={isArchived}
           vesselId={vesselId}
-          vessels={vessels}
-          vesselsLoading={vesselsLoading}
-          onBack={handleBack}
-          onVesselChange={handleVesselChange}
         />
-        <main className="flex-1 flex flex-col">
-          <ChatContainer
-            threadId={threadId}
-            disabled={isArchived}
-            vesselId={vesselId}
-          />
-        </main>
-      </div>
-    </CopilotKit>
+      </main>
+    </div>
   );
 }
 

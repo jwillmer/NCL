@@ -51,7 +51,9 @@
       "Bash(pip index:*)",
       "Bash(uv pip:*)",
       "Bash(python -m py_compile:*)",
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)"
     ]
   }
 }

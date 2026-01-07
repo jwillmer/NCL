@@ -224,7 +224,7 @@ User Query → Embedding → Vector Search → Reranking → LLM → Answer
 
 ## Web Interface
 
-NCL includes a modern web interface built with Next.js and CopilotKit for conversational document search.
+NCL includes a modern web interface built with Next.js and the AG-UI SDK for conversational document search.
 
 ### Architecture
 
@@ -233,28 +233,29 @@ NCL includes a modern web interface built with Next.js and CopilotKit for conver
 │                     Next.js App (port 3000)                 │
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │  React Frontend                                         ││
-│  │  - CopilotKit chat interface                            ││
+│  │  - Custom AgentChat component with AG-UI SDK            ││
 │  │  - Supabase Auth UI                                     ││
-│  │  - Real-time progress rendering via useCoAgentStateRender││
+│  │  - Real-time progress via AG-UI state events            ││
+│  │  - Langfuse browser SDK for user interaction tracking   ││
 │  └─────────────────────────────────────────────────────────┘│
 │  ┌─────────────────────────────────────────────────────────┐│
-│  │  /api/copilotkit (API Route)                            ││
+│  │  /api/agent (API Route)                                 ││
 │  │  - JWT validation                                       ││
-│  │  - CopilotRuntime with LangGraphAgent                   ││
+│  │  - AG-UI HttpAgent proxy to Python backend              ││
 │  └─────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────┘
                               │
-                              ▼
+                              ▼ (AG-UI Protocol / SSE)
 ┌─────────────────────────────────────────────────────────────┐
 │              Python Agent (FastAPI, port 8000)              │
-│  - LangGraph with CopilotKit integration                    │
+│  - LangGraph with AG-UI protocol via add_langgraph_endpoint │
 │  - RAG tools with streaming progress updates                │
-│  - copilotkit_emit_state() for real-time UI updates         │
+│  - copilotkit_emit_state() for real-time UI state sync      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-- **Web App:** Next.js with embedded API route for CopilotKit runtime
-- **Agent:** LangGraph agent with RAG capabilities and streaming progress updates
+- **Web App:** Next.js with custom AG-UI SDK chat components and Langfuse browser tracking
+- **Agent:** LangGraph agent with RAG capabilities and streaming progress updates via AG-UI protocol
 
 ### Quick Start (Web)
 
@@ -290,18 +291,24 @@ API_PORT=8000
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-AGENT_URL=http://localhost:8000/copilotkit
+NEXT_PUBLIC_API_URL=http://localhost:8000
+AGENT_URL=http://localhost:8000/agent
+
+# Optional: Langfuse browser SDK for user interaction tracking
+NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+NEXT_PUBLIC_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 
 ### Features
 
-- **Chat Interface:** Conversational AI for document Q&A powered by CopilotKit
+- **Chat Interface:** Conversational AI for document Q&A powered by AG-UI SDK
 - **Conversation History:** Browse, search, and continue previous conversations
 - **Streaming Progress:** Real-time search progress updates (Searching → Reranking → Formatting)
 - **Authentication:** Supabase Auth with JWT validation in API route
 - **Interactive Citations:** Clickable citation badges with source viewer dialog and file downloads
-- **Agent State Sync:** Bidirectional state between frontend and Python agent via LangGraph
-- **User Feedback:** Thumbs up/down feedback on assistant responses, tracked in Langfuse
+- **Agent State Sync:** Bidirectional state between frontend and Python agent via AG-UI protocol
+- **User Feedback:** Thumbs up/down feedback on assistant responses, tracked in Langfuse (backend + browser)
+- **Langfuse Browser SDK:** Client-side user interaction tracking with consistent session IDs
 - **Professional Design:** NCL brand colors and responsive layout
 
 ### Conversation History
@@ -422,9 +429,10 @@ POST /feedback
 ## Technology Stack
 
 - **CLI:** Typer + Rich
-- **Web API:** FastAPI + CopilotKit + LangGraph
-- **Frontend:** Next.js + React + TypeScript + TailwindCSS + Radix UI
-- **Agent Framework:** LangGraph with CopilotKit integration
+- **Web API:** FastAPI + AG-UI Protocol + LangGraph
+- **Frontend:** Next.js + React + TypeScript + TailwindCSS + Radix UI + AG-UI SDK
+- **Agent Framework:** LangGraph with AG-UI protocol integration
+- **Observability:** Langfuse (backend + browser SDK)
 - **Document Processing:** LlamaParse (PDFs, Office, legacy formats)
 - **Image Processing:** OpenAI Vision API (classification + description)
 - **Text Chunking:** LangChain text splitters with tiktoken
