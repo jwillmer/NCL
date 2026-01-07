@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from langfuse import Langfuse
-    from langfuse.callback import CallbackHandler
+    from langfuse.langchain import CallbackHandler
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ def get_langfuse_handler() -> "CallbackHandler | None":
         return _langfuse_handler
 
     try:
-        from langfuse.callback import CallbackHandler
+        from langfuse.langchain import CallbackHandler
 
         logger.debug("Creating Langfuse CallbackHandler")
         _langfuse_handler = CallbackHandler(

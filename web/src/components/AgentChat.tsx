@@ -165,10 +165,26 @@ function MessageList({
 
   // Auto-scroll to bottom on new messages or streaming content
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages.length, streamingContent]);
+    const scrollToBottom = () => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    };
+
+    // Immediate scroll
+    scrollToBottom();
+
+    // Delayed scroll to handle layout shifts (e.g. images loading or markdown rendering)
+    const timeoutId = setTimeout(scrollToBottom, 50);
+    
+    // Also use RAF for good measure
+    const rafId = requestAnimationFrame(scrollToBottom);
+
+    return () => {
+      clearTimeout(timeoutId);
+      cancelAnimationFrame(rafId);
+    };
+  }, [messages.length, streamingContent, isStreaming]);
 
   // Filter to only show user and assistant messages (exclude tool calls, system messages)
   // Also filter out assistant messages that are raw tool results (JSON context dumps) or empty
@@ -188,14 +204,14 @@ function MessageList({
   const showInitialMessage = visibleMessages.length === 0 && !isStreaming && initialMessage;
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 pb-24 space-y-4">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 pb-24 space-y-6 scroll-smooth">
       {showInitialMessage && (
-        <div className="flex gap-3">
-          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-ncl-blue flex items-center justify-center">
-            <span className="text-white text-sm font-medium">AI</span>
+        <div className="flex gap-4 max-w-3xl mx-auto">
+          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-ncl-blue flex items-center justify-center shadow-sm">
+            <span className="text-white text-xs font-semibold">AI</span>
           </div>
-          <div className="flex-1 bg-gray-50 rounded-lg p-4">
-            <p className="text-gray-700">{initialMessage}</p>
+          <div className="flex-1 bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-none p-5">
+            <p className="text-gray-600 leading-relaxed">{initialMessage}</p>
           </div>
         </div>
       )}
@@ -206,16 +222,18 @@ function MessageList({
         const isCurrentStreaming = isStreaming && streamingMessageId === message.id;
 
         return (
-          <div key={message.id} className={`flex gap-3 ${isAssistant ? "" : "flex-row-reverse"}`}>
-            <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
-              isAssistant ? "bg-ncl-blue" : "bg-gray-600"
+          <div key={message.id} className={`flex gap-4 max-w-3xl mx-auto ${isAssistant ? "" : "flex-row-reverse"}`}>
+            <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center shadow-sm ${
+              isAssistant ? "bg-ncl-blue" : "bg-gray-700"
             }`}>
-              <span className="text-white text-sm font-medium">
+              <span className="text-white text-xs font-semibold">
                 {isAssistant ? "AI" : "U"}
               </span>
             </div>
-            <div className={`flex-1 max-w-[80%] rounded-lg p-4 ${
-              isAssistant ? "bg-gray-50" : "bg-ncl-blue text-white ml-auto"
+            <div className={`flex-1 max-w-[85%] rounded-2xl p-5 shadow-sm ${
+              isAssistant 
+                ? "bg-white border border-gray-100 rounded-tl-none" 
+                : "bg-ncl-blue text-white rounded-tr-none ml-auto"
             }`}>
               {isAssistant ? (
                 renderAssistantMessage({
@@ -225,7 +243,7 @@ function MessageList({
                   streamingContent: isCurrentStreaming ? streamingContent : undefined,
                 })
               ) : (
-                <p className="whitespace-pre-wrap">{message.content}</p>
+                <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
               )}
             </div>
           </div>
@@ -234,11 +252,11 @@ function MessageList({
 
       {/* Show streaming message as content arrives - displays chunks in real-time */}
       {isStreaming && (
-        <div className="flex gap-3">
-          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-ncl-blue flex items-center justify-center">
-            <span className="text-white text-sm font-medium">AI</span>
+        <div className="flex gap-4 max-w-3xl mx-auto">
+          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-ncl-blue flex items-center justify-center shadow-sm">
+            <span className="text-white text-xs font-semibold">AI</span>
           </div>
-          <div className="flex-1 max-w-[80%] bg-gray-50 rounded-lg p-4">
+          <div className="flex-1 max-w-[85%] bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-none p-5">
             {renderAssistantMessage({
               message: { id: streamingMessageId || "streaming", role: "assistant", content: streamingContent },
               isStreaming: true,
@@ -250,6 +268,22 @@ function MessageList({
       )}
     </div>
   );
+}
+
+/**
+ * Component to render animated trailing dots
+ */
+function AnimatedDots() {
+  const [dots, setDots] = useState("");
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots(prev => prev.length >= 3 ? "" : prev + ".");
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  return <span className="inline-block w-6">{dots}</span>;
 }
 
 /**
@@ -289,13 +323,17 @@ function ChatInput({
   const showProgress = !!progressMessage;
 
   return (
-    <form onSubmit={handleSubmit} className="p-4">
-      <div className="flex gap-2">
+    <form onSubmit={handleSubmit} className="p-4 bg-white/80 backdrop-blur-md border-t border-gray-200">
+      <div className="max-w-3xl mx-auto flex gap-3 relative">
         {showProgress ? (
-          // Progress indicator replaces input when loading
-          <div className="flex-1 flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg">
-            <div className="animate-spin h-4 w-4 border-2 border-blue-500 border-t-transparent rounded-full" />
-            <span className="text-sm text-blue-700">{progressMessage}</span>
+          // Modern progress indicator - text only with animated dots
+          <div className="flex-1 flex items-center px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-xl">
+            <span className="text-sm font-medium text-ncl-blue animate-pulse">
+              {progressMessage}
+            </span>
+            <span className="text-sm font-medium text-ncl-blue ml-0.5">
+              <AnimatedDots />
+            </span>
           </div>
         ) : (
           <textarea
@@ -304,16 +342,17 @@ function ChatInput({
             onKeyDown={handleKeyDown}
             placeholder={placeholder || "Type a message..."}
             disabled={disabled || isLoading}
-            className={`flex-1 resize-none rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ncl-blue focus:border-transparent ${
-              disabled || isLoading ? "opacity-50 cursor-not-allowed bg-gray-50" : ""
+            className={`flex-1 resize-none rounded-xl border border-gray-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ncl-blue/20 focus:border-ncl-blue transition-all shadow-sm ${
+              disabled || isLoading ? "opacity-50 cursor-not-allowed bg-gray-50" : "bg-white"
             }`}
             rows={1}
+            style={{ minHeight: "46px" }}
           />
         )}
         <button
           type="submit"
           disabled={disabled || isLoading || !input.trim()}
-          className={`px-4 py-2 rounded-lg bg-ncl-blue text-white transition-colors ${
+          className={`px-4 rounded-xl bg-ncl-blue text-white transition-all shadow-sm hover:shadow active:scale-95 ${
             disabled || isLoading || !input.trim()
               ? "opacity-50 cursor-not-allowed"
               : "hover:bg-ncl-blue-dark"

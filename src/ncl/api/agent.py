@@ -193,7 +193,7 @@ async def chat_node(
     if citation_map_data:
         # Update progress - generating answer
         logger.debug("Emitting 'Generating answer...' progress")
-        state["search_progress"] = "Generating answer..."
+        state["search_progress"] = "Generating answer"
         await emit_state(config, state)
 
     response = await model_with_tools.ainvoke(
@@ -210,7 +210,7 @@ async def chat_node(
         try:
             # Update progress - validating citations
             logger.debug("Emitting 'Validating citations...' progress")
-            state["search_progress"] = "Validating citations..."
+            state["search_progress"] = "Validating citations"
             await emit_state(config, state)
 
             # Deserialize and process citations
@@ -265,7 +265,7 @@ async def search_node(
         return Command(goto="chat_node", update={"messages": [tool_response]})
 
     # Update state - starting search
-    state["search_progress"] = "Initializing search..."
+    state["search_progress"] = "Initializing search"
     state["error_message"] = None
     await emit_state(config, state)
 
@@ -328,7 +328,7 @@ async def search_node(
         )
 
         # Update state - search complete, moving to answer generation
-        state["search_progress"] = "Processing results..."
+        state["search_progress"] = "Processing results"
         await emit_state(config, state)
 
         return Command(
