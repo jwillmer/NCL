@@ -11,7 +11,7 @@ import { createContext, useContext, useRef, useEffect, useState, FormEvent, Keyb
 import { Message } from "@ag-ui/client";
 import { useAgentChat, UseAgentChatReturn, ConnectionStatus } from "@/hooks/useAgentChat";
 import { RAGState } from "@/types/rag";
-import { Send, Loader2, AlertCircle, WifiOff } from "lucide-react";
+import { Send, Loader2, AlertCircle, WifiOff, Ship } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -21,6 +21,14 @@ import {
   SourcesAccordion,
   useCitationContext,
 } from "./Sources";
+
+// Extended Message type with vessel_id metadata
+export interface ExtendedMessage extends Message {
+  vessel_id?: string | null;
+}
+
+// Vessel lookup map for displaying vessel names
+export type VesselLookup = Record<string, string>; // vessel_id -> vessel_name
 
 // Context for sharing agent chat state with child components
 interface AgentChatContextType extends UseAgentChatReturn {
@@ -53,10 +61,33 @@ interface AgentChatProps {
   labels?: ChatLabels;
   disabled?: boolean;
   className?: string;
-  initialMessages?: Message[];
+  initialMessages?: ExtendedMessage[];
   onMessagesChange?: (messages: Message[]) => void;
   renderAssistantMessage?: (props: AssistantMessageRenderProps) => React.ReactNode;
+  vesselLookup?: VesselLookup;
   children?: React.ReactNode;
+}
+
+/**
+ * Vessel badge component to show which vessel filter was active for a message.
+ */
+function VesselBadge({ vesselId, vesselLookup }: { vesselId?: string | null; vesselLookup?: VesselLookup }) {
+  if (!vesselId) return null;
+
+  const vesselName = vesselLookup?.[vesselId];
+  const displayText = vesselName || `Vessel ${vesselId.slice(0, 8)}...`;
+
+  return (
+    <div className="flex justify-end mt-1">
+      <span
+        className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-white/60 hover:text-white/90 transition-colors cursor-default"
+        title={vesselName ? `Filtered to: ${vesselName}` : `Vessel ID: ${vesselId}`}
+      >
+        <Ship className="h-3 w-3" />
+        <span className="truncate max-w-[150px]">{displayText}</span>
+      </span>
+    </div>
+  );
 }
 
 export interface AssistantMessageRenderProps {
@@ -153,13 +184,15 @@ function MessageList({
   streamingMessageId,
   renderAssistantMessage,
   initialMessage,
+  vesselLookup,
 }: {
-  messages: Message[];
+  messages: ExtendedMessage[];
   isStreaming: boolean;
   streamingContent: string;
   streamingMessageId: string | null;
   renderAssistantMessage: (props: AssistantMessageRenderProps) => React.ReactNode;
   initialMessage?: string;
+  vesselLookup?: VesselLookup;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -243,7 +276,12 @@ function MessageList({
                   streamingContent: isCurrentStreaming ? streamingContent : undefined,
                 })
               ) : (
-                <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+                <div>
+                  <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+                  {message.vessel_id && (
+                    <VesselBadge vesselId={message.vessel_id} vesselLookup={vesselLookup} />
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -383,6 +421,7 @@ export function AgentChat({
   initialMessages,
   onMessagesChange,
   renderAssistantMessage,
+  vesselLookup,
   children,
 }: AgentChatProps) {
   const chat = useAgentChat({
@@ -431,12 +470,13 @@ export function AgentChat({
 
           {/* Message list - scrollable */}
           <MessageList
-            messages={chat.messages}
+            messages={chat.messages as ExtendedMessage[]}
             isStreaming={chat.isStreaming}
             streamingContent={chat.streamingContent}
             streamingMessageId={chat.streamingMessageId}
             renderAssistantMessage={assistantMessageRenderer}
             initialMessage={labels.initial}
+            vesselLookup={vesselLookup}
           />
         </div>
 

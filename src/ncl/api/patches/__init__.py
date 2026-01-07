@@ -9,7 +9,7 @@ Also adds Langfuse session tracking for user feedback integration.
 import logging
 from typing import Any
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from ...observability import get_langfuse_handler, get_user_id, set_session_id
@@ -78,6 +78,17 @@ def apply_agui_thread_patch() -> None:
         state_input["messages"] = agent_state.values.get("messages", [])
         self.active_run["current_graph_state"] = agent_state.values.copy()
         langchain_messages = agui_messages_to_langchain(messages)
+
+        # Inject vessel_id into the latest HumanMessage's additional_kwargs
+        # This allows tracking which vessel filter was active when each message was sent
+        vessel_id = forwarded_props.get("state", {}).get("selected_vessel_id")
+        if vessel_id and langchain_messages:
+            for msg in reversed(langchain_messages):
+                if isinstance(msg, HumanMessage):
+                    msg.additional_kwargs["vessel_id"] = vessel_id
+                    logger.debug("Attached vessel_id=%s to message=%s", vessel_id, msg.id)
+                    break
+
         state = self.langgraph_default_merge_state(state_input, langchain_messages, input)
         self.active_run["current_graph_state"].update(state)
         config["configurable"]["thread_id"] = thread_id

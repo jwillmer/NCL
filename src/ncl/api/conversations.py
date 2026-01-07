@@ -83,6 +83,7 @@ class MessageResponse(BaseModel):
     id: str
     role: str  # "user" | "assistant"
     content: str
+    vessel_id: Optional[str] = None  # Vessel filter active when message was sent
 
 
 class MessagesListResponse(BaseModel):
@@ -477,7 +478,9 @@ async def get_messages(
             if isinstance(msg, HumanMessage):
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
                 if content.strip():
-                    messages.append(MessageResponse(id=msg_id, role="user", content=content))
+                    # Extract vessel_id from additional_kwargs if present
+                    vessel_id = msg.additional_kwargs.get("vessel_id") if hasattr(msg, "additional_kwargs") else None
+                    messages.append(MessageResponse(id=msg_id, role="user", content=content, vessel_id=vessel_id))
             elif isinstance(msg, AIMessage):
                 # Skip tool call messages (they have tool_calls but often empty content)
                 if hasattr(msg, "tool_calls") and msg.tool_calls and not msg.content:

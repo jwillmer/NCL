@@ -127,11 +127,13 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
 
       // Add user message immediately for optimistic UI
       const userMessageId = `user-${Date.now()}`;
-      const userMessage: Message = {
+      // Cast to allow extra properties safely
+      const userMessage = {
         id: userMessageId,
-        role: "user",
+        role: "user" as const,
         content,
-      };
+        vessel_id: vesselId || null,
+      } as Message;
 
       setMessages((prev) => [...prev, userMessage]);
       agent.addMessage(userMessage);
@@ -211,9 +213,29 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
         onMessagesSnapshotEvent: ({ event }) => {
           if (DEBUG) console.log("[AG-UI] Messages snapshot:", event.messages?.length, "messages");
           if (event.messages && event.messages.length > 0) {
-            // Filter out messages with only user's optimistically added message ID
-            // Backend messages are authoritative and have processed citations
-            setMessages(event.messages);
+            // Preserve vessel_id from optimistic messages (backend doesn't include it in AG-UI format)
+            setMessages((prev) => {
+              // Build lookup of vessel_id by message content (since IDs may differ)
+              const vesselIdByContent = new Map<string, string | null>();
+              for (const msg of prev) {
+                if (msg.role === "user" && msg.content) {
+                  const extended = msg as { vessel_id?: string | null };
+                  if (extended.vessel_id) {
+                    vesselIdByContent.set(String(msg.content), extended.vessel_id);
+                  }
+                }
+              }
+              // Merge vessel_id into backend messages
+              return event.messages!.map((msg) => {
+                if (msg.role === "user" && msg.content) {
+                  const vesselId = vesselIdByContent.get(String(msg.content));
+                  if (vesselId) {
+                    return { ...msg, vessel_id: vesselId };
+                  }
+                }
+                return msg;
+              });
+            });
           }
         },
 

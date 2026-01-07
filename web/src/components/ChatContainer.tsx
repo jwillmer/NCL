@@ -26,8 +26,8 @@ import {
   SourceViewDialog,
   useCitationContext,
 } from "./Sources";
-import { AgentChat, AssistantMessageRenderProps } from "./AgentChat";
-import { getMessages, touchConversation, generateTitle, submitFeedback } from "@/lib/conversations";
+import { AgentChat, AssistantMessageRenderProps, ExtendedMessage, VesselLookup } from "./AgentChat";
+import { getMessages, touchConversation, generateTitle, submitFeedback, listVessels } from "@/lib/conversations";
 import { trackFeedback } from "@/lib/langfuse";
 
 
@@ -155,7 +155,8 @@ interface ChatContainerProps {
 export function ChatContainer({ threadId, authToken, disabled = false, vesselId }: ChatContainerProps) {
   // History loading state
   const [historyLoaded, setHistoryLoaded] = useState(false);
-  const [initialMessages, setInitialMessages] = useState<Message[]>([]);
+  const [initialMessages, setInitialMessages] = useState<ExtendedMessage[]>([]);
+  const [vesselLookup, setVesselLookup] = useState<VesselLookup>({});
   const prevMessageCount = useRef(0);
   const titleGenerated = useRef(false);
 
@@ -168,19 +169,32 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
     setDialogOpen(true);
   }, []);
 
-  // Load message history on mount
+  // Load message history and vessel lookup on mount
   useEffect(() => {
     if (!threadId || historyLoaded) return;
 
     async function loadHistory() {
       try {
-        const history = await getMessages(threadId);
+        // Load vessels for name lookup (in parallel with messages)
+        const [history, vessels] = await Promise.all([
+          getMessages(threadId),
+          listVessels().catch(() => []), // Don't fail if vessels can't be loaded
+        ]);
+
+        // Build vessel lookup map
+        const lookup: VesselLookup = {};
+        for (const vessel of vessels) {
+          lookup[vessel.id] = vessel.name;
+        }
+        setVesselLookup(lookup);
+
         if (history.length > 0) {
-          // AG-UI Message format (plain objects, not class instances)
-          const agMessages: Message[] = history.map((msg) => ({
+          // AG-UI Message format with vessel_id metadata
+          const agMessages: ExtendedMessage[] = history.map((msg) => ({
             id: msg.id,
             role: msg.role as "user" | "assistant",
             content: msg.content,
+            vessel_id: msg.vessel_id,
           }));
           setInitialMessages(agMessages);
           // Check if title was already generated (has user messages)
@@ -271,6 +285,7 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
             initialMessages={initialMessages}
             onMessagesChange={handleMessagesChange}
             renderAssistantMessage={CustomAssistantMessage}
+            vesselLookup={vesselLookup}
           >
             {/* Show spinner while history is loading */}
             {!historyLoaded && (
