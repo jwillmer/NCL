@@ -175,6 +175,21 @@ class SupabaseClient:
 
         self.client.table("documents").update(data).eq("id", str(doc_id)).execute()
 
+    async def update_document_archive_browse_uri(
+        self,
+        doc_id: UUID,
+        archive_browse_uri: str,
+    ):
+        """Update document's archive_browse_uri after markdown file is created.
+
+        Args:
+            doc_id: Document UUID.
+            archive_browse_uri: URI to the browsable markdown file.
+        """
+        self.client.table("documents").update(
+            {"archive_browse_uri": archive_browse_uri, "updated_at": "now()"}
+        ).eq("id", str(doc_id)).execute()
+
     async def get_document_by_hash(self, file_hash: str) -> Optional[Document]:
         """Check if document with hash already exists.
 

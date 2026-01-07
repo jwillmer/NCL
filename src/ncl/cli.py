@@ -19,6 +19,7 @@ litellm.success_callback = [cb for cb in litellm.success_callback if "langfuse" 
 litellm.failure_callback = [cb for cb in litellm.failure_callback if "langfuse" not in cb]
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import typer
 from rich.console import Console
@@ -893,6 +894,10 @@ async def _process_attachment(
             )
             if md_path:
                 vprint(f"  -> Archive updated: {md_path}", file_ctx)
+                # Update document and chunks with the new archive_browse_uri
+                browse_uri = f"/archive/{quote(md_path, safe='/')}"
+                attach_doc.archive_browse_uri = browse_uri
+                await db.update_document_archive_browse_uri(attach_doc.id, browse_uri)
             else:
                 vprint(f"  -> update_attachment_markdown returned None", file_ctx)
         else:
