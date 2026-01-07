@@ -92,7 +92,7 @@ class RAGQueryEngine:
         """
         # Progress: Vector search
         if on_progress:
-            await on_progress("Searching documents...")
+            await on_progress("Searching documents")
 
         # Generate embedding for query
         query_embedding = await self.embeddings.generate_embedding(question)
@@ -490,7 +490,7 @@ Please provide a comprehensive answer based on the above context. If you referen
             List of retrieval results with citation metadata.
         """
         if on_progress:
-            await on_progress("Searching documents...")
+            await on_progress("Searching documents")
 
         query_embedding = await self.embeddings.generate_embedding(question)
 
