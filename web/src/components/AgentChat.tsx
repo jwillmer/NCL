@@ -188,7 +188,7 @@ function MessageList({
   const showInitialMessage = visibleMessages.length === 0 && !isStreaming && initialMessage;
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 pb-24 space-y-4">
       {showInitialMessage && (
         <div className="flex gap-3">
           <div className="flex-shrink-0 w-8 h-8 rounded-full bg-ncl-blue flex items-center justify-center">
@@ -387,7 +387,7 @@ export function AgentChat({
         )}
 
         {/* Main content area with messages - scrollable, takes all available space */}
-        <div className="relative flex-1 min-h-0 overflow-hidden">
+        <div className="relative flex-1 min-h-0 overflow-hidden flex flex-col">
           {children}
 
           {/* Message list - scrollable */}
@@ -402,7 +402,7 @@ export function AgentChat({
         </div>
 
         {/* Input - always visible at bottom */}
-        <div className="flex-shrink-0 border-t border-gray-200 bg-white">
+        <div className="flex-shrink-0 border-t border-gray-200 bg-white fixed bottom-0 left-0 right-0 z-10">
           <ChatInput
             onSend={chat.sendMessage}
             disabled={disabled}

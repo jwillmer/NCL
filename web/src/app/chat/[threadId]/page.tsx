@@ -305,7 +305,7 @@ function ChatPageContent() {
   const isArchived = conversation?.is_archived ?? false;
 
   return (
-    <div className="flex min-h-screen flex-col bg-gray-50">
+    <div className="flex h-screen overflow-hidden flex-col bg-gray-50">
       <ChatHeader
         conversation={conversation}
         vesselId={vesselId}
@@ -314,7 +314,7 @@ function ChatPageContent() {
         onBack={handleBack}
         onVesselChange={handleVesselChange}
       />
-      <main className="flex-1 flex flex-col">
+      <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
         <ChatContainer
           threadId={threadId}
           authToken={session.access_token}

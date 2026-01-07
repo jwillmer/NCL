@@ -253,7 +253,7 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
   return (
     <FeedbackContext.Provider value={feedbackValue}>
       <CitationProvider onViewCitation={handleViewCitation}>
-        <div className="flex-1 flex flex-col h-[calc(100vh-3.5rem)] overflow-hidden">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <AgentChat
             agentUrl="/api/agent"
             threadId={threadId}
