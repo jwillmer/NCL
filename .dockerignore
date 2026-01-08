@@ -1,0 +1,63 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+env
+.eggs
+*.egg-info
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Node.js
+node_modules
+web/node_modules
+web/.next
+web/out
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Data and logs (runtime, not build)
+data/
+logs/
+*.log
+
+# Environment files (secrets - loaded at runtime)
+.env
+.env.*
+!.env.template
+
+# Documentation (not needed in image)
+docs/
+*.md
+!README.md
+
+# Tests (not needed in production)
+tests/
+
+# Build artifacts
+dist/
+build/
+
+# Docker files (prevent recursion)
+Dockerfile*
+docker-compose*.yml
+
+# CI/CD
+.github/
+
+# Claude plans
+.claude/

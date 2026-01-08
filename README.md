@@ -442,6 +442,46 @@ POST /feedback
 - **Database:** Supabase (PostgreSQL + pgvector)
 - **Authentication:** Supabase Auth
 
+## Docker
+
+Run the entire application (backend + frontend) in a single container.
+
+### Quick Start
+
+```bash
+# Build and run
+docker-compose up --build
+
+# Access at http://localhost:8000
+```
+
+### Configuration
+
+1. Copy `.env.template` to `.env` and configure:
+   - `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_DB_URL`
+   - `OPENAI_API_KEY`
+   - `SUPABASE_JWT_SECRET`
+   - See `.env.template` for all options
+
+2. Build with Git SHA (for version tracking):
+```bash
+export GIT_SHA=$(git rev-parse HEAD)
+docker-compose build
+```
+
+### Endpoints
+
+When running in Docker, everything is served on port 8000:
+- **Frontend:** http://localhost:8000/
+- **Health Check:** http://localhost:8000/health
+- **API Docs:** http://localhost:8000/docs
+
+### CI/CD
+
+The GitHub Action (`.github/workflows/docker-build.yml`) automatically builds and pushes images to GitHub Container Registry:
+- Push to `main` → `ghcr.io/<owner>/ncl:latest`
+- Push tag `v1.0.0` → `ghcr.io/<owner>/ncl:1.0.0`
+
 ## Testing
 
 ```bash

@@ -8,6 +8,10 @@ import { ReactNode } from "react";
 import { Ship } from "lucide-react";
 import { UserMenu } from "./auth";
 
+// Git SHA injected at build time via NEXT_PUBLIC_GIT_SHA environment variable
+const gitSha = process.env.NEXT_PUBLIC_GIT_SHA || "dev";
+const gitShaShort = gitSha.length >= 8 ? gitSha.substring(0, 8) : gitSha;
+
 // =============================================================================
 // Header
 // =============================================================================
@@ -48,7 +52,10 @@ export function MainLayout({ children }: MainLayoutProps) {
       </main>
       <footer className="border-t border-ncl-gray-light bg-white py-4 px-6">
         <div className="flex items-center justify-between text-xs text-ncl-gray">
-          <span>MTSS v0.1.0 | Development Version</span>
+          <span>MTSS v0.1.0</span>
+          <span className="font-mono" title={`Git SHA: ${gitSha}`}>
+            Build: {gitShaShort}
+          </span>
         </div>
       </footer>
     </div>

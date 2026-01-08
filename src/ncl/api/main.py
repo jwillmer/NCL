@@ -29,6 +29,7 @@ from ..observability import set_user_id
 from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
 from ..storage.supabase_client import SupabaseClient
 from ..utils import CHUNK_ID_LENGTH
+from ..version import APP_VERSION, GIT_SHA_SHORT
 from .agent import create_graph
 from .conversations import router as conversations_router
 from .feedback import router as feedback_router
@@ -110,6 +111,11 @@ async def lifespan(app: FastAPI):
     The checkpointer is stored in app.state for access by the agent graph.
     """
     settings = get_settings()
+
+    # Log startup banner with version info
+    logger.info("=" * 60)
+    logger.info("NCL Email RAG API v%s (build: %s)", APP_VERSION, GIT_SHA_SHORT)
+    logger.info("=" * 60)
 
     # Initialize Langfuse observability (if enabled)
     if settings.langfuse_enabled:
@@ -199,7 +205,12 @@ def create_app() -> FastAPI:
     @app.get("/health")
     @limiter.limit("60/minute")
     async def health_check(request: Request):
-        return {"status": "healthy", "service": "ncl-api"}
+        return {
+            "status": "healthy",
+            "service": "ncl-api",
+            "version": APP_VERSION,
+            "git_sha": GIT_SHA_SHORT,
+        }
 
     # Archive file serving endpoint
     # Uses same JWT auth as all other endpoints (via AuthMiddleware)
@@ -375,6 +386,16 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(conversations_router)
     app.include_router(feedback_router, prefix="/feedback")
+
+    # Serve static frontend (if exists - for Docker deployment)
+    # The static files are built by Next.js with `output: 'export'`
+    # and copied to web/out during Docker build
+    static_dir = Path(__file__).parent.parent.parent.parent / "web" / "out"
+    if static_dir.exists():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
+        logger.info("Static frontend mounted from %s", static_dir)
 
     return app
 

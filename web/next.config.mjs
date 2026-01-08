@@ -2,6 +2,10 @@
 const nextConfig = {
   reactStrictMode: true,
 
+  // Static HTML export for Docker deployment (served by FastAPI)
+  output: "export",
+  trailingSlash: true,
+
   // Security headers for all routes
   async headers() {
     return [
