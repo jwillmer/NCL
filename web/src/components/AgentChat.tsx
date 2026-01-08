@@ -175,6 +175,22 @@ function ConnectionStatusIndicator({ status }: { status: ConnectionStatus }) {
 }
 
 /**
+ * Wrapper component to properly render assistant message with hooks.
+ * This ensures hooks are called consistently regardless of conditional rendering.
+ */
+function RenderAssistantMessage({
+  message,
+  isStreaming,
+  isLastMessage,
+  streamingContent,
+  Component,
+}: AssistantMessageRenderProps & {
+  Component: (props: AssistantMessageRenderProps) => React.ReactNode;
+}) {
+  return <>{Component({ message, isStreaming, isLastMessage, streamingContent })}</>;
+}
+
+/**
  * Message list component with auto-scroll.
  */
 function MessageList({
@@ -269,12 +285,13 @@ function MessageList({
                 : "bg-ncl-blue text-white rounded-tr-none ml-auto"
             }`}>
               {isAssistant ? (
-                renderAssistantMessage({
-                  message,
-                  isStreaming: isCurrentStreaming,
-                  isLastMessage,
-                  streamingContent: isCurrentStreaming ? streamingContent : undefined,
-                })
+                <RenderAssistantMessage
+                  message={message}
+                  isStreaming={isCurrentStreaming}
+                  isLastMessage={isLastMessage}
+                  streamingContent={isCurrentStreaming ? streamingContent : undefined}
+                  Component={renderAssistantMessage}
+                />
               ) : (
                 <div>
                   <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
@@ -295,12 +312,13 @@ function MessageList({
             <span className="text-white text-xs font-semibold">AI</span>
           </div>
           <div className="flex-1 max-w-[85%] bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-none p-5">
-            {renderAssistantMessage({
-              message: { id: streamingMessageId || "streaming", role: "assistant", content: streamingContent },
-              isStreaming: true,
-              isLastMessage: true,
-              streamingContent,
-            })}
+            <RenderAssistantMessage
+              message={{ id: streamingMessageId || "streaming", role: "assistant", content: streamingContent }}
+              isStreaming={true}
+              isLastMessage={true}
+              streamingContent={streamingContent}
+              Component={renderAssistantMessage}
+            />
           </div>
         </div>
       )}

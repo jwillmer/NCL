@@ -61,14 +61,15 @@ def apply_agui_thread_patch() -> None:
             # Add handler if not already present
             if langfuse_handler not in config["callbacks"]:
                 config["callbacks"].append(langfuse_handler)
-            # Set session_id and user_id via set_trace_params() (Langfuse v3 API)
+            # In Langfuse v3, session_id and user_id are passed via config metadata
             # See: https://langfuse.com/docs/observability/features/sessions
             # See: https://langfuse.com/docs/observability/features/users
             user_id = get_user_id()
-            langfuse_handler.set_trace_params(
-                session_id=thread_id,
-                user_id=user_id,
-            )
+            if not config.get("metadata"):
+                config["metadata"] = {}
+            config["metadata"]["langfuse_session_id"] = thread_id
+            if user_id:
+                config["metadata"]["langfuse_user_id"] = user_id
             logger.debug(
                 "Langfuse callback configured: session=%s, user=%s",
                 thread_id,
@@ -79,9 +80,15 @@ def apply_agui_thread_patch() -> None:
         self.active_run["current_graph_state"] = agent_state.values.copy()
         langchain_messages = agui_messages_to_langchain(messages)
 
-        # Inject vessel_id into the latest HumanMessage's additional_kwargs
-        # This allows tracking which vessel filter was active when each message was sent
+        # Extract vessel_id from forwarded_props and inject into LangGraph state
+        # This allows the agent nodes (chat_node, search_node) to access selected_vessel_id
         vessel_id = forwarded_props.get("state", {}).get("selected_vessel_id")
+        if vessel_id:
+            state_input["selected_vessel_id"] = vessel_id
+            logger.debug("Injected selected_vessel_id=%s into LangGraph state", vessel_id)
+
+        # Also inject vessel_id into the latest HumanMessage's additional_kwargs
+        # This allows tracking which vessel filter was active when each message was sent
         if vessel_id and langchain_messages:
             for msg in reversed(langchain_messages):
                 if isinstance(msg, HumanMessage):

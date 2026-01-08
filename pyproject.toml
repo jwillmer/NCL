@@ -34,6 +34,7 @@ dependencies = [
     "nest-asyncio>=1.6.0",
     "langgraph-checkpoint-postgres>=3.0.2",
     "psycopg[binary]>=3.3.2",
+    "opentelemetry-exporter-otlp-proto-http>=1.39.1",
 ]
 
 [project.optional-dependencies]

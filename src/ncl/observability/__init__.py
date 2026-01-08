@@ -136,19 +136,22 @@ def get_langfuse_handler() -> "CallbackHandler | None":
     try:
         from langfuse.langchain import CallbackHandler
 
+        # Ensure env vars are set (init_langfuse sets them, but handler may be called first)
+        os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key
+        os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key
+        os.environ["LANGFUSE_HOST"] = settings.langfuse_base_url
+
         logger.debug("Creating Langfuse CallbackHandler")
-        _langfuse_handler = CallbackHandler(
-            public_key=settings.langfuse_public_key,
-            secret_key=settings.langfuse_secret_key,
-            host=settings.langfuse_base_url,
-        )
+        # Langfuse v3 CallbackHandler reads credentials from environment variables
+        _langfuse_handler = CallbackHandler()
         logger.info("Langfuse callback handler created")
 
         # Register flush on exit to ensure traces are sent
+        # In Langfuse v3, flush is on the client, not the handler directly
         def _flush_langfuse() -> None:
-            if _langfuse_handler is not None:
+            if _langfuse_handler is not None and hasattr(_langfuse_handler, "client"):
                 try:
-                    _langfuse_handler.flush()
+                    _langfuse_handler.client.flush()
                     logger.debug("Langfuse handler flushed on exit")
                 except Exception as e:
                     logger.warning("Failed to flush Langfuse: %s", e)

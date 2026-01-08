@@ -282,7 +282,8 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
             {
               forwardedProps: {
                 state: {
-                  selected_vessel_id: state.selected_vessel_id,
+                  // Use vesselId prop directly to avoid stale closure issues
+                  selected_vessel_id: vesselId ?? null,
                 },
               },
             },
@@ -308,7 +309,7 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
 
       await attemptRun();
     },
-    [state.selected_vessel_id]
+    [vesselId]
   );
 
   // Abort the current run
