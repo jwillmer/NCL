@@ -55,6 +55,11 @@ from .storage.unsupported_file_logger import UnsupportedFileLogger
 from .storage.progress_tracker import ProgressTracker
 from .storage.supabase_client import SupabaseClient
 from .utils import compute_chunk_id
+from .ingest.helpers import (
+    enrich_chunks_with_document_metadata,
+    get_format_name,
+    IssueTracker,
+)
 
 app = typer.Typer(
     name="ncl",
@@ -95,89 +100,16 @@ def vprint(msg: str, file_ctx: str | None = None):
             console.print(f"[dim]{msg}[/dim]")
 
 
-# Track processing issues for end-of-run summary
-_processing_issues: list[dict] = []
+# Module-level issue tracker instance (replaces _processing_issues list)
+_issue_tracker = IssueTracker(console)
 
 
 def track_issue(file_ctx: str, attachment: str, error: str):
-    """Track a parsing/processing issue for end summary and print warning."""
-    _processing_issues.append({
-        "email": file_ctx,
-        "attachment": attachment,
-        "error": error
-    })
-    console.print(f"[yellow][{file_ctx}] ⚠ {attachment}: {error}[/yellow]")
+    """Track a parsing/processing issue for end summary and print warning.
 
-
-def _enrich_chunks_with_document_metadata(
-    chunks: list[Chunk],
-    doc: "Document",
-) -> None:
-    """Enrich chunks with citation metadata from their document.
-
-    Sets chunk_id, source_id, source_title, and archive URIs on each chunk.
-    Modifies chunks in-place.
-
-    Args:
-        chunks: List of chunks to enrich.
-        doc: Parent document with citation metadata.
+    Wrapper function for backward compatibility with existing code.
     """
-    from .models.document import Document  # Avoid circular import at top level
-    for chunk in chunks:
-        # Generate stable chunk_id if not already set
-        if not chunk.chunk_id and doc.doc_id:
-            char_start = chunk.char_start or (chunk.chunk_index * 1000)
-            char_end = chunk.char_end or (char_start + len(chunk.content))
-            chunk.chunk_id = compute_chunk_id(doc.doc_id, char_start, char_end)
-        chunk.source_id = doc.source_id
-        chunk.source_title = doc.source_title
-        chunk.archive_browse_uri = doc.archive_browse_uri
-        chunk.archive_download_uri = doc.archive_download_uri
-
-
-def _show_issue_summary(issues: list[dict]):
-    """Display summary table of all parsing/processing issues."""
-    if not issues:
-        return
-
-    console.print()
-    table = Table(title=f"⚠ Processing Issues ({len(issues)} total)")
-    table.add_column("Email", style="cyan")
-    table.add_column("Attachment", style="yellow")
-    table.add_column("Error", style="red")
-
-    for issue in issues:
-        error_text = issue["error"]
-        if len(error_text) > 60:
-            error_text = error_text[:60] + "..."
-        table.add_row(issue["email"], issue["attachment"], error_text)
-
-    console.print(table)
-
-
-def _get_format_name(content_type: str) -> str:
-    """Get human-readable format name from MIME type."""
-    format_map = {
-        "application/pdf": "PDF",
-        "image/png": "PNG",
-        "image/jpeg": "JPEG",
-        "image/jpg": "JPEG",
-        "image/tiff": "TIFF",
-        "image/bmp": "BMP",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
-        "application/msword": "DOC",
-        "application/vnd.ms-excel": "XLS",
-        "application/vnd.ms-powerpoint": "PPT",
-        "text/csv": "CSV",
-        "application/rtf": "RTF",
-        "text/rtf": "RTF",
-        "text/html": "HTML",
-        "application/zip": "ZIP",
-        "application/x-zip-compressed": "ZIP",
-    }
-    return format_map.get(content_type, content_type.split("/")[-1].upper())
+    _issue_tracker.track(file_ctx, attachment, error)
 
 
 @app.command()
@@ -305,7 +237,7 @@ async def _ingest(
         processed_count = 0
 
         # Reset issues list for this run
-        _processing_issues.clear()
+        _issue_tracker.clear()
 
         # Classify files into fast/slow queues
         # Fast: no attachments or only images (no LlamaParse needed)
@@ -469,7 +401,7 @@ async def _ingest(
         # Show final stats and issue summary
         stats = await tracker.get_processing_stats()
         _show_stats(stats)
-        _show_issue_summary(_processing_issues)
+        _issue_tracker.show_summary()
 
         # Finalize report with stats and cleanup old reports
         report_writer.update_stats(len(files), processed_count)
@@ -782,7 +714,7 @@ async def _process_attachment(
     # Format size for display
     size_kb = attachment.size_bytes / 1024 if attachment.size_bytes else 0
     size_str = f"{size_kb:.0f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
-    format_name = _get_format_name(attachment.content_type or "unknown")
+    format_name = get_format_name(attachment.content_type or "unknown")
 
     # Preprocess to get routing decision (classify_images=True for email-level attachments)
     result = await attachment_processor.preprocess(
@@ -914,7 +846,7 @@ async def _process_attachment(
         )
 
     # Enrich chunks with document citation metadata (source_id, source_title, archive URIs)
-    _enrich_chunks_with_document_metadata(chunks, attach_doc)
+    enrich_chunks_with_document_metadata(chunks, attach_doc)
 
     # Add vessel_ids to chunk metadata for filtering
     if vessel_ids:
@@ -987,7 +919,7 @@ async def _process_zip_attachment(
                     if attach_chunks:
                         parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
                 # Enrich chunks with document citation metadata
-                _enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
+                enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
                 # Add vessel_ids to chunk metadata for filtering
                 if vessel_ids:
                     for chunk in attach_chunks:

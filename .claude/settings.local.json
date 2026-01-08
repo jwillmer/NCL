@@ -54,7 +54,12 @@
       "Bash(uv run:*)",
       "Bash(pip show:*)",
       "Bash(pip install:*)",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(dir \"c:\\\\Projects\\\\GitHub\\\\NCL\")",
+      "Bash(ls -la \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\.github\\\\workflows\"\" 2>/dev/null || echo \"No workflows directory \")",
+      "Bash(ls -la \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\.github\"\" 2>/dev/null || echo \"No .github directory \")",
+      "Bash(dir /s /b \"c:\\\\Projects\\\\GitHub\\\\NCL\")",
+      "Bash(python -m pytest --collect-only tests/)"
     ]
   }
 }

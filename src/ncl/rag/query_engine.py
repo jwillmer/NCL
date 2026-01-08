@@ -17,7 +17,7 @@ from ..models.chunk import (
     RetrievalResult,
     SourceReference,
 )
-from ..observability import get_session_id, get_user_id
+from ..observability import get_langfuse_metadata
 from ..processing.embeddings import EmbeddingGenerator
 from ..processing.reranker import Reranker
 from ..storage.supabase_client import SupabaseClient
@@ -49,24 +49,6 @@ class RAGQueryEngine:
         self.citation_processor = CitationProcessor()
         self.llm_model = settings.get_model(settings.rag_llm_model)
         self.chunk_display_max_chars = settings.chunk_display_max_chars
-
-    def _get_langfuse_metadata(self) -> Dict[str, Any]:
-        """Get metadata dict with session_id and user_id for Langfuse tracing.
-
-        LiteLLM uses specific key names for Langfuse integration:
-        - session_id: Groups traces into a session
-        - trace_user_id: Associates traces with a user for analytics
-
-        See: https://docs.litellm.ai/docs/observability/langfuse_integration
-        """
-        metadata: Dict[str, Any] = {}
-        session_id = get_session_id()
-        if session_id:
-            metadata["session_id"] = session_id
-        user_id = get_user_id()
-        if user_id:
-            metadata["trace_user_id"] = user_id
-        return metadata
 
     async def query(
         self,
@@ -384,7 +366,7 @@ Please provide a comprehensive answer based on the above context. Remember to ci
             ],
             temperature=0.3,
             max_tokens=1000,
-            metadata=self._get_langfuse_metadata(),
+            metadata=get_langfuse_metadata(),
         )
 
         return response.choices[0].message.content
@@ -460,7 +442,7 @@ Please provide a comprehensive answer based on the above context. If you referen
             ],
             temperature=0.3,
             max_tokens=1000,
-            metadata=self._get_langfuse_metadata(),
+            metadata=get_langfuse_metadata(),
         )
 
         return response.choices[0].message.content

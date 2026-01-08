@@ -405,7 +405,7 @@ class EMLParser:
 
         return body_plain, body_html
 
-    def _decode_payload(self, part: EmailMsg) -> Optional[str]:
+    def _decode_payload(self, part: EmailMsg) -> str | None:
         """Decode email part payload to string.
 
         Args:
@@ -419,7 +419,10 @@ class EMLParser:
             if payload:
                 charset = part.get_content_charset() or "utf-8"
                 return payload.decode(charset, errors="replace")
-        except Exception:
+        except (UnicodeDecodeError, LookupError, TypeError):
+            # UnicodeDecodeError: decoding failed even with error replacement
+            # LookupError: unknown charset encoding
+            # TypeError: payload is not bytes
             pass
         return None
 

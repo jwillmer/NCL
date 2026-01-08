@@ -1,10 +1,11 @@
 """Configuration management using Pydantic settings."""
 
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
-from pydantic import Field, computed_field
+from pydantic import Field, SecretStr, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,7 +32,7 @@ class Settings(BaseSettings):
     supabase_url: str = Field(..., validation_alias="SUPABASE_URL")
     supabase_key: str = Field(..., validation_alias="SUPABASE_KEY")
     supabase_db_url: str = Field(..., validation_alias="SUPABASE_DB_URL")
-    supabase_jwt_secret: Optional[str] = Field(
+    supabase_jwt_secret: str | None = Field(
         default=None, validation_alias="SUPABASE_JWT_SECRET"
     )
 
@@ -49,26 +50,26 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="gpt-4o-mini", validation_alias="LLM_MODEL")
 
     # Dedicated models per functionality (None = fallback to llm_model)
-    context_llm_model: Optional[str] = Field(
+    context_llm_model: str | None = Field(
         default=None, validation_alias="CONTEXT_LLM_MODEL"
     )
-    context_llm_fallback: Optional[str] = Field(
+    context_llm_fallback: str | None = Field(
         default=None, validation_alias="CONTEXT_LLM_FALLBACK"
     )
     context_llm_max_tokens: int = Field(
         default=120000, validation_alias="CONTEXT_LLM_MAX_TOKENS"
     )
-    email_cleaner_model: Optional[str] = Field(
+    email_cleaner_model: str | None = Field(
         default=None, validation_alias="EMAIL_CLEANER_MODEL"
     )
-    image_llm_model: Optional[str] = Field(
+    image_llm_model: str | None = Field(
         default=None, validation_alias="IMAGE_LLM_MODEL"
     )
-    rag_llm_model: Optional[str] = Field(
+    rag_llm_model: str | None = Field(
         default=None, validation_alias="RAG_LLM_MODEL"
     )
 
-    def get_model(self, specific_model: Optional[str]) -> str:
+    def get_model(self, specific_model: str | None) -> str:
         """Return specific model if set, otherwise fallback to llm_model."""
         return specific_model or self.llm_model
 
@@ -142,10 +143,10 @@ class Settings(BaseSettings):
         default="cohere/rerank-english-v3.0", validation_alias="RERANK_MODEL"
     )
     rerank_top_n: int = Field(default=5, validation_alias="RERANK_TOP_N")
-    cohere_api_key: Optional[str] = Field(default=None, validation_alias="COHERE_API_KEY")
+    cohere_api_key: str | None = Field(default=None, validation_alias="COHERE_API_KEY")
 
     # LlamaParse Configuration (for legacy formats like .doc, .xls, .ppt)
-    llama_cloud_api_key: Optional[str] = Field(
+    llama_cloud_api_key: str | None = Field(
         default=None, validation_alias="LLAMA_CLOUD_API_KEY"
     )
 
@@ -176,6 +177,32 @@ class Settings(BaseSettings):
         default=30, validation_alias="FAILURE_REPORTS_KEEP_COUNT"
     )
 
+    @field_validator(
+        "data_dir",
+        "data_source_dir",
+        "data_processed_dir",
+        "failure_reports_dir",
+        mode="after",
+    )
+    @classmethod
+    def validate_no_path_traversal(cls, v: Path) -> Path:
+        """Validate that paths don't contain path traversal sequences.
+
+        Prevents security vulnerabilities from malicious path configurations.
+
+        Args:
+            v: Path to validate.
+
+        Returns:
+            The validated path.
+
+        Raises:
+            ValueError: If path contains '..' traversal sequence.
+        """
+        if ".." in str(v):
+            raise ValueError(f"Path traversal detected in path: {v}")
+        return v
+
     # Chunk content display truncation (for source references in responses)
     chunk_display_max_chars: int = Field(
         default=500, validation_alias="CHUNK_DISPLAY_MAX_CHARS"
@@ -190,10 +217,10 @@ class Settings(BaseSettings):
 
     # Langfuse Observability (optional)
     langfuse_enabled: bool = Field(default=False, validation_alias="LANGFUSE_ENABLED")
-    langfuse_public_key: Optional[str] = Field(
+    langfuse_public_key: str | None = Field(
         default=None, validation_alias="LANGFUSE_PUBLIC_KEY"
     )
-    langfuse_secret_key: Optional[str] = Field(
+    langfuse_secret_key: str | None = Field(
         default=None, validation_alias="LANGFUSE_SECRET_KEY"
     )
     langfuse_base_url: str = Field(

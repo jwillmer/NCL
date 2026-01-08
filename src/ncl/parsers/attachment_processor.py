@@ -409,8 +409,20 @@ class AttachmentProcessor:
                 if basename.startswith(".") or basename.startswith("__MACOSX"):
                     continue
 
-                # Check compressed size before extraction
+                # Check file info before extraction
                 info = zf.getinfo(member)
+
+                # ZIP bomb detection: check compression ratio
+                # A ratio > 100:1 is suspicious (ZIP bombs can have 1000000:1)
+                if info.compress_size > 0:
+                    compression_ratio = info.file_size / info.compress_size
+                    if compression_ratio > 100:
+                        logger.warning(
+                            f"Skipping {member}: suspicious compression ratio {compression_ratio:.0f}:1"
+                        )
+                        continue
+
+                # Check total size limit
                 if _total_size + info.file_size > max_total_bytes:
                     raise ZipExtractionError(
                         f"ZIP extraction would exceed size limit of {settings.zip_max_total_size_mb}MB"
@@ -457,8 +469,9 @@ class AttachmentProcessor:
                 except ZipExtractionError:
                     # Re-raise limit errors
                     raise
-                except Exception:
-                    # Skip files that fail to extract for other reasons
+                except (OSError, IOError, zipfile.BadZipFile) as e:
+                    # Skip files that fail to extract for file system or ZIP errors
+                    logger.debug(f"Failed to extract {member}: {e}")
                     continue
 
         return extracted_files

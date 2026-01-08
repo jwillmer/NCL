@@ -58,6 +58,30 @@ def get_user_id() -> str | None:
     """
     return _user_id_var.get()
 
+
+def get_langfuse_metadata() -> dict[str, str]:
+    """Get metadata dict with session_id and user_id for Langfuse tracing.
+
+    This is the centralized helper for building LiteLLM metadata.
+    LiteLLM uses specific key names for Langfuse integration:
+    - session_id: Groups traces into a session
+    - trace_user_id: Associates traces with a user for analytics
+
+    Returns:
+        Dict with session_id and/or trace_user_id if set, empty dict otherwise.
+
+    See: https://docs.litellm.ai/docs/observability/langfuse_integration
+    """
+    metadata: dict[str, str] = {}
+    session_id = get_session_id()
+    if session_id:
+        metadata["session_id"] = session_id
+    user_id = get_user_id()
+    if user_id:
+        metadata["trace_user_id"] = user_id
+    return metadata
+
+
 # Global Langfuse client instance
 _langfuse_client: "Optional[Langfuse]" = None
 

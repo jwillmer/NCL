@@ -10,6 +10,7 @@ import logging
 from functools import lru_cache
 from typing import List
 
+from storage3.utils import StorageException
 from supabase import Client, create_client
 
 from ..config import get_settings
@@ -59,7 +60,8 @@ class ArchiveStorage:
 
         try:
             self.client.storage.get_bucket(self.bucket_name)
-        except Exception:
+        except StorageException:
+            # Bucket doesn't exist, create it
             logger.info(f"Creating storage bucket: {self.bucket_name}")
             self.client.storage.create_bucket(self.bucket_name, options={"public": False})
 
@@ -92,7 +94,7 @@ class ArchiveStorage:
             logger.debug(f"Uploaded archive file: {path}")
             return path
 
-        except Exception as e:
+        except StorageException as e:
             raise ArchiveStorageError(f"Failed to upload {path}: {e}") from e
 
     def upload_text(
@@ -127,7 +129,7 @@ class ArchiveStorage:
         """
         try:
             return self.bucket.download(path)
-        except Exception as e:
+        except StorageException as e:
             raise ArchiveStorageError(f"File not found: {path}") from e
 
     def file_exists(self, path: str) -> bool:
@@ -149,7 +151,7 @@ class ArchiveStorage:
         try:
             files = self.bucket.list(folder)
             return any(f["name"] == filename for f in files)
-        except Exception:
+        except StorageException:
             return False
 
     def delete_folder(self, doc_id: str) -> None:
@@ -169,21 +171,21 @@ class ArchiveStorage:
             try:
                 files = self.bucket.list(folder)
                 paths.extend([f"{folder}/{f['name']}" for f in files])
-            except Exception:
+            except StorageException:
                 pass  # Folder may not exist
 
             # List files in attachments subfolder
             try:
                 att_files = self.bucket.list(f"{folder}/attachments")
                 paths.extend([f"{folder}/attachments/{f['name']}" for f in att_files])
-            except Exception:
+            except StorageException:
                 pass  # Attachments folder may not exist
 
             if paths:
                 logger.debug(f"Deleting {len(paths)} archive files for folder: {folder}")
                 self.bucket.remove(paths)
 
-        except Exception as e:
+        except StorageException as e:
             raise ArchiveStorageError(f"Failed to delete folder {doc_id}: {e}") from e
 
     def list_files(self, doc_id: str) -> List[dict]:
@@ -206,9 +208,9 @@ class ArchiveStorage:
             try:
                 att_files = self.bucket.list(f"{folder}/attachments")
                 result.extend(att_files)
-            except Exception:
+            except StorageException:
                 pass
-        except Exception:
+        except StorageException:
             pass
 
         return result
@@ -232,25 +234,25 @@ class ArchiveStorage:
                 try:
                     files = self.bucket.list(folder_name)
                     paths.extend([f"{folder_name}/{f['name']}" for f in files])
-                except Exception:
+                except StorageException:
                     pass
 
                 # List files in attachments subfolder
                 try:
                     att_files = self.bucket.list(f"{folder_name}/attachments")
                     paths.extend([f"{folder_name}/attachments/{f['name']}" for f in att_files])
-                except Exception:
+                except StorageException:
                     pass
 
                 if paths:
                     try:
                         self.bucket.remove(paths)
                         count += len(paths)
-                    except Exception as e:
+                    except StorageException as e:
                         logger.warning(f"Failed to clean folder {folder_name}: {e}")
 
             logger.info(f"Deleted {count} archive files")
             return count
 
-        except Exception as e:
+        except StorageException as e:
             raise ArchiveStorageError(f"Failed to delete all archive files: {e}") from e
