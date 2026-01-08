@@ -317,7 +317,7 @@ function CiteRenderer(props: CiteProps) {
                 onViewCitation(id);
               }
             }}
-            className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 text-xs font-medium text-ncl-blue bg-ncl-blue/10 rounded hover:bg-ncl-blue/20 transition-colors cursor-pointer align-super"
+            className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mr-0.5 text-xs font-medium text-ncl-blue bg-ncl-blue/10 rounded hover:bg-ncl-blue/20 transition-colors cursor-pointer align-super"
             aria-label={`View source: ${displayTitle}`}
           >
             {children}
