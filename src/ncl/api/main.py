@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from ..config import get_settings
 from ..observability import set_user_id
 from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
 from ..storage.supabase_client import SupabaseClient
+from ..utils import CHUNK_ID_LENGTH
 from .agent import create_graph
 from .conversations import router as conversations_router
 from .feedback import router as feedback_router
@@ -282,11 +284,16 @@ def create_app() -> FastAPI:
         Raises:
             HTTPException: 400 for invalid chunk_id, 404 if not found
         """
-        import re
-
         # Validate chunk_id format (hex string, defense-in-depth)
         if not re.match(r"^[a-f0-9]+$", chunk_id, re.IGNORECASE):
             raise HTTPException(status_code=400, detail="Invalid chunk ID format")
+
+        # Validate chunk_id length (must be exactly 12 chars)
+        if len(chunk_id) != CHUNK_ID_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid chunk ID length: {len(chunk_id)} (expected {CHUNK_ID_LENGTH})",
+            )
 
         # Fetch chunk from database (synchronous call, no pool needed)
         client = SupabaseClient()

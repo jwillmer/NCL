@@ -16,6 +16,7 @@ from ..models.chunk import (
     ValidatedCitation,
 )
 from ..storage.archive_storage import ArchiveStorage
+from ..utils import CHUNK_ID_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +34,14 @@ class CitationProcessor:
     SYSTEM_PROMPT = """You are a helpful assistant that answers questions based on the provided context.
 
 CITATION RULES (MANDATORY):
-1. When stating a fact from the context, append a citation: [C:chunk_id]
-2. You may cite multiple chunks: [C:abc123][C:def456]
+1. When stating a fact from the context, append a citation using the 12-character chunk_id: [C:chunk_id]
+2. You may cite multiple chunks: [C:8f3a2b1c4d5e][C:9a4b3c2d1e6f]
 3. If information is NOT in the context, say "Not found in sources"
 4. Never invent or guess information not in the context
-5. Use the chunk_id provided in each context block's header
+5. Use ONLY the chunk_id from the CITE: field in context headers (exactly 12 hex characters)
 
 Example response:
-"The GPS system requires calibration before each flight [C:8f3a2b1c]. This was confirmed by the maintenance team on Tuesday [C:9a4b3c2d]."
+"The GPS system requires calibration before each flight [C:8f3a2b1c4d5e]. This was confirmed by the maintenance team on Tuesday [C:9a4b3c2d1e6f]."
 """
 
     def __init__(self):
@@ -70,7 +71,11 @@ Example response:
         return "\n\n---\n\n".join(context_blocks)
 
     def _build_citation_header(self, result: RetrievalResult) -> str:
-        """Generate deterministic citation header for a retrieval result.
+        """Generate citation header for a retrieval result.
+
+        Only includes the chunk_id (as CITE:) to avoid LLM confusion with
+        other ID-like values. Additional metadata is provided for context
+        but not in a format that could be mistaken for a citation ID.
 
         Args:
             result: Retrieval result with metadata.
@@ -78,21 +83,19 @@ Example response:
         Returns:
             Formatted header string.
         """
-        parts = [
-            f"S:{result.source_id[:8] if result.source_id else 'unknown'}",
-            f"D:{result.doc_id[:8] if result.doc_id else 'unknown'}",
-            f"C:{result.chunk_id}",
-        ]
+        # Primary: chunk_id for citations (this is what the LLM should use)
+        parts = [f"CITE:{result.chunk_id}"]
 
-        if result.page_number:
-            parts.append(f"p:{result.page_number}")
-
+        # Secondary: human-readable context (not ID-like to avoid confusion)
         if result.source_title:
             # Truncate long titles
             title = result.source_title[:50]
             if len(result.source_title) > 50:
                 title += "..."
             parts.append(f'title:"{title}"')
+
+        if result.page_number:
+            parts.append(f"page:{result.page_number}")
 
         # Include image URI for image attachments so agent can embed them
         if result.image_uri:
@@ -165,6 +168,17 @@ Example response:
             if chunk_id in seen_chunk_ids:
                 continue
             seen_chunk_ids.add(chunk_id)
+
+            # Strict validation: chunk_id must be exactly 12 hex chars
+            if len(chunk_id) != CHUNK_ID_LENGTH:
+                logger.warning(
+                    "Rejecting invalid chunk_id: '%s' (%d chars, expected %d)",
+                    chunk_id,
+                    len(chunk_id),
+                    CHUNK_ID_LENGTH,
+                )
+                invalid_citations.append(chunk_id)
+                continue
 
             # Check if chunk_id exists in retrieved results
             if chunk_id not in citation_map:

@@ -46,6 +46,10 @@ def compute_doc_id(source_id: str, file_hash: str) -> str:
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
 
+# Length of chunk IDs used for citations (hex characters)
+CHUNK_ID_LENGTH = 12
+
+
 def compute_chunk_id(doc_id: str, char_start: int, char_end: int) -> str:
     """Generate deterministic chunk ID from document and character offsets.
 
@@ -61,7 +65,7 @@ def compute_chunk_id(doc_id: str, char_start: int, char_end: int) -> str:
         12-character hex string chunk ID.
     """
     combined = f"{doc_id}:{char_start}:{char_end}"
-    return hashlib.sha256(combined.encode()).hexdigest()[:12]
+    return hashlib.sha256(combined.encode()).hexdigest()[:CHUNK_ID_LENGTH]
 
 
 def sanitize_filename(filename: str, max_length: int = 255) -> str:
