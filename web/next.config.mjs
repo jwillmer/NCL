@@ -3,10 +3,13 @@ const nextConfig = {
   reactStrictMode: true,
 
   // Static HTML export for Docker deployment (served by FastAPI)
-  output: "export",
-  trailingSlash: true,
+  // Only enable for production builds - development needs middleware and dynamic routes
+  ...(process.env.NODE_ENV === "production" && {
+    output: "export",
+    trailingSlash: true,
+  }),
 
-  // Security headers for all routes
+  // Security headers for all routes (only applies in non-export mode)
   async headers() {
     return [
       {

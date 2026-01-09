@@ -91,7 +91,7 @@ class EmbeddingGenerator:
 
         # Process in batches to respect API limits
         all_embeddings = []
-        metadata = self._get_langfuse_metadata()
+        metadata = get_langfuse_metadata()
 
         for i in range(0, len(truncated_texts), self.batch_size):
             batch = truncated_texts[i : i + self.batch_size]
@@ -147,7 +147,7 @@ class EmbeddingGenerator:
 
         total = len(chunks)
         embedded_chunks: List[Chunk] = []
-        metadata = self._get_langfuse_metadata()
+        metadata = get_langfuse_metadata()
 
         for i in range(0, total, self.batch_size):
             batch = chunks[i : i + self.batch_size]

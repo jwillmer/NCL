@@ -25,7 +25,7 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..config import get_settings
-from ..observability import set_user_id
+from ..observability import flush_langfuse_traces, set_user_id
 from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
 from ..storage.supabase_client import SupabaseClient
 from ..utils import CHUNK_ID_LENGTH
@@ -100,6 +100,31 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains"
             )
+        return response
+
+
+class LangfuseFlushMiddleware(BaseHTTPMiddleware):
+    """Flush Langfuse traces after agent requests.
+
+    Langfuse v3 buffers traces in memory and sends them asynchronously.
+    Without explicit flushing, traces from LangChain/LangGraph may never
+    be sent in long-running server processes.
+
+    This middleware flushes traces after each request to the /agent endpoint
+    to ensure conversation traces appear in the Langfuse UI.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        """Flush Langfuse traces after agent requests."""
+        response = await call_next(request)
+
+        # Flush after agent requests (where LangGraph conversations happen)
+        if request.url.path.startswith("/agent"):
+            try:
+                flush_langfuse_traces()
+            except Exception as e:
+                logger.debug("Failed to flush Langfuse after request: %s", e)
+
         return response
 
 
@@ -200,6 +225,11 @@ def create_app() -> FastAPI:
 
     # Authentication middleware (runs after security headers)
     app.add_middleware(AuthMiddleware)
+
+    # Langfuse flush middleware (runs after auth to flush traces)
+    # Note: Middleware execution order is reversed from registration order
+    # This runs LAST after request completes, ensuring all traces are captured
+    app.add_middleware(LangfuseFlushMiddleware)
 
     # Health check endpoint with rate limiting
     @app.get("/health")

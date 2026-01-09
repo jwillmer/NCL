@@ -245,3 +245,31 @@ def create_trace_id_for_thread(thread_id: str) -> str:
     from langfuse import Langfuse
 
     return Langfuse.create_trace_id(seed=f"ncl-thread-{thread_id}")
+
+
+def flush_langfuse_traces() -> None:
+    """Flush all pending Langfuse traces to ensure they are sent.
+
+    Call this after request completion to ensure traces reach Langfuse.
+    Required for server environments where atexit may not trigger promptly.
+
+    In Langfuse v3, traces are buffered and sent asynchronously. Without
+    explicit flushing, traces may be held in memory indefinitely in
+    long-running server processes.
+
+    See: https://langfuse.com/docs/observability/features/queuing-batching
+    """
+    global _langfuse_handler
+
+    try:
+        # Flush via handler's client (for LangChain/LangGraph traces)
+        if _langfuse_handler is not None and hasattr(_langfuse_handler, "client"):
+            _langfuse_handler.client.flush()
+            logger.debug("Flushed Langfuse handler client")
+
+        # Also flush via get_client singleton (for direct Langfuse calls)
+        if _langfuse_client is not None:
+            _langfuse_client.flush()
+            logger.debug("Flushed Langfuse client")
+    except Exception as e:
+        logger.debug("Failed to flush Langfuse traces: %s", e)
