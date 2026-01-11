@@ -302,6 +302,8 @@ NEXT_PUBLIC_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ### Features
 
 - **Chat Interface:** Conversational AI for document Q&A powered by AG-UI SDK
+- **Maritime Response Format:** Structured responses with vessel info, component details, resolution steps, and related incidents
+- **Related Incidents:** Automatic grouping of search results by incident thread to surface similar past issues
 - **Conversation History:** Browse, search, and continue previous conversations
 - **Streaming Progress:** Real-time search progress updates (Searching → Reranking → Formatting)
 - **Authentication:** Supabase Auth with JWT validation in API route
@@ -310,6 +312,41 @@ NEXT_PUBLIC_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 - **User Feedback:** Thumbs up/down feedback on assistant responses, tracked in Langfuse (backend + browser)
 - **Langfuse Browser SDK:** Client-side user interaction tracking with consistent session IDs
 - **Professional Design:** NCL brand colors and responsive layout
+
+### Response Format
+
+The assistant provides structured responses in a maritime technical support format:
+
+```
+Vessel: MARAN CANOPUS
+Vessel Class: Canopus Class
+Date Resolved: December 30, 2025
+
+---
+
+Based on your query about "engine temperature sensor issues", I found 8 relevant incidents.
+
+Most Relevant Solution:
+
+Component: Engine Temperature Sensor
+Issue: Sensor providing erratic temperature readings
+
+Resolution Steps:
+1. Check sensor wiring connections for corrosion
+2. Verify sensor calibration using reference thermometer
+3. If readings still inconsistent, replace sensor with OEM part
+
+Critical Notes:
+- This occurred on a similar vessel class with the same engine model
+- Resolution time was approximately 4 hours
+
+---
+
+Related Incidents:
+
+1. **Fuel Injector Sensor** - Similar calibration issue (MT Nordic, Jan 2025)
+2. **Engine Coolant Sensor** - Replaced due to corrosion damage (Nov 2024)
+```
 
 ### Conversation History
 

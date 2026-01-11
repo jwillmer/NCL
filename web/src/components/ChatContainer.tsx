@@ -277,7 +277,7 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
             vesselId={vesselId}
             labels={{
               title: "MTSS Assistant",
-              initial: "Hello! I can help you find solutions to technical issues on your vessel. Ask me about past maintenance problems, equipment failures, or search our knowledge base for technical documentation and procedures.",
+              initial: "Welcome to MTSS. I'm your intelligent assistant for maritime technical support. Describe any vessel issue you're experiencing, and I'll analyze our comprehensive knowledge base to find relevant solutions and past incident resolutions.",
               placeholder: disabled
                 ? "This conversation is archived (read-only)"
                 : "Describe an issue or search for technical information...",

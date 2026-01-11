@@ -94,6 +94,19 @@ Example response:
                 title += "..."
             parts.append(f'title:"{title}"')
 
+        # Email metadata for incident identification
+        if result.email_subject:
+            subject = result.email_subject[:40]
+            if len(result.email_subject) > 40:
+                subject += "..."
+            parts.append(f'subject:"{subject}"')
+
+        if result.email_date:
+            parts.append(f"date:{result.email_date}")
+
+        if result.email_initiator:
+            parts.append(f"from:{result.email_initiator}")
+
         if result.page_number:
             parts.append(f"page:{result.page_number}")
 

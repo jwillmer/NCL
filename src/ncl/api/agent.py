@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, cast
+from typing import Any, Dict, List, Literal, Optional, cast
 
 from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
@@ -42,6 +42,69 @@ from ..rag.query_engine import RAGQueryEngine
 from ..storage.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
+
+
+def _group_by_incident(
+    results: List[RetrievalResult],
+) -> Dict[str, List[RetrievalResult]]:
+    """Group retrieval results by root email thread (incident).
+
+    Each unique root_file_path represents a distinct incident/email thread.
+    Results are grouped together so the LLM can identify related chunks
+    from the same incident and present them coherently.
+
+    Args:
+        results: List of retrieval results from RAG search.
+
+    Returns:
+        Dict mapping root_file_path (or fallback key) to list of results.
+    """
+    groups: Dict[str, List[RetrievalResult]] = {}
+
+    for result in results:
+        # Use root_file_path to identify the incident thread
+        # Fall back to file_path or source_id if root is not available
+        key = result.root_file_path or result.file_path or result.source_id or "unknown"
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(result)
+
+    return groups
+
+
+def _build_incident_summary(
+    incident_groups: Dict[str, List[RetrievalResult]],
+) -> str:
+    """Build a summary of incidents found for the LLM context.
+
+    Args:
+        incident_groups: Dict of incident groups from _group_by_incident.
+
+    Returns:
+        Formatted summary string to append to context.
+    """
+    total_chunks = sum(len(chunks) for chunks in incident_groups.values())
+
+    lines = [
+        "",
+        "---",
+        "",
+        "## Incident Summary",
+        f"Found {total_chunks} relevant chunks from {len(incident_groups)} unique incident(s).",
+        "",
+    ]
+
+    for i, (root_path, chunks) in enumerate(incident_groups.items(), 1):
+        first_chunk = chunks[0]
+        subject = first_chunk.email_subject or "Unknown Subject"
+        date = first_chunk.email_date or "Unknown Date"
+
+        lines.append(f"**Incident {i}:** {subject}")
+        lines.append(f"  - Date: {date}")
+        lines.append(f"  - Relevant sections: {len(chunks)}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 # Cache for vessel lookups to avoid repeated DB queries
 _vessel_cache: Dict[str, Optional[Vessel]] = {}
@@ -313,6 +376,13 @@ async def search_node(
         context = citation_processor.build_context(retrieval_results)
         citation_map = citation_processor.get_citation_map(retrieval_results)
 
+        # Group results by incident (root email thread) and build summary
+        incident_groups = _group_by_incident(retrieval_results)
+        incident_summary = _build_incident_summary(incident_groups)
+
+        # Append incident summary to context for LLM awareness
+        enhanced_context = context + incident_summary
+
         # Serialize citation_map for state storage
         serialized_citation_map = {
             k: _serialize_retrieval_result(v) for k, v in citation_map.items()
@@ -321,8 +391,10 @@ async def search_node(
         # Return context to agent (agent will generate answer with citations)
         tool_response = ToolMessage(
             content=json.dumps({
-                "context": context,
+                "context": enhanced_context,
                 "available_chunk_ids": list(citation_map.keys()),
+                "incident_count": len(retrieval_results),
+                "unique_incidents": len(incident_groups),
             }),
             tool_call_id=tool_call["id"],
         )
