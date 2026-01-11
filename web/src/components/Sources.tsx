@@ -15,9 +15,11 @@ import {
   useState,
   useCallback,
   useEffect,
+  useRef,
   type ReactNode,
 } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeRaw from "rehype-raw";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, ChevronRight, FileText, Download, ExternalLink } from "lucide-react";
@@ -43,14 +45,27 @@ import { cn } from "@/lib/utils";
 // Citation Context - Collects citations as they render
 // =============================================================================
 
-interface CitationEntry {
-  id: string;
-  index: number;
-  title: string;
-  titleLoading?: boolean;
+/**
+ * Reference to a specific chunk within a document.
+ * Multiple chunks can belong to the same source document.
+ */
+interface ChunkRef {
+  chunkId: string;
   page?: number;
   lines?: [number, number];
   download?: string;
+}
+
+/**
+ * Citation entry representing a source document.
+ * Multiple chunks from the same document are consolidated into one entry.
+ */
+interface CitationEntry {
+  id: string;              // Primary chunk_id (first chunk from this document)
+  index: number;           // Document index (shared across all chunks from same doc)
+  title: string;
+  titleLoading?: boolean;
+  chunks: ChunkRef[];      // All chunks from this document
 }
 
 interface CitationContextType {
@@ -58,14 +73,14 @@ interface CitationContextType {
   addCitation: (entry: CitationEntry) => void;
   updateCitationTitle: (id: string, title: string) => void;
   clearCitations: () => void;
-  onViewCitation: (id: string) => void;
+  onViewCitation: (id: string, linesToHighlight?: [number, number][]) => void;
 }
 
 const CitationContext = createContext<CitationContextType | undefined>(undefined);
 
 interface CitationProviderProps {
   children: ReactNode;
-  onViewCitation: (id: string) => void;
+  onViewCitation: (id: string, linesToHighlight?: [number, number][]) => void;
 }
 
 export function CitationProvider({ children, onViewCitation }: CitationProviderProps) {
@@ -74,7 +89,24 @@ export function CitationProvider({ children, onViewCitation }: CitationProviderP
   const addCitation = useCallback((entry: CitationEntry) => {
     setCitations((prev) => {
       const next = new Map(prev);
-      next.set(entry.id, entry);
+
+      // Find existing entry with same title to merge chunks
+      const existingEntry = Array.from(next.values()).find(
+        (e) => e.title === entry.title && e.title !== "Source"
+      );
+
+      if (existingEntry) {
+        // Merge chunks if not already present
+        const newChunk = entry.chunks[0];
+        if (newChunk && !existingEntry.chunks.some((c) => c.chunkId === newChunk.chunkId)) {
+          existingEntry.chunks.push(newChunk);
+        }
+        // Keep existing entry (already in map by its id)
+      } else {
+        // New document - add to map
+        next.set(entry.id, entry);
+      }
+
       return next;
     });
   }, []);
@@ -117,7 +149,7 @@ export { useCitationContext };
 
 interface MessageCitationProviderProps {
   children: ReactNode;
-  onViewCitation: (id: string) => void;
+  onViewCitation: (id: string, linesToHighlight?: [number, number][]) => void;
 }
 
 /**
@@ -130,7 +162,24 @@ export function MessageCitationProvider({ children, onViewCitation }: MessageCit
   const addCitation = useCallback((entry: CitationEntry) => {
     setCitations((prev) => {
       const next = new Map(prev);
-      next.set(entry.id, entry);
+
+      // Find existing entry with same title to merge chunks
+      const existingEntry = Array.from(next.values()).find(
+        (e) => e.title === entry.title && e.title !== "Source"
+      );
+
+      if (existingEntry) {
+        // Merge chunks if not already present
+        const newChunk = entry.chunks[0];
+        if (newChunk && !existingEntry.chunks.some((c) => c.chunkId === newChunk.chunkId)) {
+          existingEntry.chunks.push(newChunk);
+        }
+        // Keep existing entry (already in map by its id)
+      } else {
+        // New document - add to map
+        next.set(entry.id, entry);
+      }
+
       return next;
     });
   }, []);
@@ -255,22 +304,28 @@ function CiteRenderer(props: CiteProps) {
   // Track if title needs fetching
   const needsTitleFetch = !title;
 
+  // Parse lines once for reuse
+  const parsedLines = lines
+    ? (lines.split("-").map(Number) as [number, number])
+    : undefined;
+
   // Register this citation when it renders
   useEffect(() => {
-    const parsedLines = lines
-      ? (lines.split("-").map(Number) as [number, number])
-      : undefined;
+    const chunkRef: ChunkRef = {
+      chunkId: id,
+      page: page ? parseInt(page, 10) : undefined,
+      lines: parsedLines,
+      download,
+    };
 
     addCitation({
       id,
       index,
       title: title || "Source",
       titleLoading: needsTitleFetch,
-      page: page ? parseInt(page, 10) : undefined,
-      lines: parsedLines,
-      download,
+      chunks: [chunkRef],
     });
-  }, [id, index, title, page, lines, download, addCitation, needsTitleFetch]);
+  }, [id, index, title, page, parsedLines, download, addCitation, needsTitleFetch]);
 
   // Fetch title from API if not provided in the cite tag
   useEffect(() => {
@@ -310,11 +365,11 @@ function CiteRenderer(props: CiteProps) {
           <span
             role="button"
             tabIndex={0}
-            onClick={() => onViewCitation(id)}
+            onClick={() => onViewCitation(id, parsedLines ? [parsedLines] : undefined)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                onViewCitation(id);
+                onViewCitation(id, parsedLines ? [parsedLines] : undefined);
               }
             }}
             className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mr-0.5 text-xs font-medium text-ncl-blue bg-ncl-blue/10 rounded hover:bg-ncl-blue/20 transition-colors cursor-pointer align-super"
@@ -351,7 +406,8 @@ export function SourcesAccordion({ className }: SourcesAccordionProps) {
   const { citations, onViewCitation } = useCitationContext();
   const [isOpen, setIsOpen] = useState(false);
 
-  // Convert map to sorted array
+  // Convert map to sorted array (already consolidated by document)
+  // Sort by original index to maintain order of first appearance
   const citationList = Array.from(citations.values()).sort((a, b) => a.index - b.index);
 
   if (citationList.length === 0) {
@@ -381,13 +437,24 @@ export function SourcesAccordion({ className }: SourcesAccordionProps) {
         <div className="border-t border-ncl-gray-light">
           <ScrollArea className="max-h-64">
             <div className="p-2 space-y-1">
-              {citationList.map((citation) => (
-                <SourceItem
-                  key={citation.id}
-                  citation={citation}
-                  onView={() => onViewCitation(citation.id)}
-                />
-              ))}
+              {citationList.map((citation, idx) => {
+                // Collect all line ranges from this document's chunks for highlighting
+                const allLineRanges = citation.chunks
+                  .filter((c) => c.lines)
+                  .map((c) => c.lines as [number, number]);
+
+                // Use sequential display index (1, 2, 3...) for clean numbering
+                const displayIndex = idx + 1;
+
+                return (
+                  <SourceItem
+                    key={citation.id}
+                    citation={citation}
+                    displayIndex={displayIndex}
+                    onView={() => onViewCitation(citation.id, allLineRanges.length > 0 ? allLineRanges : undefined)}
+                  />
+                );
+              })}
             </div>
           </ScrollArea>
         </div>
@@ -398,19 +465,27 @@ export function SourcesAccordion({ className }: SourcesAccordionProps) {
 
 interface SourceItemProps {
   citation: CitationEntry;
+  displayIndex: number;
   onView: () => void;
 }
 
-function SourceItem({ citation, onView }: SourceItemProps) {
+function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
+  // Build location info from chunks
+  const pageNumbers = citation.chunks.map((c) => c.page).filter((p): p is number => p !== undefined);
+  const pages = Array.from(new Set(pageNumbers));
   const locationParts: string[] = [];
-  if (citation.page) locationParts.push(`p.${citation.page}`);
-  if (citation.lines) locationParts.push(`lines ${citation.lines[0]}-${citation.lines[1]}`);
+
+  if (pages.length === 1) {
+    locationParts.push(`p.${pages[0]}`);
+  } else if (pages.length > 1) {
+    locationParts.push(`p.${pages.sort((a, b) => a - b).join(", ")}`);
+  }
 
   return (
     <div className="flex items-center justify-between px-3 py-2 rounded-md hover:bg-ncl-gray-light/30 group">
       <div className="flex items-center gap-3 min-w-0 flex-1">
         <span className="flex-shrink-0 w-6 h-6 rounded-full bg-ncl-blue/10 text-ncl-blue text-xs font-medium flex items-center justify-center">
-          {citation.index}
+          {displayIndex}
         </span>
         <div className="min-w-0 flex-1">
           {citation.titleLoading ? (
@@ -436,9 +511,9 @@ function SourceItem({ citation, onView }: SourceItemProps) {
         >
           <ExternalLink className="h-4 w-4" />
         </Button>
-        {citation.download && (
+        {citation.chunks[0]?.download && (
           <a
-            href={`/api/archive/${citation.download}`}
+            href={`/api/archive/${citation.chunks[0].download}`}
             download
             className="inline-flex items-center justify-center h-8 px-2 rounded-md text-sm font-medium hover:bg-ncl-gray-light/20 transition-colors"
             title="Download original"
@@ -459,13 +534,45 @@ interface SourceViewDialogProps {
   chunkId: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  linesToHighlight?: [number, number][];
 }
 
-export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDialogProps) {
+/**
+ * Add highlight markers to markdown content for specified line ranges.
+ * Wraps lines in <mark> tags that will be rendered with yellow background.
+ */
+function addLineHighlights(content: string, lineRanges: [number, number][]): string {
+  if (!lineRanges || lineRanges.length === 0) return content;
+
+  const lines = content.split("\n");
+  const highlightedLineNums = new Set<number>();
+
+  // Collect all line numbers to highlight
+  for (const [start, end] of lineRanges) {
+    for (let i = start; i <= end && i <= lines.length; i++) {
+      highlightedLineNums.add(i);
+    }
+  }
+
+  // Wrap highlighted lines
+  const result = lines.map((line, idx) => {
+    const lineNum = idx + 1; // Lines are 1-indexed
+    if (highlightedLineNums.has(lineNum)) {
+      // Use a special marker that we'll style with CSS
+      return `<mark class="citation-highlight">${line}</mark>`;
+    }
+    return line;
+  });
+
+  return result.join("\n");
+}
+
+export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight }: SourceViewDialogProps) {
   const { session } = useAuth();
   const [citation, setCitation] = useState<Citation | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open || !chunkId || !session?.access_token) {
@@ -501,9 +608,39 @@ export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDial
     fetchCitation();
   }, [open, chunkId, session]);
 
+  // Scroll to first highlight after content loads
+  useEffect(() => {
+    if (!loading && citation?.content && linesToHighlight && linesToHighlight.length > 0) {
+      // Small delay to ensure DOM is ready
+      const timer = setTimeout(() => {
+        const firstHighlight = contentRef.current?.querySelector(".citation-highlight");
+        if (firstHighlight) {
+          firstHighlight.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [loading, citation?.content, linesToHighlight]);
+
   const locationParts: string[] = [];
   if (citation?.page) locationParts.push(`Page ${citation.page}`);
-  if (citation?.lines) locationParts.push(`Lines ${citation.lines[0]}-${citation.lines[1]}`);
+
+  // Show highlighted line info
+  if (linesToHighlight && linesToHighlight.length > 0) {
+    if (linesToHighlight.length === 1) {
+      const [start, end] = linesToHighlight[0];
+      locationParts.push(`Lines ${start}-${end} highlighted`);
+    } else {
+      locationParts.push(`${linesToHighlight.length} sections highlighted`);
+    }
+  } else if (citation?.lines) {
+    locationParts.push(`Lines ${citation.lines[0]}-${citation.lines[1]}`);
+  }
+
+  // Process content with highlights
+  const processedContent = citation?.content && linesToHighlight
+    ? addLineHighlights(citation.content, linesToHighlight)
+    : citation?.content;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -532,7 +669,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDial
         </DialogHeader>
 
         <ScrollArea className="flex-1 min-h-0 mt-4">
-          <div className="pr-4 pb-4">
+          <div ref={contentRef} className="pr-4 pb-4">
             {loading && (
               <div className="space-y-3">
                 <Skeleton className="h-4 w-full" />
@@ -546,10 +683,12 @@ export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDial
               <div className="text-red-600 bg-red-50 p-4 rounded-lg">{error}</div>
             )}
 
-            {citation?.content && !loading && (
-              <div className="prose prose-sm max-w-none prose-headings:text-ncl-blue-dark prose-p:text-ncl-blue-dark prose-li:text-ncl-blue-dark prose-a:text-ncl-blue prose-a:underline prose-hr:my-4 [&_p]:mb-4 [&_br+br]:block [&_br+br]:h-2">
+            {processedContent && !loading && (
+              <div className="prose prose-sm max-w-none prose-headings:text-ncl-blue-dark prose-p:text-ncl-blue-dark prose-li:text-ncl-blue-dark prose-a:text-ncl-blue prose-a:underline prose-hr:my-4 [&_p]:mb-4 [&_br+br]:block [&_br+br]:h-2 [&_.citation-highlight]:bg-yellow-200 [&_.citation-highlight]:px-0.5 [&_.citation-highlight]:rounded">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkBreaks]}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  rehypePlugins={[rehypeRaw as any]}
                   components={{
                     // Rewrite relative URLs to use archive API path
                     a: ({ href, children, ...props }) => {
@@ -572,7 +711,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDial
                           resolvedHref = `/api/archive/${resolvedHref}`;
                         } else {
                           // Relative path - resolve from current document's directory
-                          const basePath = citation.archive_browse_uri
+                          const basePath = citation?.archive_browse_uri
                             ? citation.archive_browse_uri
                                 .replace(/^\/archive/, "")  // Strip leading /archive
                                 .replace(/\/[^/]+$/, "")     // Get directory path
@@ -600,7 +739,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDial
                           resolvedSrc = `/api/archive/${resolvedSrc}`;
                         } else {
                           // Relative path - resolve from current document's directory
-                          const basePath = citation.archive_browse_uri
+                          const basePath = citation?.archive_browse_uri
                             ? citation.archive_browse_uri
                                 .replace(/^\/archive/, "")  // Strip leading /archive
                                 .replace(/\/[^/]+$/, "")     // Get directory path
@@ -613,12 +752,12 @@ export function SourceViewDialog({ chunkId, open, onOpenChange }: SourceViewDial
                     },
                   }}
                 >
-                  {citation.content}
+                  {processedContent}
                 </ReactMarkdown>
               </div>
             )}
 
-            {!citation?.content && !loading && !error && (
+            {!processedContent && !loading && !error && (
               <p className="text-ncl-gray text-sm">No content available for this source.</p>
             )}
           </div>

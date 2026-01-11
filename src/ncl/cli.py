@@ -6,6 +6,7 @@ import asyncio
 import os
 import signal
 import sys
+from dataclasses import dataclass
 
 import nest_asyncio
 
@@ -37,7 +38,8 @@ from .config import get_settings
 from .models.chunk import Chunk
 from .models.document import ProcessingStatus
 from .parsers.attachment_processor import AttachmentProcessor
-from .parsers.chunker import ContextGenerator
+from .parsers.chunker import ContextGenerator, DocumentChunker
+from .storage.archive_storage import ArchiveStorage
 from .parsers.email_cleaner import (
     clean_email_body,
     remove_boilerplate_from_message,
@@ -576,9 +578,9 @@ async def _process_single_email(
             chunk_id = compute_chunk_id(email_doc.doc_id or "", msg_start, msg_end)
 
             # Build embedding text with context (using cleaned message)
+            # Apply context summary to ALL chunks for better search relevance
             embedding_text = cleaned_message
-            if context_summary and msg_idx == 0:
-                # Only add context summary to the first message
+            if context_summary:
                 embedding_text = context_generator.build_embedding_text(context_summary, cleaned_message)
 
             # Build chunk metadata including vessel_ids for filtering
@@ -594,7 +596,7 @@ async def _process_single_email(
                     heading_path=["Email Body", f"Message {msg_idx + 1}"],
                     metadata=chunk_metadata,
                     chunk_id=chunk_id,
-                    context_summary=context_summary if msg_idx == 0 else None,
+                    context_summary=context_summary,  # Apply to all chunks
                     embedding_text=embedding_text,  # Cleaned for better embeddings
                     char_start=msg_start,
                     char_end=msg_end,
@@ -809,6 +811,23 @@ async def _process_attachment(
                 # Combine all chunks for the .md file
                 parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
                 vprint(f"  -> {len(attach_chunks)} chunks created", file_ctx)
+
+                # Generate context summary for better search relevance
+                if context_generator and parsed_content:
+                    try:
+                        attach_context = await context_generator.generate_context(
+                            attach_doc, parsed_content[:4000]
+                        )
+                        if attach_context:
+                            vprint(f"  -> Context generated: {len(attach_context)} chars", file_ctx)
+                            # Apply context summary to ALL chunks
+                            for chunk in attach_chunks:
+                                chunk.context_summary = attach_context
+                                chunk.embedding_text = context_generator.build_embedding_text(
+                                    attach_context, chunk.content
+                                )
+                    except Exception as e:
+                        vprint(f"  -> Context generation failed: {e}", file_ctx)
             else:
                 vprint(f"  -> 0 chunks (document has no extractable text)", file_ctx)
             chunks.extend(attach_chunks)
@@ -1561,6 +1580,893 @@ async def _reprocess(target_version: int | None, limit: int, dry_run: bool):
 
     finally:
         await db.close()
+
+
+# ==================== Re-index Commands ====================
+
+
+@app.command("reindex-chunks")
+def reindex_chunks(
+    doc_id: Optional[str] = typer.Option(
+        None,
+        "--doc-id",
+        "-d",
+        help="Re-index a specific document by UUID",
+    ),
+    missing_lines: bool = typer.Option(
+        False,
+        "--missing-lines",
+        "-m",
+        help="Re-index all documents with chunks missing line numbers",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Show what would be processed without making changes",
+    ),
+    limit: int = typer.Option(
+        100,
+        "--limit",
+        "-l",
+        help="Maximum number of documents to process",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output",
+    ),
+):
+    """Re-index chunks from archived markdown files.
+
+    This command re-creates chunks for documents that have archived .md files,
+    adding line numbers for citation highlighting and context summaries for
+    better search relevance.
+
+    Use --missing-lines to process all documents with chunks that lack line
+    number information (needed for citation highlighting).
+
+    Examples:
+        ncl reindex-chunks --missing-lines --dry-run
+        ncl reindex-chunks --doc-id abc123...
+    """
+    global _verbose
+    _verbose = verbose
+
+    if not doc_id and not missing_lines:
+        console.print("[red]Error: Specify --doc-id or --missing-lines[/red]")
+        raise typer.Exit(1)
+
+    asyncio.run(_reindex_chunks(doc_id, missing_lines, dry_run, limit))
+
+
+async def _reindex_chunks(
+    doc_id: Optional[str],
+    missing_lines: bool,
+    dry_run: bool,
+    limit: int,
+):
+    """Async implementation of reindex-chunks command."""
+    from uuid import UUID
+
+    db = SupabaseClient()
+    storage = ArchiveStorage()
+    chunker = DocumentChunker()
+    context_generator = ContextGenerator()
+    embedding_generator = EmbeddingGenerator()
+
+    try:
+        # Find documents to re-index
+        if doc_id:
+            # Single document by ID
+            docs = await _get_documents_by_id(db, doc_id)
+        else:
+            # Documents with chunks missing line numbers
+            docs = await _get_documents_missing_lines(db, limit)
+
+        if not docs:
+            console.print("[yellow]No documents found to re-index[/yellow]")
+            return
+
+        console.print(f"Found {len(docs)} document(s) to re-index")
+
+        if dry_run:
+            console.print("[yellow]DRY RUN - No changes will be made[/yellow]")
+            for doc in docs:
+                console.print(f"  • {doc['source_title'] or doc['id']}")
+            return
+
+        # Process each document
+        stats = {"success": 0, "failed": 0, "chunks_created": 0}
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Re-indexing documents...", total=len(docs))
+
+            for doc in docs:
+                doc_uuid = UUID(doc["id"])
+                source_title = doc.get("source_title") or str(doc_uuid)[:8]
+                archive_uri = doc.get("archive_browse_uri")
+
+                progress.update(task, description=f"Processing {source_title}...")
+
+                if not archive_uri:
+                    vprint(f"Skipping {source_title}: no archive URI", "")
+                    stats["failed"] += 1
+                    progress.advance(task)
+                    continue
+
+                try:
+                    # Download archived markdown
+                    relative_path = archive_uri
+                    if relative_path.startswith("/archive/"):
+                        relative_path = relative_path[len("/archive/"):]
+
+                    content_bytes = storage.download_file(relative_path)
+                    markdown_text = content_bytes.decode("utf-8")
+                    vprint(f"Downloaded {len(markdown_text)} chars from {relative_path}", "")
+
+                    # Delete existing chunks for this document
+                    deleted = await db.delete_chunks_by_document(doc_uuid)
+                    vprint(f"Deleted {deleted} existing chunks", "")
+
+                    # Re-chunk the markdown (with line tracking)
+                    chunks = chunker.chunk_text(
+                        text=markdown_text,
+                        document_id=doc_uuid,
+                        source_file=relative_path,
+                        is_markdown=True,
+                    )
+
+                    if not chunks:
+                        vprint(f"No chunks created from {source_title}", "")
+                        stats["failed"] += 1
+                        progress.advance(task)
+                        continue
+
+                    # Generate context summary
+                    try:
+                        # Create a minimal document object for context generation
+                        from .models.document import Document, DocumentType
+                        temp_doc = Document(
+                            id=doc_uuid,
+                            document_type=DocumentType.ATTACHMENT_PDF,
+                            source_title=doc.get("source_title"),
+                        )
+                        context_summary = await context_generator.generate_context(
+                            temp_doc, markdown_text[:4000]
+                        )
+                        vprint(f"Generated context: {len(context_summary)} chars", "")
+                    except Exception as e:
+                        vprint(f"Context generation failed: {e}", "")
+                        context_summary = None
+
+                    # Apply metadata and context to all chunks
+                    for chunk in chunks:
+                        chunk.chunk_id = compute_chunk_id(
+                            doc.get("doc_id") or str(doc_uuid),
+                            chunk.char_start or 0,
+                            chunk.char_end or 0,
+                        )
+                        chunk.source_id = doc.get("source_id")
+                        chunk.source_title = doc.get("source_title")
+                        chunk.archive_browse_uri = doc.get("archive_browse_uri")
+                        chunk.archive_download_uri = doc.get("archive_download_uri")
+
+                        # Apply context summary to ALL chunks
+                        if context_summary:
+                            chunk.context_summary = context_summary
+                            chunk.embedding_text = context_generator.build_embedding_text(
+                                context_summary, chunk.content
+                            )
+
+                    # Generate embeddings
+                    chunks = await embedding_generator.embed_chunks(chunks)
+                    vprint(f"Generated embeddings for {len(chunks)} chunks", "")
+
+                    # Insert new chunks
+                    await db.insert_chunks(chunks)
+                    vprint(f"Inserted {len(chunks)} chunks", "")
+
+                    stats["success"] += 1
+                    stats["chunks_created"] += len(chunks)
+
+                except Exception as e:
+                    console.print(f"[red]Failed to re-index {source_title}: {e}[/red]")
+                    stats["failed"] += 1
+
+                progress.advance(task)
+
+        # Print summary
+        console.print(f"\n[green]✓ Re-index complete[/green]")
+        console.print(f"  Documents: {stats['success']} success, {stats['failed']} failed")
+        console.print(f"  Chunks created: {stats['chunks_created']}")
+
+    finally:
+        await db.close()
+
+
+async def _get_documents_by_id(db: SupabaseClient, doc_id: str) -> list[dict]:
+    """Get a single document by ID."""
+    result = db.client.table("documents").select(
+        "id, doc_id, source_id, source_title, archive_browse_uri, archive_download_uri"
+    ).eq("id", doc_id).execute()
+    return result.data or []
+
+
+async def _get_documents_missing_lines(db: SupabaseClient, limit: int) -> list[dict]:
+    """Get documents with chunks that are missing line numbers."""
+    # Direct query to find chunks missing line numbers
+    result = db.client.table("chunks").select(
+        "document_id"
+    ).is_("line_from", "null").limit(limit * 10).execute()
+
+    if not result.data:
+        return []
+
+    # Get unique document IDs
+    doc_ids = list(set(row["document_id"] for row in result.data))[:limit]
+
+    # Fetch document details (only those with archive URIs)
+    docs_result = db.client.table("documents").select(
+        "id, doc_id, source_id, source_title, archive_browse_uri, archive_download_uri"
+    ).in_("id", doc_ids).not_.is_("archive_browse_uri", "null").execute()
+
+    return docs_result.data or []
+
+
+# ==================== Ingest Update Command ====================
+
+
+@app.command("ingest-update")
+def ingest_update(
+    source_dir: Optional[Path] = typer.Option(
+        None,
+        "--source",
+        "-s",
+        help="Directory containing EML files",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Scan and report issues without fixing",
+    ),
+    limit: int = typer.Option(
+        0,
+        "--limit",
+        "-l",
+        help="Max documents to process (0 = all)",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed progress",
+    ),
+):
+    """Validate and repair ingested data.
+
+    Scans ingested emails and automatically fixes:
+
+    - Orphaned documents (source file deleted, removes from DB)
+    - Missing/mislinked archives (checks bucket, updates DB or regenerates)
+    - Missing chunk line numbers (re-chunks from archive, atomic replace)
+    - Missing context summaries (regenerates with LLM, includes retry)
+
+    Uses identical processing as regular ingest for consistency.
+
+    Examples:
+        ncl ingest-update --dry-run          # Scan only, show issues
+        ncl ingest-update                    # Fix all issues
+        ncl ingest-update --limit 10 -v      # Fix 10 docs with details
+    """
+    global _verbose
+    _verbose = verbose
+
+    asyncio.run(_ingest_update(source_dir, dry_run, limit))
+
+
+@dataclass
+class IssueRecord:
+    """Record of issues found for a document."""
+    eml_path: Path
+    doc: "Document"
+    child_docs: list["Document"]
+    issues: list[str]
+    cached_chunks: dict = None  # UUID -> list[Chunk], populated during scan
+
+    def __post_init__(self):
+        if self.cached_chunks is None:
+            self.cached_chunks = {}
+
+
+async def _ingest_update(
+    source_dir: Optional[Path],
+    dry_run: bool,
+    limit: int,
+):
+    """Async implementation of ingest-update command."""
+    from .ingest.components import create_ingest_components
+    from .utils import normalize_source_id
+
+    settings = get_settings()
+    source_dir = source_dir or settings.eml_source_dir
+
+    if not source_dir.exists():
+        console.print(f"[red]Source directory not found: {source_dir}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[dim]Scanning: {source_dir}[/dim]")
+
+    # Initialize database and components
+    db = SupabaseClient()
+
+    try:
+        # Load vessels for component initialization
+        vessels = await db.get_all_vessels()
+
+        # Create shared components (same as regular ingest)
+        components = create_ingest_components(db, source_dir, vessels)
+
+        # Always check all issue types
+        checks = {"archives", "chunks", "context"}
+
+        # Phase 1a: Scan for issues in existing documents
+        issues = await _scan_ingest_issues(source_dir, components, checks, limit)
+
+        # Phase 1b: Find orphaned documents (in DB but source file deleted)
+        orphan_ids = await _find_orphaned_documents(source_dir, db)
+
+        has_issues = bool(issues) or bool(orphan_ids)
+
+        if not has_issues:
+            console.print("[green]No issues found - all data is up to date![/green]")
+            return
+
+        # Display summary
+        if issues:
+            console.print(f"\n[yellow]Found {len(issues)} document(s) with issues:[/yellow]")
+            issue_counts: dict[str, int] = {}
+            for record in issues:
+                for issue in record.issues:
+                    issue_counts[issue] = issue_counts.get(issue, 0) + 1
+
+            table = Table(title="Issues Found")
+            table.add_column("Issue Type", style="cyan")
+            table.add_column("Count", justify="right", style="yellow")
+            for issue_type, count in sorted(issue_counts.items()):
+                table.add_row(issue_type, str(count))
+            console.print(table)
+
+        if orphan_ids:
+            console.print(f"\n[yellow]Found {len(orphan_ids)} orphaned document(s) (source file deleted)[/yellow]")
+
+        if dry_run:
+            console.print("\n[dim]DRY RUN - No changes will be made[/dim]")
+            if issues:
+                console.print("\n[dim]Sample of affected documents:[/dim]")
+                for record in issues[:10]:
+                    console.print(f"  • {record.eml_path.name}: {', '.join(record.issues)}")
+                if len(issues) > 10:
+                    console.print(f"  ... and {len(issues) - 10} more")
+            return
+
+        stats = {"fixed": 0, "failed": 0, "chunks_created": 0, "orphans_removed": 0}
+
+        # Phase 2a: Remove orphaned documents first
+        if orphan_ids:
+            console.print(f"\n[yellow]Removing {len(orphan_ids)} orphaned document(s)...[/yellow]")
+            stats["orphans_removed"] = await db.delete_orphaned_documents(orphan_ids)
+
+        # Phase 2b: Fix document issues
+        if issues:
+            console.print(f"\n[yellow]Fixing {len(issues)} document(s)...[/yellow]")
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Fixing issues...", total=len(issues))
+
+                for record in issues:
+                    try:
+                        progress.update(task, description=f"Fixing {record.eml_path.name}...")
+                        chunks_created = await _fix_document_issues(record, components, checks)
+                        stats["fixed"] += 1
+                        stats["chunks_created"] += chunks_created
+                    except Exception as e:
+                        console.print(f"[red]Failed to fix {record.eml_path.name}: {e}[/red]")
+                        stats["failed"] += 1
+
+                    progress.advance(task)
+
+        # Print summary
+        console.print(f"\n[green]✓ Ingest update complete[/green]")
+        console.print(f"  Documents fixed: {stats['fixed']}")
+        console.print(f"  Documents failed: {stats['failed']}")
+        console.print(f"  Chunks created/updated: {stats['chunks_created']}")
+        if stats["orphans_removed"]:
+            console.print(f"  Orphans removed: {stats['orphans_removed']}")
+
+    finally:
+        await db.close()
+
+
+async def _find_orphaned_documents(source_dir: Path, db: SupabaseClient) -> List[UUID]:
+    """Find documents in DB whose source files no longer exist.
+
+    Args:
+        source_dir: Directory containing source .eml files.
+        db: Database client.
+
+    Returns:
+        List of document UUIDs to delete.
+    """
+    from .utils import normalize_source_id
+
+    # Get all existing .eml files
+    existing_files = set()
+    for eml_path in source_dir.rglob("*.eml"):
+        source_id = normalize_source_id(str(eml_path), source_dir)
+        existing_files.add(source_id)
+
+    # Get all root documents from DB
+    db_source_ids = await db.get_all_root_source_ids()
+
+    # Find orphans (in DB but file doesn't exist)
+    orphan_ids = []
+    for source_id, doc_id in db_source_ids.items():
+        if source_id not in existing_files:
+            orphan_ids.append(doc_id)
+
+    return orphan_ids
+
+
+async def _scan_ingest_issues(
+    source_dir: Path,
+    components: "IngestComponents",
+    checks: set[str],
+    limit: int,
+) -> list[IssueRecord]:
+    """Scan .eml files and identify documents with issues.
+
+    Args:
+        source_dir: Directory containing .eml files.
+        components: Shared ingest components.
+        checks: Set of issue types to check for.
+        limit: Maximum documents to return (0 = unlimited).
+
+    Returns:
+        List of IssueRecord objects for documents with issues.
+    """
+    from .utils import normalize_source_id
+
+    issues: list[IssueRecord] = []
+
+    eml_files = list(source_dir.rglob("*.eml"))
+    console.print(f"[dim]Found {len(eml_files)} .eml files[/dim]")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Scanning for issues...", total=len(eml_files))
+
+        for eml_path in eml_files:
+            if limit > 0 and len(issues) >= limit:
+                break
+
+            progress.update(task, description=f"Scanning {eml_path.name}...")
+
+            # Compute source_id the same way as regular ingest
+            source_id = normalize_source_id(str(eml_path), source_dir)
+
+            # Find document by source_id
+            doc = await components.db.get_document_by_source_id(source_id)
+            if not doc:
+                # Not ingested - skip
+                progress.advance(task)
+                continue
+
+            # Get child documents (attachments)
+            child_docs = await components.db.get_document_children(doc.id)
+
+            # Check for issues (returns cached chunks for reuse in fix phase)
+            doc_issues, cached_chunks = await _check_document_issues(doc, child_docs, components, checks)
+
+            if doc_issues:
+                issues.append(IssueRecord(
+                    eml_path=eml_path,
+                    doc=doc,
+                    child_docs=child_docs,
+                    issues=doc_issues,
+                    cached_chunks=cached_chunks,
+                ))
+                vprint(f"Found issues: {', '.join(doc_issues)}", eml_path.name)
+
+            progress.advance(task)
+
+    return issues
+
+
+async def _check_document_issues(
+    doc: "Document",
+    child_docs: list["Document"],
+    components: "IngestComponents",
+    checks: set[str],
+) -> tuple[list[str], dict]:
+    """Check a document for issues.
+
+    Args:
+        doc: Root document to check.
+        child_docs: Child documents (attachments).
+        components: Shared ingest components.
+        checks: Set of issue types to check for.
+
+    Returns:
+        Tuple of (issue list, cached_chunks dict).
+        cached_chunks maps UUID -> list[Chunk] for reuse in fix phase.
+    """
+    from .models.document import DocumentType
+
+    issues = []
+    cached_chunks: dict = {}
+
+    if "archives" in checks:
+        # Check if root doc is missing archive
+        if not doc.archive_browse_uri:
+            issues.append("missing_archive")
+        # Check children (except images which don't have archives)
+        for child in child_docs:
+            if not child.archive_browse_uri and child.document_type != DocumentType.ATTACHMENT_IMAGE:
+                issues.append("missing_child_archive")
+                break
+
+    # Fetch chunks once for both checks (avoid duplicate DB calls)
+    need_chunks = "chunks" in checks or "context" in checks
+
+    if need_chunks:
+        doc_chunks = await components.db.get_chunks_by_document(doc.id)
+        if doc_chunks:
+            cached_chunks[doc.id] = doc_chunks
+
+        for child in child_docs:
+            if child.document_type != DocumentType.ATTACHMENT_IMAGE:
+                child_chunks = await components.db.get_chunks_by_document(child.id)
+                if child_chunks:
+                    cached_chunks[child.id] = child_chunks
+
+    if "chunks" in checks:
+        # Check if any chunks are missing line numbers
+        doc_chunks = cached_chunks.get(doc.id, [])
+        if doc_chunks and any(c.line_from is None for c in doc_chunks):
+            issues.append("missing_lines")
+        # Check child docs
+        for child in child_docs:
+            child_chunks = cached_chunks.get(child.id, [])
+            if child_chunks and any(c.line_from is None for c in child_chunks):
+                issues.append("missing_child_lines")
+                break
+
+    if "context" in checks:
+        # Check if any chunks are missing context summaries
+        doc_chunks = cached_chunks.get(doc.id, [])
+        if doc_chunks and any(c.context_summary is None for c in doc_chunks):
+            issues.append("missing_context")
+        # Check child docs
+        for child in child_docs:
+            child_chunks = cached_chunks.get(child.id, [])
+            if child_chunks and any(c.context_summary is None for c in child_chunks):
+                issues.append("missing_child_context")
+                break
+
+    return issues, cached_chunks
+
+
+async def _fix_document_issues(
+    record: IssueRecord,
+    components: "IngestComponents",
+    checks: set[str],
+) -> int:
+    """Fix all issues for a document.
+
+    Args:
+        record: Issue record with document and issues.
+        components: Shared ingest components.
+        checks: Set of issue types being fixed.
+
+    Returns:
+        Number of chunks created/updated.
+    """
+    chunks_created = 0
+
+    # Parse email once (needed for archive fixes)
+    parsed_email = None
+    if "missing_archive" in record.issues or "missing_child_archive" in record.issues:
+        parsed_email = components.eml_parser.parse_file(record.eml_path)
+
+    # Fix in order of dependency:
+    # 1. Archives first (chunks depend on archive content)
+    if "archives" in checks and ("missing_archive" in record.issues or "missing_child_archive" in record.issues):
+        await _fix_missing_archives(record, components, parsed_email)
+
+    # 2. Chunks second (context depends on chunk structure)
+    if "chunks" in checks and ("missing_lines" in record.issues or "missing_child_lines" in record.issues):
+        chunks_created += await _fix_missing_lines(record, components)
+
+    # 3. Context last
+    if "context" in checks and ("missing_context" in record.issues or "missing_child_context" in record.issues):
+        chunks_created += await _fix_missing_context(record, components)
+
+    return chunks_created
+
+
+async def _fix_missing_archives(
+    record: IssueRecord,
+    components: "IngestComponents",
+    parsed_email,
+) -> None:
+    """Generate missing archive files using same function as regular ingest.
+
+    First checks if files exist in bucket but DB is just missing the URI.
+    If files exist in bucket, updates DB only. Otherwise regenerates archives.
+
+    Args:
+        record: Issue record with document info.
+        components: Shared ingest components.
+        parsed_email: Parsed email object.
+    """
+    from .models.document import DocumentType
+    from urllib.parse import quote
+
+    if not parsed_email:
+        vprint("Cannot fix archives: email not parsed", record.eml_path.name)
+        return
+
+    # Get parent folder_id for bucket lookups
+    folder_id = record.doc.doc_id[:16] if record.doc.doc_id else None
+
+    # Fix root document archive if missing
+    if not record.doc.archive_browse_uri:
+        # Check if archive exists in bucket first
+        bucket_path = f"{folder_id}/email.eml.md"
+        if folder_id and components.archive_storage.file_exists(bucket_path):
+            browse_uri = f"/archive/{quote(bucket_path, safe='/')}"
+            await components.db.update_document_archive_browse_uri(record.doc.id, browse_uri)
+            record.doc.archive_browse_uri = browse_uri
+            vprint(f"Archive found in bucket, DB updated: {browse_uri}", record.eml_path.name)
+        else:
+            vprint("Generating archive...", record.eml_path.name)
+            # Use IDENTICAL archive generation as regular ingest
+            archive_result = await components.archive_generator.generate_archive(
+                parsed_email=parsed_email,
+                source_eml_path=record.eml_path,
+            )
+            # Use same format as hierarchy_manager: /archive/{path}
+            browse_uri = f"/archive/{quote(archive_result.markdown_path, safe='/')}"
+            await components.db.update_document_archive_browse_uri(
+                record.doc.id,
+                browse_uri,
+            )
+            record.doc.archive_browse_uri = browse_uri
+            vprint(f"Archive created: {browse_uri}", record.eml_path.name)
+
+    # Fix child document archives if missing
+    if not folder_id:
+        return
+
+    for child in record.child_docs:
+        # Skip images - they don't have archives
+        if child.document_type == DocumentType.ATTACHMENT_IMAGE:
+            continue
+
+        if child.archive_browse_uri:
+            continue
+
+        # Check if .md file exists in bucket
+        expected_path = f"{folder_id}/attachments/{child.file_name}.md"
+        if components.archive_storage.file_exists(expected_path):
+            # File exists in bucket - just update DB
+            browse_uri = f"/archive/{quote(expected_path, safe='/')}"
+            await components.db.update_document_archive_browse_uri(child.id, browse_uri)
+            child.archive_browse_uri = browse_uri
+            vprint(f"Archive found in bucket for {child.file_name}, DB updated", record.eml_path.name)
+        else:
+            # File doesn't exist - would need re-parsing (log for now)
+            vprint(f"Archive not found in bucket for {child.file_name}: {expected_path}", record.eml_path.name)
+
+
+async def _fix_missing_lines(
+    record: IssueRecord,
+    components: "IngestComponents",
+) -> int:
+    """Regenerate chunks with line numbers using same chunker as regular ingest.
+
+    Uses atomic replace to ensure no data loss if insert fails.
+
+    Args:
+        record: Issue record with document info and cached chunks.
+        components: Shared ingest components.
+
+    Returns:
+        Number of chunks created.
+    """
+    from .models.document import DocumentType
+
+    chunks_created = 0
+
+    # Process root document and all children
+    all_docs = [record.doc] + record.child_docs
+
+    for target_doc in all_docs:
+        # Skip image attachments - they have single chunks without line tracking
+        if target_doc.document_type == DocumentType.ATTACHMENT_IMAGE:
+            continue
+
+        # Use cached chunks if available, otherwise fetch
+        existing_chunks = record.cached_chunks.get(target_doc.id)
+        if existing_chunks is None:
+            existing_chunks = await components.db.get_chunks_by_document(target_doc.id)
+        if not existing_chunks:
+            continue
+        if all(c.line_from is not None for c in existing_chunks):
+            continue
+
+        # Get markdown content from archive
+        if not target_doc.archive_browse_uri:
+            vprint(f"Skipping {target_doc.file_name}: no archive URI", record.eml_path.name)
+            continue
+
+        try:
+            relative_path = target_doc.archive_browse_uri
+            if relative_path.startswith("/archive/"):
+                relative_path = relative_path[len("/archive/"):]
+
+            content_bytes = components.archive_storage.download_file(relative_path)
+            markdown = content_bytes.decode("utf-8")
+        except Exception as e:
+            vprint(f"Failed to download archive: {e}", record.eml_path.name)
+            continue
+
+        # Re-chunk using IDENTICAL chunker as regular ingest
+        chunks = components.chunker.chunk_text(
+            text=markdown,
+            document_id=target_doc.id,
+            source_file=target_doc.archive_browse_uri or "",
+            is_markdown=True,
+        )
+
+        if not chunks:
+            vprint(f"No chunks created for {target_doc.file_name}", record.eml_path.name)
+            continue
+
+        # Generate context using IDENTICAL context generator
+        context = await components.context_generator.generate_context(
+            target_doc, markdown[:4000]
+        )
+
+        # Enrich chunks using IDENTICAL helper from ingest
+        enrich_chunks_with_document_metadata(chunks, target_doc)
+
+        # Apply context to all chunks (same as regular ingest)
+        for chunk in chunks:
+            if context:
+                chunk.context_summary = context
+                chunk.embedding_text = components.context_generator.build_embedding_text(
+                    context, chunk.content
+                )
+
+        # Embed chunks
+        chunks = await components.embeddings.embed_chunks(chunks)
+
+        # Atomic replace: delete + insert in single transaction
+        count = await components.db.replace_chunks_atomic(target_doc.id, chunks)
+
+        chunks_created += count
+        vprint(f"Replaced with {count} chunks for {target_doc.file_name}", record.eml_path.name)
+
+    return chunks_created
+
+
+async def _fix_missing_context(
+    record: IssueRecord,
+    components: "IngestComponents",
+) -> int:
+    """Add context summaries using same generator as regular ingest.
+
+    Args:
+        record: Issue record with document info and cached chunks.
+        components: Shared ingest components.
+
+    Returns:
+        Number of chunks updated.
+    """
+    from .models.document import DocumentType
+
+    chunks_updated = 0
+
+    # Process root document and all children
+    all_docs = [record.doc] + record.child_docs
+
+    for target_doc in all_docs:
+        # Skip image attachments - they use image descriptions, not context summaries
+        if target_doc.document_type == DocumentType.ATTACHMENT_IMAGE:
+            continue
+
+        # Use cached chunks if available, otherwise fetch
+        chunks = record.cached_chunks.get(target_doc.id)
+        if chunks is None:
+            chunks = await components.db.get_chunks_by_document(target_doc.id)
+        if not chunks:
+            continue
+        # Skip if already has context
+        if all(c.context_summary is not None for c in chunks):
+            continue
+
+        # Get content for context generation
+        content = None
+        if target_doc.archive_browse_uri:
+            try:
+                relative_path = target_doc.archive_browse_uri
+                if relative_path.startswith("/archive/"):
+                    relative_path = relative_path[len("/archive/"):]
+                content_bytes = components.archive_storage.download_file(relative_path)
+                content = content_bytes.decode("utf-8")
+            except Exception as e:
+                vprint(f"Archive download failed: {e}", record.eml_path.name)
+
+        if not content:
+            # Fallback to concatenating chunk content
+            content = "\n\n".join(c.content for c in chunks)
+
+        if not content.strip():
+            vprint(f"No content available for {target_doc.file_name}", record.eml_path.name)
+            continue
+
+        # Generate context using IDENTICAL generator as regular ingest
+        try:
+            context = await components.context_generator.generate_context(
+                target_doc, content[:4000]
+            )
+        except Exception as e:
+            vprint(f"Context generation error for {target_doc.file_name}: {e}", record.eml_path.name)
+            continue
+
+        if not context:
+            vprint(f"Context generation returned empty for {target_doc.file_name}", record.eml_path.name)
+            continue
+
+        # Update chunks with context (same embedding text format)
+        for chunk in chunks:
+            chunk.context_summary = context
+            chunk.embedding_text = components.context_generator.build_embedding_text(
+                context, chunk.content
+            )
+
+        # Re-embed using IDENTICAL embedding generator
+        chunks = await components.embeddings.embed_chunks(chunks)
+
+        # Update in database
+        for chunk in chunks:
+            await components.db.update_chunk_context(chunk)
+
+        chunks_updated += len(chunks)
+        vprint(f"Updated context for {len(chunks)} chunks in {target_doc.file_name}", record.eml_path.name)
+
+    return chunks_updated
 
 
 # ==================== Vessel Commands ====================

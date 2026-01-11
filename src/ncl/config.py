@@ -56,9 +56,6 @@ class Settings(BaseSettings):
     context_llm_fallback: str | None = Field(
         default=None, validation_alias="CONTEXT_LLM_FALLBACK"
     )
-    context_llm_max_tokens: int = Field(
-        default=120000, validation_alias="CONTEXT_LLM_MAX_TOKENS"
-    )
     email_cleaner_model: str | None = Field(
         default=None, validation_alias="EMAIL_CLEANER_MODEL"
     )

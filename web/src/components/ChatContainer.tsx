@@ -163,9 +163,11 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
   // Citation dialog state
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [linesToHighlight, setLinesToHighlight] = useState<[number, number][] | undefined>(undefined);
 
-  const handleViewCitation = useCallback((chunkId: string) => {
+  const handleViewCitation = useCallback((chunkId: string, lines?: [number, number][]) => {
     setSelectedChunkId(chunkId);
+    setLinesToHighlight(lines);
     setDialogOpen(true);
   }, []);
 
@@ -303,6 +305,7 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
             chunkId={selectedChunkId}
             open={dialogOpen}
             onOpenChange={setDialogOpen}
+            linesToHighlight={linesToHighlight}
           />
         </div>
       </CitationProvider>

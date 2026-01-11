@@ -324,15 +324,115 @@ class SupabaseClient:
         Returns:
             List of chunks ordered by index.
         """
+        # Select all fields except embedding (REST API returns vectors as strings)
+        fields = (
+            "id, document_id, chunk_id, content, chunk_index, context_summary, "
+            "embedding_text, section_path, section_title, source_title, source_id, "
+            "page_number, line_from, line_to, char_start, char_end, "
+            "archive_browse_uri, archive_download_uri, metadata"
+        )
         result = (
             self.client.table("chunks")
-            .select("*")
+            .select(fields)
             .eq("document_id", str(doc_id))
             .order("chunk_index")
             .execute()
         )
 
         return [self._row_to_chunk(row) for row in result.data]
+
+    async def delete_chunks_by_document(self, doc_id: UUID) -> int:
+        """Delete all chunks for a document.
+
+        Args:
+            doc_id: Document UUID.
+
+        Returns:
+            Number of chunks deleted.
+        """
+        # First count how many chunks exist
+        count_result = (
+            self.client.table("chunks")
+            .select("id", count="exact")
+            .eq("document_id", str(doc_id))
+            .execute()
+        )
+        count = count_result.count or 0
+
+        if count > 0:
+            # Delete the chunks
+            self.client.table("chunks").delete().eq("document_id", str(doc_id)).execute()
+
+        return count
+
+    async def replace_chunks_atomic(self, doc_id: UUID, new_chunks: List[Chunk]) -> int:
+        """Atomically delete old chunks and insert new ones.
+
+        Uses database transaction to ensure no data loss on failure.
+        If insert fails, delete is rolled back.
+
+        Args:
+            doc_id: Document UUID whose chunks to replace.
+            new_chunks: New chunks to insert.
+
+        Returns:
+            Number of chunks inserted.
+        """
+        if not new_chunks:
+            # Just delete if no new chunks
+            await self.delete_chunks_by_document(doc_id)
+            return 0
+
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Delete within transaction
+                await conn.execute(
+                    "DELETE FROM chunks WHERE document_id = $1", doc_id
+                )
+
+                # Insert within same transaction
+                records = [
+                    (
+                        chunk.id,
+                        chunk.chunk_id or "",
+                        chunk.document_id,
+                        chunk.content,
+                        chunk.chunk_index,
+                        chunk.context_summary,
+                        chunk.embedding_text,
+                        chunk.section_path,
+                        chunk.section_title,
+                        chunk.source_title,
+                        chunk.source_id,
+                        chunk.page_number,
+                        chunk.line_from,
+                        chunk.line_to,
+                        chunk.char_start,
+                        chunk.char_end,
+                        chunk.archive_browse_uri,
+                        chunk.archive_download_uri,
+                        chunk.embedding,
+                        json.dumps(chunk.metadata),
+                    )
+                    for chunk in new_chunks
+                ]
+
+                await conn.executemany(
+                    """
+                    INSERT INTO chunks
+                    (id, chunk_id, document_id, content, chunk_index,
+                     context_summary, embedding_text, section_path, section_title,
+                     source_title, source_id,
+                     page_number, line_from, line_to, char_start, char_end,
+                     archive_browse_uri, archive_download_uri,
+                     embedding, metadata)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                    """,
+                    records,
+                )
+
+        return len(new_chunks)
 
     def get_chunk_by_id(self, chunk_id: str) -> Optional[Chunk]:
         """Get a chunk by its chunk_id (the short hex ID used in citations).
@@ -364,6 +464,30 @@ class SupabaseClient:
         if result.data:
             return self._row_to_chunk(result.data[0])
         return None
+
+    async def update_chunk_context(self, chunk: Chunk) -> None:
+        """Update a chunk's context_summary, embedding_text, and embedding.
+
+        Used by ingest-update when adding context summaries to existing chunks.
+
+        Args:
+            chunk: Chunk with updated context_summary, embedding_text, and embedding.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE chunks
+                SET context_summary = $2,
+                    embedding_text = $3,
+                    embedding = $4
+                WHERE id = $1
+                """,
+                chunk.id,
+                chunk.context_summary,
+                chunk.embedding_text,
+                chunk.embedding,
+            )
 
     # ==================== Vector Search ====================
 
@@ -488,6 +612,51 @@ class SupabaseClient:
         return result.count or 0
 
     # ==================== Cleanup Operations ====================
+
+    async def get_all_root_source_ids(self) -> Dict[str, UUID]:
+        """Get all source_ids for root documents (depth=0).
+
+        Returns:
+            Dict mapping source_id -> document UUID.
+        """
+        result = (
+            self.client.table("documents")
+            .select("id, source_id")
+            .eq("depth", 0)
+            .execute()
+        )
+
+        return {row["source_id"]: UUID(row["id"]) for row in result.data if row.get("source_id")}
+
+    async def delete_orphaned_documents(self, doc_ids: List[UUID]) -> int:
+        """Delete orphaned documents and their children.
+
+        Children and chunks are deleted via CASCADE constraints.
+
+        Args:
+            doc_ids: List of document UUIDs to delete.
+
+        Returns:
+            Number of root documents deleted.
+        """
+        if not doc_ids:
+            return 0
+
+        deleted = 0
+        for doc_id in doc_ids:
+            try:
+                # Delete unsupported_files first (no CASCADE)
+                self.client.table("unsupported_files").delete().eq(
+                    "parent_document_id", str(doc_id)
+                ).execute()
+
+                # Delete document (cascades to children and chunks)
+                self.client.table("documents").delete().eq("id", str(doc_id)).execute()
+                deleted += 1
+            except Exception as e:
+                logger.warning(f"Failed to delete orphaned document {doc_id}: {e}")
+
+        return deleted
 
     async def reset_failed_documents(self, file_paths: List[str]) -> Dict[str, int]:
         """Reset failed documents by deleting their database entries.

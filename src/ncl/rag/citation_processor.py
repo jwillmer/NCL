@@ -161,10 +161,14 @@ Example response:
         missing_archives: List[str] = []
         seen_chunk_ids: Set[str] = set()
 
+        # Track document indices by source_title for consolidation
+        # All citations from the same document share the same display index
+        document_indices: Dict[str, int] = {}
+        next_document_index = 1
+
         # Process each citation
-        citation_index = 1
         for chunk_id in found_citations:
-            # Skip duplicates
+            # Skip duplicate chunk_ids (same chunk cited multiple times)
             if chunk_id in seen_chunk_ids:
                 continue
             seen_chunk_ids.add(chunk_id)
@@ -192,6 +196,13 @@ Example response:
             if result.archive_browse_uri and not archive_verified:
                 missing_archives.append(chunk_id)
 
+            # Assign document index - same document gets same index
+            source_title = result.source_title or "Unknown Source"
+            if source_title not in document_indices:
+                document_indices[source_title] = next_document_index
+                next_document_index += 1
+            doc_index = document_indices[source_title]
+
             # Build validated citation
             lines = None
             if result.line_from is not None and result.line_to is not None:
@@ -199,7 +210,7 @@ Example response:
 
             valid_citations.append(
                 ValidatedCitation(
-                    index=citation_index,
+                    index=doc_index,  # Shared index per document
                     chunk_id=chunk_id,
                     source_title=result.source_title,
                     page=result.page_number,
@@ -209,7 +220,6 @@ Example response:
                     archive_verified=archive_verified,
                 )
             )
-            citation_index += 1
 
         # Remove invalid citations from response text
         cleaned_response = response

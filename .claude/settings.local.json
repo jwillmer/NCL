@@ -59,7 +59,13 @@
       "Bash(ls -la \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\.github\\\\workflows\"\" 2>/dev/null || echo \"No workflows directory \")",
       "Bash(ls -la \"c:\\\\Projects\\\\GitHub\\\\NCL\\\\.github\"\" 2>/dev/null || echo \"No .github directory \")",
       "Bash(dir /s /b \"c:\\\\Projects\\\\GitHub\\\\NCL\")",
-      "Bash(python -m pytest --collect-only tests/)"
+      "Bash(python -m pytest --collect-only tests/)",
+      "mcp__context7__resolve-library-id",
+      "Bash(npm run type-check:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python:*)",
+      "Bash(poetry run ncl ingest-update:*)",
+      "Bash(uv run ncl:*)",
+      "Bash(powershell -Command \"cd C:\\\\Projects\\\\GitHub\\\\NCL; python -m src.ncl.cli ingest-update --source data/emails --limit 3 --verbose\")"
     ]
   }
 }
