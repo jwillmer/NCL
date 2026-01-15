@@ -224,17 +224,17 @@ function ConversationsPage() {
     const threadId = uuidv4();
     try {
       await createConversation({ thread_id: threadId });
-      router.push(`/chat/${threadId}`);
+      router.push(`/chat?threadId=${threadId}`);
     } catch (error) {
       console.error("Failed to create conversation:", error);
       // Still navigate - conversation will be created on first message
-      router.push(`/chat/${threadId}`);
+      router.push(`/chat?threadId=${threadId}`);
     }
   };
 
   // Handle select conversation
   const handleSelectConversation = (conv: Conversation) => {
-    router.push(`/chat/${conv.thread_id}`);
+    router.push(`/chat?threadId=${conv.thread_id}`);
   };
 
   // Handle archive/unarchive

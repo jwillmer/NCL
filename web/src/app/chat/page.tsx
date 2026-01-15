@@ -5,8 +5,8 @@
  * Full-screen chat with back navigation and vessel selector.
  */
 
-import { useState, useEffect, useCallback } from "react";
-import { useRouter, useParams } from "next/navigation";
+import { useState, useEffect, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Ship, ChevronDown, Archive } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
@@ -183,8 +183,9 @@ function ChatHeader({
 
 function ChatPageContent() {
   const router = useRouter();
-  const params = useParams();
-  const threadId = params.threadId as string;
+  const searchParams = useSearchParams();
+  // Get threadId from query parameter: /chat?threadId=xxx
+  const threadId = searchParams.get("threadId") || "";
   const { session, loading: authLoading } = useAuth();
 
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -333,7 +334,13 @@ function ChatPageContent() {
 export default function ChatPage() {
   return (
     <ErrorBoundary>
-      <ChatPageContent />
+      <Suspense fallback={
+        <div className="min-h-screen flex items-center justify-center bg-gray-50">
+          <div className="text-ncl-gray">Loading...</div>
+        </div>
+      }>
+        <ChatPageContent />
+      </Suspense>
     </ErrorBoundary>
   );
 }

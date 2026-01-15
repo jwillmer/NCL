@@ -80,7 +80,7 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   };
 }
 
-function getApiBaseUrl(): string {
+export function getApiBaseUrl(): string {
   return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 }
 

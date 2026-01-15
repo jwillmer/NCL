@@ -27,7 +27,7 @@ import {
   useCitationContext,
 } from "./Sources";
 import { AgentChat, AssistantMessageRenderProps, ExtendedMessage, VesselLookup } from "./AgentChat";
-import { getMessages, touchConversation, generateTitle, submitFeedback, listVessels } from "@/lib/conversations";
+import { getMessages, touchConversation, generateTitle, submitFeedback, listVessels, getApiBaseUrl } from "@/lib/conversations";
 import { trackFeedback } from "@/lib/langfuse";
 
 /**
@@ -294,7 +294,7 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
       <CitationProvider onViewCitation={handleViewCitation}>
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <AgentChat
-            agentUrl="/api/agent"
+            agentUrl={`${getApiBaseUrl()}/agent`}
             threadId={threadId}
             authToken={authToken}
             vesselId={vesselId}

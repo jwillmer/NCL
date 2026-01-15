@@ -132,6 +132,22 @@ class ArchiveStorage:
         except StorageException as e:
             raise ArchiveStorageError(f"File not found: {path}") from e
 
+    def download_text(self, path: str, encoding: str = "utf-8") -> str:
+        """Download text file content from bucket.
+
+        Args:
+            path: Path in bucket.
+            encoding: Text encoding (default UTF-8).
+
+        Returns:
+            File content as string.
+
+        Raises:
+            ArchiveStorageError: If file not found or download fails.
+        """
+        content = self.download_file(path)
+        return content.decode(encoding)
+
     def file_exists(self, path: str) -> bool:
         """Check if file exists using Storage list API.
 
@@ -154,11 +170,12 @@ class ArchiveStorage:
         except StorageException:
             return False
 
-    def delete_folder(self, doc_id: str) -> None:
+    def delete_folder(self, doc_id: str, preserve_md: bool = False) -> None:
         """Delete all files for a doc_id using Storage list + remove.
 
         Args:
             doc_id: Document ID (folder name) whose files should be deleted.
+            preserve_md: If True, preserve .md files (cached parsed content).
 
         Raises:
             ArchiveStorageError: If deletion fails.
@@ -170,14 +187,20 @@ class ArchiveStorage:
             # List files in root folder
             try:
                 files = self.bucket.list(folder)
-                paths.extend([f"{folder}/{f['name']}" for f in files])
+                for f in files:
+                    if preserve_md and f["name"].endswith(".md"):
+                        continue
+                    paths.append(f"{folder}/{f['name']}")
             except StorageException:
                 pass  # Folder may not exist
 
             # List files in attachments subfolder
             try:
                 att_files = self.bucket.list(f"{folder}/attachments")
-                paths.extend([f"{folder}/attachments/{f['name']}" for f in att_files])
+                for f in att_files:
+                    if preserve_md and f["name"].endswith(".md"):
+                        continue
+                    paths.append(f"{folder}/attachments/{f['name']}")
             except StorageException:
                 pass  # Attachments folder may not exist
 

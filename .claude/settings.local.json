@@ -67,6 +67,9 @@
       "Bash(uv run ncl:*)",
       "Bash(powershell -Command \"cd C:\\\\Projects\\\\GitHub\\\\NCL; python -m src.ncl.cli ingest-update --source data/emails --limit 3 --verbose\")",
       "Bash(git check-ignore:*)"
+    ],
+    "additionalDirectories": [
+      "c:\\Projects\\GitHub\\NCL\\web\\src\\app\\chat\\[threadId]"
     ]
   }
 }

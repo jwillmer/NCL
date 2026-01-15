@@ -46,7 +46,7 @@ from .parsers.email_cleaner import (
     split_into_messages,
 )
 from .parsers.eml_parser import EMLParser
-from .processing.archive_generator import ArchiveGenerator
+from .processing.archive_generator import ArchiveGenerator, _sanitize_storage_key
 from .processing.embeddings import EmbeddingGenerator
 from .processing.hierarchy_manager import HierarchyManager
 from .processing.lane_classifier import LaneClassifier
@@ -331,6 +331,7 @@ async def _ingest(
                         progress=progress,
                         worker_task=worker_task,
                         slot_idx=slot_idx,
+                        force_reparse=reprocess_outdated,
                     )
                     processed_count += 1
                 except Exception as e:
@@ -430,6 +431,7 @@ async def _process_single_email(
     progress: Progress | None = None,
     worker_task: TaskID | None = None,
     slot_idx: int | None = None,
+    force_reparse: bool = False,
 ):
     """Process a single EML file with all its attachments."""
     file_hash = tracker.compute_file_hash(eml_path)
@@ -517,6 +519,7 @@ async def _process_single_email(
             archive_result = await archive_generator.generate_archive(
                 parsed_email=parsed_email,
                 source_eml_path=eml_path,
+                preserve_md=not force_reparse,  # Keep cached .md files unless force reparsing
             )
             vprint(f"Archive generated: {archive_result.archive_path} ({len(archive_result.attachment_files)} attachments)", file_ctx)
         except Exception as e:
@@ -633,6 +636,7 @@ async def _process_single_email(
             context_generator=context_generator,
             archive_generator=archive_generator,
             vessel_ids=vessel_ids,
+            force_reparse=force_reparse,
         )
         attachment_chunk_count += len(attachment_chunks)
         email_chunks.extend(attachment_chunks)
@@ -690,6 +694,26 @@ async def _process_single_email(
             vprint(f"Cleaned up: {attachment_folder.name}", file_ctx)
 
 
+def _extract_content_from_cached_markdown(cached_md: str) -> str | None:
+    """Extract content section from cached attachment markdown.
+
+    The cached markdown format has a header followed by "## Content" section.
+    This extracts just the content portion for re-chunking.
+
+    Args:
+        cached_md: Full markdown content from cache.
+
+    Returns:
+        Extracted content section, or None if not found.
+    """
+    content_marker = "## Content\n"
+    idx = cached_md.find(content_marker)
+    if idx == -1:
+        return None
+    content = cached_md[idx + len(content_marker):].strip()
+    return content if content else None
+
+
 async def _process_attachment(
     attachment,
     email_doc,
@@ -703,11 +727,13 @@ async def _process_attachment(
     context_generator: ContextGenerator | None = None,
     archive_generator: ArchiveGenerator | None = None,
     vessel_ids: list[str] | None = None,
+    force_reparse: bool = False,
 ) -> list[Chunk]:
     """Process a single attachment and return its chunks.
 
     Uses preprocessor for routing decisions.
     Also updates the archive with .md files for parsed attachments.
+    Checks for cached parsed content before calling LlamaParse (unless force_reparse=True).
     """
     chunks: list[Chunk] = []
     vessel_ids = vessel_ids or []
@@ -766,6 +792,7 @@ async def _process_attachment(
                 unsupported_logger=unsupported_logger,
                 archive_generator=archive_generator,
                 vessel_ids=vessel_ids,
+                force_reparse=force_reparse,
             )
         )
         return chunks
@@ -803,33 +830,66 @@ async def _process_attachment(
             vprint(f"  -> {len(attach_chunks)} chunks created (image described)", file_ctx)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
         else:
-            # Document - use parser registry
-            attach_chunks = await attachment_processor.process_attachment(
-                file_path, attach_doc.id, attachment.content_type
-            )
-            if attach_chunks:
-                # Combine all chunks for the .md file
-                parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
-                vprint(f"  -> {len(attach_chunks)} chunks created", file_ctx)
+            # Document - check for cached parsed content before calling LlamaParse
+            cached_content: str | None = None
+            if (
+                not force_reparse
+                and archive_generator
+                and email_doc.doc_id
+                and result.parser_name  # Only for documents that use parsers
+            ):
+                folder_id = email_doc.doc_id[:16]
+                safe_filename = _sanitize_storage_key(attachment.filename)
+                cached_md_path = f"{folder_id}/attachments/{safe_filename}.md"
+                try:
+                    if archive_generator.storage.file_exists(cached_md_path):
+                        cached_md = archive_generator.storage.download_text(cached_md_path)
+                        cached_content = _extract_content_from_cached_markdown(cached_md)
+                        if cached_content:
+                            vprint(f"  -> Using cached content ({len(cached_content)} chars)", file_ctx)
+                except Exception as e:
+                    vprint(f"  -> Cache check failed: {e}", file_ctx)
+                    cached_content = None
 
-                # Generate context summary for better search relevance
-                if context_generator and parsed_content:
-                    try:
-                        attach_context = await context_generator.generate_context(
-                            attach_doc, parsed_content[:4000]
-                        )
-                        if attach_context:
-                            vprint(f"  -> Context generated: {len(attach_context)} chars", file_ctx)
-                            # Apply context summary to ALL chunks
-                            for chunk in attach_chunks:
-                                chunk.context_summary = attach_context
-                                chunk.embedding_text = context_generator.build_embedding_text(
-                                    attach_context, chunk.content
-                                )
-                    except Exception as e:
-                        vprint(f"  -> Context generation failed: {e}", file_ctx)
+            if cached_content:
+                # Use cached content - create chunks directly
+                attach_chunks = attachment_processor.chunker.chunk_text(
+                    text=cached_content,
+                    document_id=attach_doc.id,
+                    source_file=str(file_path),
+                    is_markdown=True,
+                )
+                parsed_content = cached_content
+                vprint(f"  -> {len(attach_chunks)} chunks created (from cache)", file_ctx)
             else:
-                vprint(f"  -> 0 chunks (document has no extractable text)", file_ctx)
+                # Parse with LlamaParse (or other parser)
+                attach_chunks = await attachment_processor.process_attachment(
+                    file_path, attach_doc.id, attachment.content_type
+                )
+                if attach_chunks:
+                    # Combine all chunks for the .md file
+                    parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
+                    vprint(f"  -> {len(attach_chunks)} chunks created", file_ctx)
+                else:
+                    vprint(f"  -> 0 chunks (document has no extractable text)", file_ctx)
+
+            # Generate context summary for better search relevance
+            if attach_chunks and context_generator and parsed_content:
+                try:
+                    attach_context = await context_generator.generate_context(
+                        attach_doc, parsed_content[:4000]
+                    )
+                    if attach_context:
+                        vprint(f"  -> Context generated: {len(attach_context)} chars", file_ctx)
+                        # Apply context summary to ALL chunks
+                        for chunk in attach_chunks:
+                            chunk.context_summary = attach_context
+                            chunk.embedding_text = context_generator.build_embedding_text(
+                                attach_context, chunk.content
+                            )
+                except Exception as e:
+                    vprint(f"  -> Context generation failed: {e}", file_ctx)
+
             chunks.extend(attach_chunks)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
 
@@ -888,8 +948,13 @@ async def _process_zip_attachment(
     unsupported_logger: UnsupportedFileLogger,
     archive_generator: ArchiveGenerator | None = None,
     vessel_ids: list[str] | None = None,
+    force_reparse: bool = False,
 ) -> list[Chunk]:
-    """Extract and process files from a ZIP attachment."""
+    """Extract and process files from a ZIP attachment.
+
+    Note: ZIP contents don't use the archive cache since they don't have
+    pre-existing archive paths. They are always parsed fresh.
+    """
     chunks: list[Chunk] = []
     vessel_ids = vessel_ids or []
 

@@ -40,6 +40,7 @@ import {
 import { useAuth } from "./auth";
 import type { Citation, CiteProps } from "@/types/rag";
 import { cn } from "@/lib/utils";
+import { getApiBaseUrl } from "@/lib/conversations";
 
 // =============================================================================
 // Citation Context - Collects citations as they render
@@ -241,7 +242,7 @@ function ImgCiteRenderer(props: ImgCiteProps) {
   cleanSrc = cleanSrc.replace(/^img:/, "");
   // Remove /archive/ prefix if present
   cleanSrc = cleanSrc.replace(/^\/archive\//, "");
-  const imageUrl = `/api/archive/${cleanSrc}`;
+  const imageUrl = `${getApiBaseUrl()}/archive/${cleanSrc}`;
 
   const handleClick = () => {
     if (id) {
@@ -333,7 +334,7 @@ function CiteRenderer(props: CiteProps) {
 
     const fetchTitle = async () => {
       try {
-        const response = await fetch(`/api/citations/${id}`, {
+        const response = await fetch(`${getApiBaseUrl()}/citations/${id}`, {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
@@ -513,7 +514,7 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
         </Button>
         {citation.chunks[0]?.download && (
           <a
-            href={`/api/archive/${citation.chunks[0].download}`}
+            href={`${getApiBaseUrl()}/archive/${citation.chunks[0].download}`}
             download
             className="inline-flex items-center justify-center h-8 px-2 rounded-md text-sm font-medium hover:bg-ncl-gray-light/20 transition-colors"
             title="Download original"
@@ -586,7 +587,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
       setError(null);
 
       try {
-        const response = await fetch(`/api/citations/${chunkId}`, {
+        const response = await fetch(`${getApiBaseUrl()}/citations/${chunkId}`, {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
@@ -657,7 +658,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
             </div>
             {citation?.archive_download_uri && (
               <a
-                href={`/api/archive/${citation.archive_download_uri}`}
+                href={`${getApiBaseUrl()}/archive/${citation.archive_download_uri}`}
                 download
                 className="inline-flex items-center justify-center h-9 px-3 rounded-md border border-ncl-gray-light bg-white text-sm font-medium hover:bg-ncl-gray-light/20 transition-colors"
               >
@@ -708,7 +709,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
 
                         if (isAbsoluteArchivePath) {
                           // Already absolute from archive root - just prepend API path
-                          resolvedHref = `/api/archive/${resolvedHref}`;
+                          resolvedHref = `${getApiBaseUrl()}/archive/${resolvedHref}`;
                         } else {
                           // Relative path - resolve from current document's directory
                           const basePath = citation?.archive_browse_uri
@@ -716,7 +717,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
                                 .replace(/^\/archive/, "")  // Strip leading /archive
                                 .replace(/\/[^/]+$/, "")     // Get directory path
                             : "";
-                          resolvedHref = `/api/archive${basePath}/${resolvedHref}`;
+                          resolvedHref = `${getApiBaseUrl()}/archive${basePath}/${resolvedHref}`;
                         }
                       }
 
@@ -736,7 +737,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
 
                         if (isAbsoluteArchivePath) {
                           // Already absolute from archive root - just prepend API path
-                          resolvedSrc = `/api/archive/${resolvedSrc}`;
+                          resolvedSrc = `${getApiBaseUrl()}/archive/${resolvedSrc}`;
                         } else {
                           // Relative path - resolve from current document's directory
                           const basePath = citation?.archive_browse_uri
@@ -744,7 +745,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
                                 .replace(/^\/archive/, "")  // Strip leading /archive
                                 .replace(/\/[^/]+$/, "")     // Get directory path
                             : "";
-                          resolvedSrc = `/api/archive${basePath}/${resolvedSrc}`;
+                          resolvedSrc = `${getApiBaseUrl()}/archive${basePath}/${resolvedSrc}`;
                         }
                       }
 

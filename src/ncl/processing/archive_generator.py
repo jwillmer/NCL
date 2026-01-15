@@ -25,6 +25,22 @@ logger = logging.getLogger(__name__)
 MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd"}
 
 
+def _sanitize_storage_key(filename: str) -> str:
+    """Sanitize a filename for use in Supabase Storage keys.
+
+    Supabase Storage doesn't allow certain characters like [ ] in keys.
+    We URL-encode the filename to make it safe.
+
+    Args:
+        filename: Original filename.
+
+    Returns:
+        URL-encoded filename safe for storage keys.
+    """
+    # Encode everything except alphanumeric, dash, underscore, and dot
+    return quote(filename, safe="-_.~")
+
+
 @dataclass
 class ContentFileResult:
     """Result of generating browsable content file."""
@@ -74,6 +90,7 @@ class ArchiveGenerator:
         parsed_email: ParsedEmail,
         source_eml_path: Path,
         parsed_attachment_contents: Optional[Dict[str, str]] = None,
+        preserve_md: bool = False,
     ) -> ArchiveResult:
         """Generate complete archive folder for an email.
 
@@ -81,6 +98,7 @@ class ArchiveGenerator:
             parsed_email: Parsed email with metadata and messages.
             source_eml_path: Path to original EML file.
             parsed_attachment_contents: Optional mapping of filename -> parsed text content.
+            preserve_md: If True, preserve existing .md files during cleanup (for cache reuse).
 
         Returns:
             ArchiveResult with paths and URIs for all generated files.
@@ -103,7 +121,8 @@ class ArchiveGenerator:
         folder_id = doc_id[:16]
 
         # Delete existing folder to ensure clean re-ingest (removes stale attachments)
-        self.storage.delete_folder(folder_id)
+        # If preserve_md=True, keep .md files so cached parsed content can be reused
+        self.storage.delete_folder(folder_id, preserve_md=preserve_md)
 
         # Upload original EML file
         with open(source_eml_path, "rb") as f:
@@ -295,7 +314,9 @@ class ArchiveGenerator:
                 file_content = f.read()
 
             content_type = att.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
-            original_path = f"{folder_id}/attachments/{filename}"
+            # Sanitize filename for storage key (handles special chars like [ ])
+            safe_filename = _sanitize_storage_key(filename)
+            original_path = f"{folder_id}/attachments/{safe_filename}"
 
             self.storage.upload_file(
                 original_path,
@@ -319,7 +340,7 @@ class ArchiveGenerator:
                         parsed_content,
                         folder_id,
                     )
-                    markdown_path = f"{folder_id}/attachments/{filename}.md"
+                    markdown_path = f"{folder_id}/attachments/{safe_filename}.md"
                     self.storage.upload_text(
                         markdown_path,
                         md_content,
@@ -421,9 +442,10 @@ class ArchiveGenerator:
             return None
 
         folder_id = doc_id[:16]
+        safe_filename = _sanitize_storage_key(filename)
 
         # Check if original attachment exists
-        original_path = f"{folder_id}/attachments/{filename}"
+        original_path = f"{folder_id}/attachments/{safe_filename}"
         if not self.storage.file_exists(original_path):
             logger.debug(f"  Skipping - original file does not exist: {original_path}")
             return None
@@ -436,7 +458,7 @@ class ArchiveGenerator:
             parsed_content,
             folder_id,
         )
-        markdown_path = f"{folder_id}/attachments/{filename}.md"
+        markdown_path = f"{folder_id}/attachments/{safe_filename}.md"
         self.storage.upload_text(
             markdown_path,
             md_content,

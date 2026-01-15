@@ -126,6 +126,9 @@ uv run ncl ingest --no-resume
 # Reprocess files ingested with an older version
 uv run ncl ingest --reprocess-outdated
 
+# Note: By default, ingest reuses previously parsed attachment content
+# from the archive bucket. Use --reprocess-outdated to force re-parsing.
+
 # Process 10 emails concurrently (default: 5)
 MAX_CONCURRENT_FILES=10 uv run ncl ingest
 ```
