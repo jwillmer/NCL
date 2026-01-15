@@ -796,13 +796,33 @@ class SupabaseClient:
         counts["unsupported_files"] = len(result.data) if result.data else 0
 
         # chunks has FK to documents (will also be deleted by CASCADE, but explicit is clearer)
-        result = (
-            self.client.table("chunks")
-            .delete()
-            .neq("id", "00000000-0000-0000-0000-000000000000")
-            .execute()
-        )
-        counts["chunks"] = len(result.data) if result.data else 0
+        # Delete in batches to avoid statement timeout on large tables
+        # Use small batch size (100) to avoid URL length limits with .in_() queries
+        chunks_deleted = 0
+        batch_size = 100
+        while True:
+            # First, select a batch of IDs
+            select_result = (
+                self.client.table("chunks")
+                .select("id")
+                .limit(batch_size)
+                .execute()
+            )
+            if not select_result.data:
+                break
+            ids_to_delete = [row["id"] for row in select_result.data]
+            # Delete the batch by IDs
+            result = (
+                self.client.table("chunks")
+                .delete()
+                .in_("id", ids_to_delete)
+                .execute()
+            )
+            batch_count = len(result.data) if result.data else 0
+            chunks_deleted += batch_count
+            if len(ids_to_delete) < batch_size:
+                break
+        counts["chunks"] = chunks_deleted
 
         # processing_log has no FK
         result = (
