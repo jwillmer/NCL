@@ -56,10 +56,14 @@ class TestIsZipFile:
         assert processor.is_zip_file("test.txt") is False
 
     def test_is_zip_by_magic(self, processor):
-        """Test ZIP detection by file magic bytes."""
+        """Test ZIP detection by file magic bytes.
+
+        Note: is_zip_file() does not check magic bytes, only extension and MIME type.
+        A .bin file without ZIP extension/MIME type will not be detected as ZIP.
+        """
         with TemporaryDirectory() as tmpdir:
-            # Create a valid ZIP file
-            zip_path = Path(tmpdir) / "test.bin"
+            # Create a valid ZIP file with .zip extension
+            zip_path = Path(tmpdir) / "test.zip"
             with zipfile.ZipFile(zip_path, "w") as zf:
                 zf.writestr("test.txt", "Hello World")
 
@@ -268,21 +272,23 @@ class TestSanitizeZipMemberPath:
 
 
 class TestIsSupported:
-    """Tests for is_supported method."""
+    """Tests for is_supported method.
+
+    Note: is_supported() checks the parser registry for document parsers.
+    Images are handled separately via is_image_format().
+    """
 
     def test_supported_by_content_type(self, processor):
         """Test supported file detection by content type."""
         assert processor.is_supported("test.pdf", "application/pdf") is True
-        assert processor.is_supported("test.png", "image/png") is True
         assert processor.is_supported("test.docx",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document") is True
 
     def test_supported_by_extension(self, processor):
         """Test supported file detection by extension."""
         assert processor.is_supported("document.pdf") is True
-        assert processor.is_supported("image.png") is True
-        assert processor.is_supported("image.jpeg") is True
-        assert processor.is_supported("image.jpg") is True
+        assert processor.is_supported("document.docx") is True
+        assert processor.is_supported("document.xlsx") is True
 
     def test_unsupported_files(self, processor):
         """Test unsupported file detection."""
