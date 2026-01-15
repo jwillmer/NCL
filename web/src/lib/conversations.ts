@@ -2,7 +2,7 @@
  * Conversations API client for managing chat history.
  */
 
-import { supabase } from "./supabase";
+import { getSupabase } from "./supabase";
 
 // ============================================
 // Types
@@ -70,7 +70,7 @@ export class ConversationApiError extends Error {
 async function getAuthHeaders(): Promise<HeadersInit> {
   const {
     data: { session },
-  } = await supabase.auth.getSession();
+  } = await getSupabase().auth.getSession();
   if (!session?.access_token) {
     throw new ConversationApiError("Not authenticated", 401, "UNAUTHENTICATED");
   }
