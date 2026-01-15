@@ -66,7 +66,9 @@
       "Bash(poetry run ncl ingest-update:*)",
       "Bash(uv run ncl:*)",
       "Bash(powershell -Command \"cd C:\\\\Projects\\\\GitHub\\\\NCL; python -m src.ncl.cli ingest-update --source data/emails --limit 3 --verbose\")",
-      "Bash(git check-ignore:*)"
+      "Bash(git check-ignore:*)",
+      "Bash(git show:*)",
+      "Bash(PGPASSWORD=l6qSeLEx7QIXD8b3 psql:*)"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\NCL\\web\\src\\app\\chat\\[threadId]"

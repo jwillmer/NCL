@@ -16,6 +16,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
   type ReactNode,
 } from "react";
 import ReactMarkdown from "react-markdown";
@@ -305,10 +306,11 @@ function CiteRenderer(props: CiteProps) {
   // Track if title needs fetching
   const needsTitleFetch = !title;
 
-  // Parse lines once for reuse
-  const parsedLines = lines
-    ? (lines.split("-").map(Number) as [number, number])
-    : undefined;
+  // Memoize parsed lines to prevent infinite re-render loop
+  const parsedLines = useMemo(
+    () => (lines ? (lines.split("-").map(Number) as [number, number]) : undefined),
+    [lines]
+  );
 
   // Register this citation when it renders
   useEffect(() => {

@@ -157,6 +157,8 @@ class ArchiveStorage:
         Returns:
             True if file exists in bucket.
         """
+        from urllib.parse import unquote
+
         # Split path into folder and filename
         parts = path.rsplit("/", 1)
         if len(parts) == 2:
@@ -164,9 +166,12 @@ class ArchiveStorage:
         else:
             folder, filename = "", parts[0]
 
+        # Decode URL-encoded filename for comparison (Supabase stores decoded names)
+        decoded_filename = unquote(filename)
+
         try:
             files = self.bucket.list(folder)
-            return any(f["name"] == filename for f in files)
+            return any(f["name"] == decoded_filename for f in files)
         except StorageException:
             return False
 

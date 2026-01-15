@@ -183,6 +183,13 @@ async def lifespan(app: FastAPI):
         )
         logger.info("LangGraph agent endpoint registered at /agent")
 
+        # CORS preflight handler for /agent endpoint (must be registered AFTER POST)
+        # The ag-ui-langgraph library only registers POST, causing 405 on OPTIONS preflight
+        @app.options("/agent")
+        def agent_options():
+            """Handle CORS preflight for /agent (needed for cross-origin local development)."""
+            return Response(status_code=200)
+
         yield
 
         logger.info("Shutting down LangGraph checkpointer...")

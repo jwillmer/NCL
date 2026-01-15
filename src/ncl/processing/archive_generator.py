@@ -28,17 +28,38 @@ MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd"}
 def _sanitize_storage_key(filename: str) -> str:
     """Sanitize a filename for use in Supabase Storage keys.
 
-    Supabase Storage doesn't allow certain characters like [ ] in keys.
-    We URL-encode the filename to make it safe.
+    Supabase Storage rejects certain characters even when URL-encoded
+    (it decodes before validating). We replace problematic characters
+    with safe alternatives and transliterate non-ASCII to ASCII.
 
     Args:
         filename: Original filename.
 
     Returns:
-        URL-encoded filename safe for storage keys.
+        Sanitized filename safe for storage keys.
     """
-    # Encode everything except alphanumeric, dash, underscore, and dot
-    return quote(filename, safe="-_.~")
+    import unicodedata
+
+    # Replace brackets with parentheses (Supabase rejects [] even when encoded)
+    result = filename.replace("[", "(").replace("]", ")")
+
+    # Transliterate non-ASCII to ASCII (Greek Δ -> D, Α -> A, etc.)
+    # NFKD decomposes characters, then we filter to ASCII
+    normalized = unicodedata.normalize("NFKD", result)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+
+    # If transliteration removed everything (e.g., all-Greek filename),
+    # fall back to hex encoding of original
+    if not ascii_only.strip() or not any(c.isalnum() for c in ascii_only):
+        # Keep extension if present
+        import os
+        name, ext = os.path.splitext(result)
+        hex_name = result.encode("utf-8").hex()[:32]  # First 32 hex chars
+        ext_ascii = unicodedata.normalize("NFKD", ext).encode("ascii", "ignore").decode("ascii")
+        ascii_only = f"{hex_name}{ext_ascii}"
+
+    # URL-encode remaining special chars (spaces, etc.)
+    return quote(ascii_only, safe="-_.~()")
 
 
 @dataclass
@@ -419,6 +440,10 @@ class ArchiveGenerator:
         Call this after attachment content has been extracted to add the
         .md file and update the email markdown to show [View] link.
 
+        IMPORTANT: Caller must ensure the original attachment file has already
+        been uploaded to storage before calling this method. This ensures data
+        consistency - no .md file without its corresponding original.
+
         Args:
             doc_id: Document ID (truncated to 16 chars for folder).
             filename: Original attachment filename.
@@ -444,10 +469,10 @@ class ArchiveGenerator:
         folder_id = doc_id[:16]
         safe_filename = _sanitize_storage_key(filename)
 
-        # Check if original attachment exists
+        # Verify original attachment exists (caller should have uploaded it)
         original_path = f"{folder_id}/attachments/{safe_filename}"
         if not self.storage.file_exists(original_path):
-            logger.debug(f"  Skipping - original file does not exist: {original_path}")
+            logger.warning(f"  Original file not found, skipping .md creation: {original_path}")
             return None
 
         # Generate and upload the .md file

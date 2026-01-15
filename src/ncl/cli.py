@@ -2350,8 +2350,73 @@ async def _fix_missing_archives(
             child.archive_browse_uri = browse_uri
             vprint(f"Archive found in bucket for {child.file_name}, DB updated", record.eml_path.name)
         else:
-            # File doesn't exist - would need re-parsing (log for now)
-            vprint(f"Archive not found in bucket for {child.file_name}: {expected_path}", record.eml_path.name)
+            # File doesn't exist - upload original from email and regenerate .md from chunks
+            from pathlib import Path
+            from .processing.archive_generator import _sanitize_storage_key
+
+            # Find matching attachment in parsed email and upload original
+            matching_att = None
+            if parsed_email and parsed_email.attachments:
+                for att in parsed_email.attachments:
+                    if att.filename == child.file_name:
+                        matching_att = att
+                        break
+
+            if not matching_att:
+                vprint(f"Attachment not found in parsed email: {child.file_name}", record.eml_path.name)
+                vprint(f"Deleting email data for clean re-ingest...", record.eml_path.name)
+                # Delete from bucket first
+                if folder_id:
+                    components.archive_storage.delete_folder(folder_id)
+                # Delete from DB (cascades to children and chunks)
+                components.db.delete_document_for_reprocess(record.doc.id)
+                raise Exception(f"Deleted for re-ingest: attachment '{child.file_name}' not found in parsed email")
+
+            if not Path(matching_att.saved_path).exists():
+                vprint(f"Attachment file missing on disk: {matching_att.saved_path}", record.eml_path.name)
+                continue
+
+            # Upload the original attachment file first
+            safe_filename = _sanitize_storage_key(child.file_name)
+            original_path = f"{folder_id}/attachments/{safe_filename}"
+            with open(matching_att.saved_path, "rb") as f:
+                file_content = f.read()
+            content_type = matching_att.content_type or "application/octet-stream"
+            components.archive_storage.upload_file(original_path, file_content, content_type)
+            vprint(f"  Uploaded original: {child.file_name}", record.eml_path.name)
+
+            # Original uploaded successfully - now regenerate .md from chunk content
+            chunks = await components.db.get_chunks_by_document(child.id)
+            if not chunks:
+                vprint(f"No chunks found to regenerate archive for {child.file_name}", record.eml_path.name)
+                continue
+
+            # Combine all chunk content to get full document text
+            full_content = "\n\n".join(c.content for c in sorted(chunks, key=lambda x: x.chunk_index or 0))
+            # Get content type and size from attachment_metadata
+            size_bytes = 0
+            if child.attachment_metadata:
+                content_type = child.attachment_metadata.content_type
+                size_bytes = child.attachment_metadata.size_bytes
+            md_path = components.archive_generator.update_attachment_markdown(
+                doc_id=folder_id,
+                filename=child.file_name,
+                content_type=content_type,
+                size_bytes=size_bytes,
+                parsed_content=full_content,
+            )
+            if md_path:
+                # md_path is already URL-encoded from _sanitize_storage_key, don't quote again
+                browse_uri = f"/archive/{md_path}"
+                await components.db.update_document_archive_browse_uri(child.id, browse_uri)
+                child.archive_browse_uri = browse_uri
+                # Also update chunks with the new archive URI (sync call, no await)
+                components.db.client.table('chunks').update({
+                    'archive_browse_uri': browse_uri
+                }).eq('document_id', str(child.id)).execute()
+                vprint(f"Archive regenerated for {child.file_name}", record.eml_path.name)
+            else:
+                vprint(f"Failed to regenerate archive for {child.file_name}", record.eml_path.name)
 
 
 async def _fix_missing_lines(
