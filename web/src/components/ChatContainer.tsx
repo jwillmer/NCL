@@ -30,6 +30,29 @@ import { AgentChat, AssistantMessageRenderProps, ExtendedMessage, VesselLookup }
 import { getMessages, touchConversation, generateTitle, submitFeedback, listVessels } from "@/lib/conversations";
 import { trackFeedback } from "@/lib/langfuse";
 
+/**
+ * Extract text content from a Message's content field.
+ * Handles string, array of content parts, or record types.
+ */
+function getMessageText(content: Message["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("");
+  }
+  // Record type - try to extract text
+  if (content && typeof content === "object") {
+    const textContent = (content as Record<string, unknown>)["text"];
+    if (typeof textContent === "string") {
+      return textContent;
+    }
+  }
+  return "";
+}
 
 // Context for passing feedback handlers to custom AssistantMessage
 type FeedbackContextType = {
@@ -106,7 +129,7 @@ function transformRawCitations(content: string): string {
  */
 function CustomAssistantMessage({ message, isStreaming, streamingContent }: AssistantMessageRenderProps) {
   const { onViewCitation } = useCitationContext();
-  const content = isStreaming && streamingContent ? streamingContent : (message.content || "");
+  const content = isStreaming && streamingContent ? streamingContent : getMessageText(message.content);
 
   return (
     <MessageCitationProvider onViewCitation={onViewCitation}>

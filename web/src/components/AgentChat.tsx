@@ -23,8 +23,32 @@ import {
 } from "./Sources";
 
 // Extended Message type with vessel_id metadata
-export interface ExtendedMessage extends Message {
+export type ExtendedMessage = Message & {
   vessel_id?: string | null;
+};
+
+/**
+ * Extract text content from a Message's content field.
+ * Handles string, array of content parts, or record types.
+ */
+function getMessageText(content: Message["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("");
+  }
+  // Record type - try to extract text
+  if (content && typeof content === "object") {
+    const textContent = (content as Record<string, unknown>)["text"];
+    if (typeof textContent === "string") {
+      return textContent;
+    }
+  }
+  return "";
 }
 
 // Vessel lookup map for displaying vessel names
@@ -119,7 +143,7 @@ function transformRawCitations(content: string): string {
  */
 function DefaultAssistantMessage({ message, isStreaming, streamingContent }: AssistantMessageRenderProps) {
   const { onViewCitation } = useCitationContext();
-  const content = isStreaming && streamingContent ? streamingContent : (message.content || "");
+  const content = isStreaming && streamingContent ? streamingContent : getMessageText(message.content);
 
   return (
     <MessageCitationProvider onViewCitation={onViewCitation}>
@@ -294,7 +318,7 @@ function MessageList({
                 />
               ) : (
                 <div>
-                  <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+                  <p className="whitespace-pre-wrap leading-relaxed">{getMessageText(message.content)}</p>
                   {message.vessel_id && (
                     <VesselBadge vesselId={message.vessel_id} vesselLookup={vesselLookup} />
                   )}
