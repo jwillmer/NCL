@@ -65,7 +65,8 @@
       "Bash(PYTHONIOENCODING=utf-8 python:*)",
       "Bash(poetry run ncl ingest-update:*)",
       "Bash(uv run ncl:*)",
-      "Bash(powershell -Command \"cd C:\\\\Projects\\\\GitHub\\\\NCL; python -m src.ncl.cli ingest-update --source data/emails --limit 3 --verbose\")"
+      "Bash(powershell -Command \"cd C:\\\\Projects\\\\GitHub\\\\NCL; python -m src.ncl.cli ingest-update --source data/emails --limit 3 --verbose\")",
+      "Bash(git check-ignore:*)"
     ]
   }
 }
