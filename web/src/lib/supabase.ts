@@ -34,8 +34,7 @@ export function getSupabase(): SupabaseClient {
   return _supabase;
 }
 
-/**
- * @deprecated Use getSupabase() instead for lazy initialization.
- * This export is kept for backwards compatibility but may cause build issues.
- */
-export const supabase = typeof window !== "undefined" ? getSupabase() : (null as unknown as SupabaseClient);
+// Note: Do NOT export a module-level `supabase` constant.
+// It would be evaluated at import time before /config.js loads,
+// causing "Missing Supabase configuration" errors in Docker deployments.
+// Always use getSupabase() for lazy initialization.
