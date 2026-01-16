@@ -50,10 +50,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
     # Paths that don't require authentication
     PUBLIC_PATHS = {"/health", "/docs", "/redoc", "/openapi.json", "/config.js"}
 
+    # Path prefixes for static frontend files (served from web/out)
+    STATIC_PREFIXES = ("/_next/", "/icons/", "/images/", "/fonts/")
+
+    # Static file extensions that don't require auth
+    STATIC_EXTENSIONS = (".js", ".css", ".ico", ".png", ".svg", ".jpg", ".jpeg", ".woff", ".woff2", ".ttf")
+
     async def dispatch(self, request: Request, call_next):
         """Validate JWT token for protected routes."""
+        path = request.url.path
+
         # Skip auth for public paths
-        if request.url.path in self.PUBLIC_PATHS:
+        if path in self.PUBLIC_PATHS:
+            return await call_next(request)
+
+        # Skip auth for static frontend files (Next.js static export)
+        if path == "/" or path.endswith(".html"):
+            return await call_next(request)
+        if path.startswith(self.STATIC_PREFIXES):
+            return await call_next(request)
+        if any(path.endswith(ext) for ext in self.STATIC_EXTENSIONS):
             return await call_next(request)
 
         # Skip auth for CORS preflight requests (OPTIONS)
