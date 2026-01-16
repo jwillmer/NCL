@@ -10,42 +10,42 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // NCL Brand Colors
+        // Maran Tankers Brand Colors
         ncl: {
           blue: {
-            DEFAULT: "#003A8F",
-            dark: "#001F5B",
-            light: "#4F83CC",
+            DEFAULT: "#1B365D",
+            dark: "#0F2340",
+            light: "#3D5A80",
           },
           gray: {
-            DEFAULT: "#6D6E71",
-            light: "#D1D3D4",
+            DEFAULT: "#5C6670",
+            light: "#C9CED3",
           },
         },
         // Semantic aliases for components
         primary: {
-          DEFAULT: "#003A8F",
+          DEFAULT: "#1B365D",
           foreground: "#FFFFFF",
         },
         secondary: {
-          DEFAULT: "#001F5B",
+          DEFAULT: "#0F2340",
           foreground: "#FFFFFF",
         },
         accent: {
-          DEFAULT: "#4F83CC",
+          DEFAULT: "#3D5A80",
           foreground: "#FFFFFF",
         },
         muted: {
-          DEFAULT: "#D1D3D4",
-          foreground: "#6D6E71",
+          DEFAULT: "#C9CED3",
+          foreground: "#5C6670",
         },
         background: "#FFFFFF",
-        foreground: "#001F5B",
+        foreground: "#0F2340",
         card: {
           DEFAULT: "#FFFFFF",
-          foreground: "#001F5B",
+          foreground: "#0F2340",
         },
-        border: "#D1D3D4",
+        border: "#C9CED3",
         destructive: {
           DEFAULT: "#DC2626",
           foreground: "#FFFFFF",
