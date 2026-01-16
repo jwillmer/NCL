@@ -84,7 +84,9 @@ async function getAuthHeaders(): Promise<HeadersInit> {
 export function getApiBaseUrl(): string {
   const config = getConfig();
   // Use configured API URL, or default to same origin (for Docker deployments)
-  return config.API_URL || "";
+  // All API routes are under /api prefix to avoid collision with frontend routes
+  const baseUrl = config.API_URL || "";
+  return baseUrl.endsWith("/api") ? baseUrl : `${baseUrl}/api`;
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {

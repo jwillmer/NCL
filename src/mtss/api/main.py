@@ -51,10 +51,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
     PUBLIC_PATHS = {"/health", "/docs", "/redoc", "/openapi.json", "/config.js"}
 
     # Path prefixes for static frontend files (served from web/out)
+    # Note: /conversations is both a frontend page AND an API route prefix
+    # Frontend pages: /conversations, /conversations/[id]
+    # API routes: /conversations (GET/POST), /conversations/{uuid} (GET/PATCH/DELETE)
+    # We differentiate by checking if the path looks like a static file request
     STATIC_PREFIXES = ("/_next/", "/icons/", "/images/", "/fonts/")
 
     # Static file extensions that don't require auth
-    STATIC_EXTENSIONS = (".js", ".css", ".ico", ".png", ".svg", ".jpg", ".jpeg", ".woff", ".woff2", ".ttf")
+    STATIC_EXTENSIONS = (".js", ".css", ".ico", ".png", ".svg", ".jpg", ".jpeg", ".woff", ".woff2", ".ttf", ".txt", ".json", ".map")
 
     async def dispatch(self, request: Request, call_next):
         """Validate JWT token for protected routes."""
@@ -137,7 +141,7 @@ class LangfuseFlushMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         # Flush after agent requests (where LangGraph conversations happen)
-        if request.url.path.startswith("/agent"):
+        if request.url.path.startswith("/api/agent"):
             try:
                 flush_langfuse_traces()
             except Exception as e:
@@ -197,16 +201,25 @@ async def lifespan(app: FastAPI):
                 description="MTSS Email RAG Agent for document Q&A",
                 graph=app.state.agent_graph,
             ),
-            path="/agent",
+            path="/api/agent",
         )
-        logger.info("LangGraph agent endpoint registered at /agent")
+        logger.info("LangGraph agent endpoint registered at /api/agent")
 
-        # CORS preflight handler for /agent endpoint (must be registered AFTER POST)
+        # CORS preflight handler for /api/agent endpoint (must be registered AFTER POST)
         # The ag-ui-langgraph library only registers POST, causing 405 on OPTIONS preflight
-        @app.options("/agent")
+        @app.options("/api/agent")
         def agent_options():
-            """Handle CORS preflight for /agent (needed for cross-origin local development)."""
+            """Handle CORS preflight for /api/agent (needed for cross-origin local development)."""
             return Response(status_code=200)
+
+        # Mount static frontend AFTER all API routes are registered
+        # This ensures /api/* routes take priority over the catch-all static mount
+        static_dir = Path(__file__).parent.parent.parent.parent / "web" / "out"
+        if static_dir.exists():
+            from fastapi.staticfiles import StaticFiles
+
+            app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
+            logger.info("Static frontend mounted from %s", static_dir)
 
         yield
 
@@ -305,7 +318,7 @@ def create_app() -> FastAPI:
     # Archive file serving endpoint
     # Uses same JWT auth as all other endpoints (via AuthMiddleware)
     # Proxies files from Supabase Storage bucket
-    @app.get("/archive/{file_path:path}")
+    @app.get("/api/archive/{file_path:path}")
     @limiter.limit("100/minute")
     async def serve_archive(request: Request, file_path: str):
         """Serve archive files from Supabase Storage (markdown previews and original downloads).
@@ -368,7 +381,7 @@ def create_app() -> FastAPI:
         )
 
     # Citation details endpoint for fetching source content
-    @app.get("/citations/{chunk_id}")
+    @app.get("/api/citations/{chunk_id}")
     @limiter.limit("100/minute")
     async def get_citation(request: Request, chunk_id: str):
         """Get citation details including metadata and markdown content.
@@ -439,7 +452,7 @@ def create_app() -> FastAPI:
         }
 
     # Vessels endpoint for dropdown lists
-    @app.get("/vessels")
+    @app.get("/api/vessels")
     @limiter.limit("60/minute")
     async def list_vessels(request: Request):
         """Get all vessels for dropdown selection.
@@ -473,19 +486,12 @@ def create_app() -> FastAPI:
         finally:
             await client.close()
 
-    # Include routers
-    app.include_router(conversations_router)
-    app.include_router(feedback_router, prefix="/feedback")
+    # Include routers under /api prefix to avoid collision with frontend routes
+    app.include_router(conversations_router, prefix="/api")
+    app.include_router(feedback_router, prefix="/api/feedback")
 
-    # Serve static frontend (if exists - for Docker deployment)
-    # The static files are built by Next.js with `output: 'export'`
-    # and copied to web/out during Docker build
-    static_dir = Path(__file__).parent.parent.parent.parent / "web" / "out"
-    if static_dir.exists():
-        from fastapi.staticfiles import StaticFiles
-
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
-        logger.info("Static frontend mounted from %s", static_dir)
+    # NOTE: Static frontend is mounted in lifespan() AFTER the agent endpoint
+    # is registered to ensure proper route priority
 
     return app
 
