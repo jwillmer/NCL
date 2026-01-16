@@ -1,11 +1,11 @@
-"""Tests for the Reranker class."""
+﻿"""Tests for the Reranker class."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ncl.models.chunk import SourceReference
-from ncl.processing.reranker import Reranker
+from mtss.models.chunk import SourceReference
+from mtss.processing.reranker import Reranker
 
 
 @pytest.fixture
@@ -107,7 +107,7 @@ class TestRerankerInit:
 
     def test_init_with_enabled_reranking(self, mock_settings):
         """Test initialization with reranking enabled."""
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch.dict("os.environ", {}, clear=False):
                 reranker = Reranker()
 
@@ -119,26 +119,26 @@ class TestRerankerInit:
         """Test initialization with reranking disabled."""
         mock_settings.rerank_enabled = False
 
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             reranker = Reranker()
 
             assert reranker.enabled is False
 
     def test_init_does_not_set_cohere_api_key(self, mock_settings):
         """Test that Reranker no longer sets API key (done at module init)."""
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch.dict("os.environ", {}, clear=False) as env:
                 # Clear any existing key
                 env.pop("COHERE_API_KEY", None)
                 Reranker()
-                # Reranker should NOT set the key - it's done in ncl.__init__
+                # Reranker should NOT set the key - it's done in mtss.__init__
                 assert "COHERE_API_KEY" not in env or env.get("COHERE_API_KEY") != "test-api-key"
 
     def test_init_without_cohere_api_key(self, mock_settings):
         """Test initialization without Cohere API key."""
         mock_settings.cohere_api_key = None
 
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch.dict("os.environ", {"COHERE_API_KEY": ""}, clear=False) as env:
                 # Should not raise an error
                 reranker = Reranker()
@@ -152,9 +152,9 @@ class TestRerankerRerankResults:
         self, mock_settings, sample_sources, mock_rerank_response
     ):
         """Test successful reranking of results."""
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch(
-                "ncl.processing.reranker.rerank", return_value=mock_rerank_response
+                "mtss.processing.reranker.rerank", return_value=mock_rerank_response
             ):
                 reranker = Reranker()
                 results = reranker.rerank_results(
@@ -182,9 +182,9 @@ class TestRerankerRerankResults:
         # Modify mock response to return 2 results
         mock_rerank_response.results = mock_rerank_response.results[:2]
 
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch(
-                "ncl.processing.reranker.rerank", return_value=mock_rerank_response
+                "mtss.processing.reranker.rerank", return_value=mock_rerank_response
             ):
                 reranker = Reranker()
                 results = reranker.rerank_results(
@@ -199,7 +199,7 @@ class TestRerankerRerankResults:
         """Test that disabled reranker returns truncated original results."""
         mock_settings.rerank_enabled = False
 
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             reranker = Reranker()
             results = reranker.rerank_results(
                 query="What is the project budget?",
@@ -217,7 +217,7 @@ class TestRerankerRerankResults:
 
     def test_rerank_results_empty_sources(self, mock_settings):
         """Test reranking with empty source list."""
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             reranker = Reranker()
             results = reranker.rerank_results(
                 query="What is the project budget?",
@@ -230,7 +230,7 @@ class TestRerankerRerankResults:
         """Test reranking when sources fewer than top_n."""
         mock_settings.rerank_top_n = 10  # More than available sources
 
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             reranker = Reranker()
             results = reranker.rerank_results(
                 query="What is the project budget?",
@@ -245,9 +245,9 @@ class TestRerankerRerankResults:
         self, mock_settings, sample_sources, mock_rerank_response
     ):
         """Test that reranker extracts chunk_content for documents."""
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch(
-                "ncl.processing.reranker.rerank", return_value=mock_rerank_response
+                "mtss.processing.reranker.rerank", return_value=mock_rerank_response
             ) as mock_rerank_fn:
                 reranker = Reranker()
                 reranker.rerank_results(
@@ -272,9 +272,9 @@ class TestRerankerIntegration:
         self, mock_settings, sample_sources, mock_rerank_response
     ):
         """Test that reranking preserves all source metadata."""
-        with patch("ncl.processing.reranker.get_settings", return_value=mock_settings):
+        with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch(
-                "ncl.processing.reranker.rerank", return_value=mock_rerank_response
+                "mtss.processing.reranker.rerank", return_value=mock_rerank_response
             ):
                 reranker = Reranker()
                 results = reranker.rerank_results(

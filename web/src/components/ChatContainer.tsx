@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * Chat container component with AG-UI SDK integration.
@@ -316,8 +316,8 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
             {!historyLoaded && (
               <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/50 backdrop-blur-sm">
                 <div className="flex flex-col items-center gap-2">
-                  <div className="animate-spin rounded-full border-2 border-ncl-blue border-t-transparent h-8 w-8" />
-                  <span className="text-sm text-ncl-blue font-medium">Loading history...</span>
+                  <div className="animate-spin rounded-full border-2 border-MTSS-blue border-t-transparent h-8 w-8" />
+                  <span className="text-sm text-MTSS-blue font-medium">Loading history...</span>
                 </div>
               </div>
             )}

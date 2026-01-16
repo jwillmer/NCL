@@ -1,4 +1,4 @@
-"""CLI entry point for NCL - Email RAG Pipeline."""
+﻿"""CLI entry point for MTSS - Email RAG Pipeline."""
 
 from __future__ import annotations
 
@@ -64,8 +64,8 @@ from .ingest.helpers import (
 )
 
 app = typer.Typer(
-    name="ncl",
-    help="NCL - Email RAG Pipeline for processing EML files with attachments",
+    name="MTSS",
+    help="MTSS - Email RAG Pipeline for processing EML files with attachments",
 )
 vessels_app = typer.Typer(help="Vessel registry management")
 app.add_typer(vessels_app, name="vessels")
@@ -1371,15 +1371,15 @@ def reset_failures(
     - archive folders from Supabase Storage
 
     Workflow:
-        1. ncl failures --latest          # View latest failure report
-        2. ncl reset-failures <file> -n   # Preview what will be reset
-        3. ncl reset-failures <file> -y   # Reset the failed documents
-        4. ncl ingest                     # Reprocess the files
+        1. MTSS failures --latest          # View latest failure report
+        2. MTSS reset-failures <file> -n   # Preview what will be reset
+        3. MTSS reset-failures <file> -y   # Reset the failed documents
+        4. MTSS ingest                     # Reprocess the files
 
     Examples:
-        ncl reset-failures data/reports/ingest_20260105_170109.json
-        ncl reset-failures data/reports/ingest_20260105_170109.json --dry-run
-        ncl reset-failures data/reports/ingest_20260105_170109.json -y
+        MTSS reset-failures data/reports/ingest_20260105_170109.json
+        MTSS reset-failures data/reports/ingest_20260105_170109.json --dry-run
+        MTSS reset-failures data/reports/ingest_20260105_170109.json -y
     """
     asyncio.run(_reset_failures(report_file, eml_only, dry_run, yes))
 
@@ -1451,7 +1451,7 @@ async def _reset_failures(report_file: Path, eml_only: bool, dry_run: bool, yes:
         console.print(f"  Documents deleted: {counts['documents']}")
         console.print(f"  Processing log entries deleted: {counts['processing_log']}")
         console.print(f"  Archive folders deleted: {counts['archives']}")
-        console.print(f"\n[dim]Run 'ncl ingest' to reprocess these files[/dim]")
+        console.print(f"\n[dim]Run 'MTSS ingest' to reprocess these files[/dim]")
     finally:
         await db.close()
 
@@ -1641,7 +1641,7 @@ async def _reprocess(target_version: int | None, limit: int, dry_run: bool):
         # 2. Re-parsing the source file
         # 3. Regenerating chunks with new context
         # 4. Updating the document's ingest_version
-        console.print("[red]Reprocessing logic not yet implemented - use 'ncl clean' and re-ingest[/red]")
+        console.print("[red]Reprocessing logic not yet implemented - use 'MTSS clean' and re-ingest[/red]")
 
     finally:
         await db.close()
@@ -1693,8 +1693,8 @@ def reindex_chunks(
     number information (needed for citation highlighting).
 
     Examples:
-        ncl reindex-chunks --missing-lines --dry-run
-        ncl reindex-chunks --doc-id abc123...
+        MTSS reindex-chunks --missing-lines --dry-run
+        MTSS reindex-chunks --doc-id abc123...
     """
     global _verbose
     _verbose = verbose
@@ -1928,9 +1928,9 @@ def ingest_update(
     Uses identical processing as regular ingest for consistency.
 
     Examples:
-        ncl ingest-update --dry-run          # Scan only, show issues
-        ncl ingest-update                    # Fix all issues
-        ncl ingest-update --limit 10 -v      # Fix 10 docs with details
+        MTSS ingest-update --dry-run          # Scan only, show issues
+        MTSS ingest-update                    # Fix all issues
+        MTSS ingest-update --limit 10 -v      # Fix 10 docs with details
     """
     global _verbose
     _verbose = verbose
@@ -2744,9 +2744,9 @@ def vessels_retag(
     without re-ingesting from scratch.
 
     Examples:
-        ncl vessels retag              # Re-tag all documents
-        ncl vessels retag --dry-run    # Preview changes
-        ncl vessels retag --limit 100  # Process first 100 documents
+        MTSS vessels retag              # Re-tag all documents
+        MTSS vessels retag --dry-run    # Preview changes
+        MTSS vessels retag --limit 100  # Process first 100 documents
     """
     global _verbose
     _verbose = verbose

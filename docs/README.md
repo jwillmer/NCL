@@ -1,6 +1,6 @@
-# NCL Documentation
+﻿# MTSS Documentation
 
-Welcome to the NCL documentation. NCL is an Email RAG Pipeline for processing EML files with attachments, preserving document hierarchy for context-aware question answering with source attribution.
+Welcome to the MTSS documentation. MTSS is an Email RAG Pipeline for processing EML files with attachments, preserving document hierarchy for context-aware question answering with source attribution.
 
 ## Documentation Index
 
@@ -16,8 +16,8 @@ Welcome to the NCL documentation. NCL is an Email RAG Pipeline for processing EM
 
 1. Copy `.env.template` to `.env` and configure your credentials
 2. Run database migrations in Supabase
-3. Ingest your emails: `ncl ingest --source ./emails`
-4. Query the system: `ncl query "What was discussed about X?"`
+3. Ingest your emails: `MTSS ingest --source ./emails`
+4. Query the system: `MTSS query "What was discussed about X?"`
 
 ### Key Features
 

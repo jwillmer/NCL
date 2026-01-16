@@ -1,4 +1,4 @@
--- NCL RAG Pipeline - Complete Database Schema
+﻿-- MTSS RAG Pipeline - Complete Database Schema
 -- Run this in Supabase SQL Editor
 -- This script drops all existing objects and recreates them (development mode)
 

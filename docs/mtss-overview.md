@@ -1,4 +1,4 @@
-# Maritime Technical Support System (MTSS)
+﻿# Maritime Technical Support System (MTSS)
 
 ## Overview
 
@@ -74,4 +74,4 @@ MTSS indexes and searches through:
 
 ---
 
-*MTSS v0.1.0 | Developed for NCL*
+*MTSS v0.1.0 | Developed for MTSS*

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * AgentChat - Custom chat UI component using AG-UI SDK directly.
@@ -280,7 +280,7 @@ function MessageList({
     <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 pb-24 space-y-6 scroll-smooth">
       {showInitialMessage && (
         <div className="flex gap-4 max-w-3xl mx-auto">
-          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-ncl-blue flex items-center justify-center shadow-sm">
+          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-MTSS-blue flex items-center justify-center shadow-sm">
             <span className="text-white text-xs font-semibold">AI</span>
           </div>
           <div className="flex-1 bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-none p-5">
@@ -297,7 +297,7 @@ function MessageList({
         return (
           <div key={message.id} className={`flex gap-4 max-w-3xl mx-auto ${isAssistant ? "" : "flex-row-reverse"}`}>
             <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center shadow-sm ${
-              isAssistant ? "bg-ncl-blue" : "bg-gray-700"
+              isAssistant ? "bg-MTSS-blue" : "bg-gray-700"
             }`}>
               <span className="text-white text-xs font-semibold">
                 {isAssistant ? "AI" : "U"}
@@ -306,7 +306,7 @@ function MessageList({
             <div className={`flex-1 max-w-[85%] rounded-2xl p-5 shadow-sm ${
               isAssistant 
                 ? "bg-white border border-gray-100 rounded-tl-none" 
-                : "bg-ncl-blue text-white rounded-tr-none ml-auto"
+                : "bg-MTSS-blue text-white rounded-tr-none ml-auto"
             }`}>
               {isAssistant ? (
                 <RenderAssistantMessage
@@ -332,7 +332,7 @@ function MessageList({
       {/* Show streaming message as content arrives - displays chunks in real-time */}
       {isStreaming && (
         <div className="flex gap-4 max-w-3xl mx-auto">
-          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-ncl-blue flex items-center justify-center shadow-sm">
+          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-MTSS-blue flex items-center justify-center shadow-sm">
             <span className="text-white text-xs font-semibold">AI</span>
           </div>
           <div className="flex-1 max-w-[85%] bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-none p-5">
@@ -408,10 +408,10 @@ function ChatInput({
         {showProgress ? (
           // Modern progress indicator - text only with animated dots
           <div className="flex-1 flex items-center px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-xl">
-            <span className="text-sm font-medium text-ncl-blue animate-pulse">
+            <span className="text-sm font-medium text-MTSS-blue animate-pulse">
               {progressMessage}
             </span>
-            <span className="text-sm font-medium text-ncl-blue ml-0.5">
+            <span className="text-sm font-medium text-MTSS-blue ml-0.5">
               <AnimatedDots />
             </span>
           </div>
@@ -422,7 +422,7 @@ function ChatInput({
             onKeyDown={handleKeyDown}
             placeholder={placeholder || "Type a message..."}
             disabled={disabled || isLoading}
-            className={`flex-1 resize-none rounded-xl border border-gray-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ncl-blue/20 focus:border-ncl-blue transition-all shadow-sm ${
+            className={`flex-1 resize-none rounded-xl border border-gray-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-MTSS-blue/20 focus:border-MTSS-blue transition-all shadow-sm ${
               disabled || isLoading ? "opacity-50 cursor-not-allowed bg-gray-50" : "bg-white"
             }`}
             rows={1}
@@ -432,10 +432,10 @@ function ChatInput({
         <button
           type="submit"
           disabled={disabled || isLoading || !input.trim()}
-          className={`px-4 rounded-xl bg-ncl-blue text-white transition-all shadow-sm hover:shadow active:scale-95 ${
+          className={`px-4 rounded-xl bg-MTSS-blue text-white transition-all shadow-sm hover:shadow active:scale-95 ${
             disabled || isLoading || !input.trim()
               ? "opacity-50 cursor-not-allowed"
-              : "hover:bg-ncl-blue-dark"
+              : "hover:bg-MTSS-blue-dark"
           }`}
         >
           {isLoading ? (

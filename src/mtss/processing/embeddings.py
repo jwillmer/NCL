@@ -1,4 +1,4 @@
-"""Embedding generator using OpenAI via LiteLLM."""
+﻿"""Embedding generator using OpenAI via LiteLLM."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class EmbeddingGenerator:
     """Generate embeddings using OpenAI via LiteLLM.
 
     Supports batch processing with configurable batch sizes for efficiency.
-    API keys are initialized via ncl.__init__ at module load.
+    API keys are initialized via mtss.__init__ at module load.
     Automatically truncates text to fit within model's context window.
     """
 

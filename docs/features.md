@@ -1,12 +1,12 @@
-# NCL Features
+﻿# MTSS Features
 
-This document provides a comprehensive overview of NCL's features and capabilities.
+This document provides a comprehensive overview of MTSS's features and capabilities.
 
 ## Core Features
 
 ### 1. Email Parsing with Conversation Support
 
-NCL treats emails as conversations, not just individual messages.
+MTSS treats emails as conversations, not just individual messages.
 
 **Conversation Parsing:**
 - Splits threaded emails into individual messages
@@ -39,7 +39,7 @@ ParsedEmail(
 
 ### 2. Multi-Format Attachment Processing
 
-NCL processes a wide variety of document formats using Docling.
+MTSS processes a wide variety of document formats using Docling.
 
 | Format | Extension | Features |
 |--------|-----------|----------|
@@ -53,7 +53,7 @@ NCL processes a wide variety of document formats using Docling.
 
 ### 3. Intelligent Image Understanding
 
-When `ENABLE_PICTURE_DESCRIPTION=true`, NCL uses AI to describe images.
+When `ENABLE_PICTURE_DESCRIPTION=true`, MTSS uses AI to describe images.
 
 **How it works:**
 1. SmolVLM model analyzes each image
@@ -73,7 +73,7 @@ An upward trend arrow indicates 52% year-over-year growth."
 
 ### 4. ZIP Archive Support
 
-NCL automatically extracts and processes ZIP attachments.
+MTSS automatically extracts and processes ZIP attachments.
 
 **Features:**
 - Recursive extraction (nested ZIPs)
@@ -84,7 +84,7 @@ NCL automatically extracts and processes ZIP attachments.
 
 **Security Limits (DoS Protection):**
 
-NCL enforces resource limits to prevent denial-of-service attacks from malicious ZIP files:
+MTSS enforces resource limits to prevent denial-of-service attacks from malicious ZIP files:
 
 | Limit | Default | Environment Variable | Description |
 |-------|---------|---------------------|-------------|
@@ -109,7 +109,7 @@ email.eml
 
 ### 5. Semantic Chunking with Structure Preservation
 
-NCL uses HybridChunker for intelligent text segmentation.
+MTSS uses HybridChunker for intelligent text segmentation.
 
 **Features:**
 - OpenAI tokenizer for accurate token counting
@@ -126,7 +126,7 @@ This allows queries like "What does Section 1.2 say about X?"
 
 ### 6. Two-Stage Retrieval with Reranking
 
-NCL implements state-of-the-art retrieval for better accuracy.
+MTSS implements state-of-the-art retrieval for better accuracy.
 
 **Stage 1: Vector Search (Bi-encoder)**
 - Fast approximate nearest neighbor search
@@ -148,7 +148,7 @@ NCL implements state-of-the-art retrieval for better accuracy.
 
 ### 7. Document Hierarchy
 
-NCL maintains parent-child relationships for context.
+MTSS maintains parent-child relationships for context.
 
 **Benefits:**
 - Know which email an attachment came from
@@ -164,7 +164,7 @@ NCL maintains parent-child relationships for context.
 
 ### 8. File Registry for Fast Lookup
 
-NCL maintains a file registry for efficient processing.
+MTSS maintains a file registry for efficient processing.
 
 **Features:**
 - Hash-based file deduplication
@@ -182,7 +182,7 @@ NCL maintains a file registry for efficient processing.
 
 ### 9. Unsupported File Tracking
 
-NCL logs files it cannot process for visibility.
+MTSS logs files it cannot process for visibility.
 
 **Tracked Information:**
 - File name and path
@@ -201,34 +201,34 @@ NCL logs files it cannot process for visibility.
 
 **View unsupported files:**
 ```bash
-ncl stats  # Shows unsupported files breakdown
+MTSS stats  # Shows unsupported files breakdown
 ```
 
 ### 10. Resumable Processing
 
-NCL tracks progress for reliable batch processing.
+MTSS tracks progress for reliable batch processing.
 
 **Features:**
 - Skip already-processed files
 - Retry failed files with `--retry-failed`
-- Reset stale processing with `ncl reset-stale`
+- Reset stale processing with `MTSS reset-stale`
 - Hash-based deduplication
 
 **Progress Tracking:**
 ```bash
 # Resume from where you left off
-ncl ingest --source ./data/source --resume
+MTSS ingest --source ./data/source --resume
 
 # Retry files that failed
-ncl ingest --retry-failed
+MTSS ingest --retry-failed
 
 # Reset stuck files (processing > 60 min)
-ncl reset-stale --max-age 60
+MTSS reset-stale --max-age 60
 ```
 
 **Progress Display:**
 
-During ingestion, NCL shows real-time progress for each concurrent worker:
+During ingestion, MTSS shows real-time progress for each concurrent worker:
 
 ```
 ⠙ [1] email_001.eml               ━━━━━━━━━━  3/5
@@ -247,11 +247,11 @@ Each worker slot shows:
 
 ### 11. Vessel Filtering
 
-NCL supports filtering search results by vessel. Documents are automatically tagged with vessel references during ingestion.
+MTSS supports filtering search results by vessel. Documents are automatically tagged with vessel references during ingestion.
 
 **How Vessel Tagging Works:**
 
-During ingestion, NCL scans the **email subject and body** for vessel names and aliases from the vessel registry. Matched vessel IDs are stored in chunk metadata for filtering.
+During ingestion, MTSS scans the **email subject and body** for vessel names and aliases from the vessel registry. Matched vessel IDs are stored in chunk metadata for filtering.
 
 ```
 Email arrives → Parse subject + body → Match vessel names → Store vessel_ids in chunks
@@ -271,7 +271,7 @@ Attachments inherit the `vessel_ids` from their parent email. This means if an e
 - **Reliability:** Email subject/body usually names the vessel explicitly
 - **Simplicity:** Avoids false positives from vessel names appearing in unrelated document content
 
-**Future Enhancement:** Attachment content scanning can be added if email-level tagging proves insufficient. This would scan parsed text from PDFs, DOCX, etc. and merge found vessels with email-level matches. See `VesselMatcher.find_vessels()` in [vessel_matcher.py](../src/ncl/processing/vessel_matcher.py).
+**Future Enhancement:** Attachment content scanning can be added if email-level tagging proves insufficient. This would scan parsed text from PDFs, DOCX, etc. and merge found vessels with email-level matches. See `VesselMatcher.find_vessels()` in [vessel_matcher.py](../src/MTSS/processing/vessel_matcher.py).
 
 **Vessel Matching:**
 - Case-insensitive matching
@@ -288,10 +288,10 @@ User selects vessel → Frontend passes vessel_id → Agent builds metadata filt
 **CLI Commands:**
 ```bash
 # Import vessel registry from CSV
-uv run ncl vessels import data/vessel-list.csv
+uv run MTSS vessels import data/vessel-list.csv
 
 # List all vessels
-uv run ncl vessels list
+uv run MTSS vessels list
 ```
 
 **CSV Format (semicolon-delimited):**
@@ -334,12 +334,12 @@ Where `[1]` and `[2]` are interactive badges that reveal source details on click
 
 ## CLI Commands
 
-### `ncl ingest`
+### `MTSS ingest`
 
 Process EML files into the RAG system.
 
 ```bash
-ncl ingest [OPTIONS]
+MTSS ingest [OPTIONS]
 
 Options:
   -s, --source PATH      Directory containing EML files
@@ -351,24 +351,24 @@ Options:
 **Examples:**
 ```bash
 # Ingest all emails
-ncl ingest --source ./data/emails
+MTSS ingest --source ./data/emails
 
 # Process in smaller batches
-ncl ingest --source ./emails --batch-size 5
+MTSS ingest --source ./emails --batch-size 5
 
 # Start fresh (ignore progress)
-ncl ingest --source ./emails --no-resume
+MTSS ingest --source ./emails --no-resume
 
 # Retry failed files only
-ncl ingest --retry-failed
+MTSS ingest --retry-failed
 ```
 
-### `ncl query`
+### `MTSS query`
 
 Ask questions with AI-generated answers.
 
 ```bash
-ncl query "Your question here" [OPTIONS]
+MTSS query "Your question here" [OPTIONS]
 
 Options:
   -k, --top-k INT          Candidates for reranking (default: 20)
@@ -380,24 +380,24 @@ Options:
 **Examples:**
 ```bash
 # Basic query
-ncl query "What was discussed about the budget?"
+MTSS query "What was discussed about the budget?"
 
 # More candidates for better recall
-ncl query "Find all mentions of Project X" --top-k 50
+MTSS query "Find all mentions of Project X" --top-k 50
 
 # Lower threshold for broader results
-ncl query "Meeting notes from January" --threshold 0.3
+MTSS query "Meeting notes from January" --threshold 0.3
 
 # Disable reranking for faster results
-ncl query "Quick search" --no-rerank
+MTSS query "Quick search" --no-rerank
 ```
 
-### `ncl search`
+### `MTSS search`
 
 Search without generating an answer.
 
 ```bash
-ncl search "search terms" [OPTIONS]
+MTSS search "search terms" [OPTIONS]
 
 Options:
   -k, --top-k INT          Candidates (default: 20)
@@ -409,18 +409,18 @@ Options:
 **Examples:**
 ```bash
 # Find relevant documents
-ncl search "quarterly report 2024"
+MTSS search "quarterly report 2024"
 
 # Get more results
-ncl search "invoice" --rerank-top-n 20
+MTSS search "invoice" --rerank-top-n 20
 ```
 
-### `ncl stats`
+### `MTSS stats`
 
 View processing statistics and unsupported files breakdown.
 
 ```bash
-ncl stats
+MTSS stats
 ```
 
 **Output:**
@@ -458,12 +458,12 @@ ncl stats
 └─────────────────┴───────────────┘
 ```
 
-### `ncl reset-stale`
+### `MTSS reset-stale`
 
 Reset files stuck in processing state.
 
 ```bash
-ncl reset-stale [OPTIONS]
+MTSS reset-stale [OPTIONS]
 
 Options:
   -m, --max-age INT   Max age in minutes (default: 60)
@@ -491,7 +491,7 @@ LLM_MODEL=gpt-4o-mini
 CHUNK_SIZE_TOKENS=512
 CHUNK_OVERLAP_TOKENS=50
 
-# Optional - Paths (source = user data, processed = NCL-generated)
+# Optional - Paths (source = user data, processed = MTSS-generated)
 DATA_SOURCE_DIR=./data/source          # EML files (supports subdirectories)
 DATA_PROCESSED_DIR=./data/processed    # Extracted attachments and ZIP contents
 

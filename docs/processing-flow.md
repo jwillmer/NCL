@@ -1,6 +1,6 @@
-# NCL Processing Flow
+﻿# MTSS Processing Flow
 
-This document describes the data flow through the NCL email RAG pipeline.
+This document describes the data flow through the MTSS email RAG pipeline.
 
 ## Data Folder Structure
 
@@ -15,7 +15,7 @@ data/
 │   │       └── email2.eml
 │   └── email3.eml            # Or flat structure
 │
-└── processed/                 # NCL-generated data
+└── processed/                 # MTSS-generated data
     ├── attachments/           # Extracted email attachments
     │   └── {email_hash}/
     │       ├── document.pdf
@@ -72,7 +72,7 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    START([ncl ingest]) --> LOAD_VESSELS[Load vessel registry]
+    START([MTSS ingest]) --> LOAD_VESSELS[Load vessel registry]
     LOAD_VESSELS --> SCAN[Scan source directory]
     SCAN --> HASH{Hash exists?}
 

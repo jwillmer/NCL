@@ -1,6 +1,6 @@
-# Authentication Flow
+﻿# Authentication Flow
 
-NCL uses Supabase Auth with JWT tokens validated at both the Next.js API route and the Python backend (defense-in-depth). This document explains how authentication works across the 2-tier architecture.
+MTSS uses Supabase Auth with JWT tokens validated at both the Next.js API route and the Python backend (defense-in-depth). This document explains how authentication works across the 2-tier architecture.
 
 ## Architecture Overview
 

@@ -1,7 +1,7 @@
-
+﻿
 import json
 from fastapi import FastAPI
-from ncl.api.conversations import router
+from mtss.api.conversations import router
 
 app = FastAPI()
 app.include_router(router)

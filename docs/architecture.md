@@ -1,10 +1,10 @@
-# NCL Architecture
+﻿# MTSS Architecture
 
-This document describes the technical architecture of the NCL email RAG pipeline.
+This document describes the technical architecture of the MTSS email RAG pipeline.
 
 ## System Overview
 
-NCL is a Retrieval-Augmented Generation (RAG) system designed specifically for email archives. It processes EML files with attachments, preserving document hierarchy for context-aware question answering with source attribution.
+MTSS is a Retrieval-Augmented Generation (RAG) system designed specifically for email archives. It processes EML files with attachments, preserving document hierarchy for context-aware question answering with source attribution.
 
 ```
 +------------------+     +------------------+     +------------------+
@@ -20,7 +20,7 @@ NCL is a Retrieval-Augmented Generation (RAG) system designed specifically for e
 ## Project Structure
 
 ```
-src/ncl/
+src/MTSS/
 ├── __init__.py
 ├── cli.py                    # Typer CLI commands
 ├── config.py                 # Pydantic settings

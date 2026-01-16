@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * UI components built on Radix UI primitives.
@@ -19,14 +19,14 @@ import { cn } from "@/lib/utils";
 // =============================================================================
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ncl-blue focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-MTSS-blue focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
-        default: "bg-ncl-blue text-white hover:bg-ncl-blue-dark",
-        secondary: "bg-ncl-gray-light text-ncl-blue-dark hover:bg-ncl-gray-light/80",
-        outline: "border border-ncl-gray-light bg-white hover:bg-ncl-gray-light/20",
-        ghost: "hover:bg-ncl-gray-light/20",
+        default: "bg-MTSS-blue text-white hover:bg-MTSS-blue-dark",
+        secondary: "bg-MTSS-gray-light text-MTSS-blue-dark hover:bg-MTSS-gray-light/80",
+        outline: "border border-MTSS-gray-light bg-white hover:bg-MTSS-gray-light/20",
+        ghost: "hover:bg-MTSS-gray-light/20",
         destructive: "bg-destructive text-white hover:bg-destructive/90",
       },
       size: {
@@ -71,7 +71,7 @@ export const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-lg border border-ncl-gray-light bg-white text-card-foreground shadow-sm",
+      "rounded-lg border border-MTSS-gray-light bg-white text-card-foreground shadow-sm",
       className
     )}
     {...props}
@@ -123,7 +123,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       <input
         type={type}
         className={cn(
-          "flex h-10 w-full rounded-md border border-ncl-gray-light bg-white px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ncl-blue focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+          "flex h-10 w-full rounded-md border border-MTSS-gray-light bg-white px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-MTSS-blue focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
           className
         )}
         ref={ref}
@@ -167,13 +167,13 @@ export const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-ncl-gray-light bg-white p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-MTSS-gray-light bg-white p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
         className
       )}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ncl-blue focus:ring-offset-2 disabled:pointer-events-none">
+      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-MTSS-blue focus:ring-offset-2 disabled:pointer-events-none">
         <X className="h-4 w-4" />
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>
@@ -221,7 +221,7 @@ export const TooltipContent = React.forwardRef<
     ref={ref}
     sideOffset={sideOffset}
     className={cn(
-      "z-50 overflow-hidden rounded-md border border-ncl-gray-light bg-white px-3 py-1.5 text-sm text-ncl-blue-dark shadow-md animate-in fade-in-0 zoom-in-95",
+      "z-50 overflow-hidden rounded-md border border-MTSS-gray-light bg-white px-3 py-1.5 text-sm text-MTSS-blue-dark shadow-md animate-in fade-in-0 zoom-in-95",
       className
     )}
     {...props}
@@ -249,7 +249,7 @@ export const ScrollArea = React.forwardRef<
       orientation="vertical"
       className="flex h-full w-2.5 touch-none select-none border-l border-l-transparent p-[1px] transition-colors"
     >
-      <ScrollAreaPrimitive.ScrollAreaThumb className="relative flex-1 rounded-full bg-ncl-gray-light" />
+      <ScrollAreaPrimitive.ScrollAreaThumb className="relative flex-1 rounded-full bg-MTSS-gray-light" />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
     <ScrollAreaPrimitive.Corner />
   </ScrollAreaPrimitive.Root>
@@ -269,7 +269,7 @@ export const Separator = React.forwardRef<
     decorative={decorative}
     orientation={orientation}
     className={cn(
-      "shrink-0 bg-ncl-gray-light",
+      "shrink-0 bg-MTSS-gray-light",
       orientation === "horizontal" ? "h-[1px] w-full" : "h-full w-[1px]",
       className
     )}
@@ -288,7 +288,7 @@ export function Skeleton({
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("animate-pulse rounded-md bg-ncl-gray-light", className)}
+      className={cn("animate-pulse rounded-md bg-MTSS-gray-light", className)}
       {...props}
     />
   );

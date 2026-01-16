@@ -1,4 +1,4 @@
-"""Version information for the NCL application.
+﻿"""Version information for the MTSS application.
 
 The Git SHA is injected at build time via Docker build args
 or can be set via environment variable.

@@ -1,4 +1,4 @@
-"""Langfuse v3 observability for LLM tracing."""
+﻿"""Langfuse v3 observability for LLM tracing."""
 
 import atexit
 import logging
@@ -244,7 +244,7 @@ def create_trace_id_for_thread(thread_id: str) -> str:
     """
     from langfuse import Langfuse
 
-    return Langfuse.create_trace_id(seed=f"ncl-thread-{thread_id}")
+    return Langfuse.create_trace_id(seed=f"MTSS-thread-{thread_id}")
 
 
 def flush_langfuse_traces() -> None:

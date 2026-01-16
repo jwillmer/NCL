@@ -1,4 +1,4 @@
-"""Reranker for two-stage retrieval.
+﻿"""Reranker for two-stage retrieval.
 
 Improves RAG accuracy by 20-35% using cross-encoder models that examine
 query+document pairs together for deeper semantic understanding.
@@ -25,7 +25,7 @@ class Reranker:
     - AWS Bedrock: bedrock/rerank
     - Infinity (self-hosted): infinity/<model>
 
-    API keys are initialized via ncl.__init__ at module load.
+    API keys are initialized via mtss.__init__ at module load.
     """
 
     def __init__(self):

@@ -1,11 +1,11 @@
-"""Tests for EML parser."""
+﻿"""Tests for EML parser."""
 
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from ncl.parsers.eml_parser import EMLParser
+from mtss.parsers.eml_parser import EMLParser
 
 
 class TestEMLParser:
@@ -13,7 +13,7 @@ class TestEMLParser:
 
     def test_parse_simple_email(self, simple_eml_file, temp_dir, mock_settings):
         """Test parsing a simple email without attachments."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
             result = parser.parse_file(simple_eml_file)
 
@@ -26,7 +26,7 @@ class TestEMLParser:
 
     def test_parse_email_with_attachment(self, sample_eml_file, temp_dir, mock_settings):
         """Test parsing an email with attachments."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
             result = parser.parse_file(sample_eml_file)
 
@@ -39,7 +39,7 @@ class TestEMLParser:
 
     def test_html_to_plain_text(self, temp_dir, mock_settings):
         """Test HTML to plain text conversion."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
 
             html = "<html><body><p>Hello</p><br><div>World</div></body></html>"
@@ -50,7 +50,7 @@ class TestEMLParser:
 
     def test_sanitize_filename(self, temp_dir, mock_settings):
         """Test filename sanitization."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
 
             # Test various problematic filenames
@@ -61,7 +61,7 @@ class TestEMLParser:
 
     def test_parse_address_list(self, temp_dir, mock_settings):
         """Test parsing comma-separated email addresses."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
 
             assert parser._parse_address_list("") == []
@@ -70,7 +70,7 @@ class TestEMLParser:
 
     def test_extract_email_address(self, temp_dir, mock_settings):
         """Test email address extraction from various formats."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
 
             assert parser._extract_email_address("john@example.com") == "john@example.com"
@@ -80,9 +80,9 @@ class TestEMLParser:
 
     def test_get_body_text_returns_full_text(self, temp_dir, mock_settings):
         """Test that get_body_text returns full_text field."""
-        from ncl.models.document import EmailMetadata, ParsedEmail
+        from mtss.models.document import EmailMetadata, ParsedEmail
 
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
 
             email = ParsedEmail(
@@ -95,7 +95,7 @@ class TestEMLParser:
 
     def test_conversation_metadata(self, simple_eml_file, temp_dir, mock_settings):
         """Test that conversation metadata is extracted correctly."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
             result = parser.parse_file(simple_eml_file)
 
@@ -112,7 +112,7 @@ class TestRealEmailParsing:
 
     def test_parse_real_email_metadata(self, real_eml_file, temp_dir, mock_settings):
         """Test parsing extracts correct metadata from real email."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
             result = parser.parse_file(real_eml_file)
 
@@ -124,7 +124,7 @@ class TestRealEmailParsing:
 
     def test_parse_real_email_extracts_all_attachments(self, real_eml_file, temp_dir, mock_settings):
         """Test that all 3 attachments (PDF, ZIP, PNG) are extracted."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
             result = parser.parse_file(real_eml_file)
 
@@ -146,7 +146,7 @@ class TestRealEmailParsing:
 
     def test_real_email_attachments_are_saved(self, real_eml_file, temp_dir, mock_settings):
         """Test that attachments are saved to disk and readable."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
             result = parser.parse_file(real_eml_file)
 
@@ -157,7 +157,7 @@ class TestRealEmailParsing:
 
     def test_real_email_pdf_attachment_valid(self, real_eml_file, temp_dir, mock_settings):
         """Test that the PDF attachment is a valid PDF file."""
-        with patch("ncl.parsers.eml_parser.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
             parser = EMLParser(attachments_dir=temp_dir / "attachments")
             result = parser.parse_file(real_eml_file)
 

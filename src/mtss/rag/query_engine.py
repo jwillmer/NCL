@@ -1,4 +1,4 @@
-"""RAG query engine for question answering with source attribution."""
+﻿"""RAG query engine for question answering with source attribution."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class RAGQueryEngine:
 
     Then generates answers using LLM with source attribution.
     Includes citation validation with retry for improved accuracy.
-    API keys are initialized via ncl.__init__ at module load.
+    API keys are initialized via mtss.__init__ at module load.
     """
 
     MAX_CITATION_RETRIES = 2

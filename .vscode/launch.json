@@ -1,11 +1,11 @@
-{
+﻿{
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug: ncl.api.main",
+            "name": "Debug: mtss.api.main",
             "type": "debugpy",
             "request": "launch",
-            "module": "ncl.api.main",
+            "module": "mtss.api.main",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "envFile": "${workspaceFolder}/.env",

@@ -1,4 +1,4 @@
-import { type ClassValue, clsx } from "clsx";
+﻿import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 
 /**
@@ -111,7 +111,7 @@ export function getConfidenceLevel(score: number): {
   color: string;
 } {
   if (score >= 0.8) return { label: "High confidence", color: "text-green-600 bg-green-100" };
-  if (score >= 0.6) return { label: "Good match", color: "text-ncl-blue bg-ncl-blue/10" };
+  if (score >= 0.6) return { label: "Good match", color: "text-MTSS-blue bg-MTSS-blue/10" };
   if (score >= 0.4) return { label: "Moderate match", color: "text-yellow-600 bg-yellow-100" };
-  return { label: "Possible match", color: "text-ncl-gray bg-ncl-gray-light" };
+  return { label: "Possible match", color: "text-MTSS-gray bg-MTSS-gray-light" };
 }

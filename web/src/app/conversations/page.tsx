@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * Conversations list page - main landing after login.
@@ -44,21 +44,21 @@ function ConversationItem({
     <div
       className={cn(
         "group flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors",
-        "hover:bg-ncl-gray-light/50 border border-transparent hover:border-ncl-gray-light"
+        "hover:bg-MTSS-gray-light/50 border border-transparent hover:border-MTSS-gray-light"
       )}
       onClick={() => onSelect(conversation)}
     >
-      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-ncl-blue/10 shrink-0">
-        <MessageSquare className="h-4 w-4 text-ncl-blue" />
+      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-MTSS-blue/10 shrink-0">
+        <MessageSquare className="h-4 w-4 text-MTSS-blue" />
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-ncl-blue-dark truncate">
+        <p className="text-sm font-medium text-MTSS-blue-dark truncate">
           {conversation.title || "New conversation"}
         </p>
-        <p className="text-xs text-ncl-gray mt-0.5">
+        <p className="text-xs text-MTSS-gray mt-0.5">
           {formatRelativeTime(conversation.last_message_at || conversation.created_at)}
           {conversation.vessel_id && (
-            <span className="ml-2 text-ncl-blue">{conversation.vessel_id}</span>
+            <span className="ml-2 text-MTSS-blue">{conversation.vessel_id}</span>
           )}
         </p>
       </div>
@@ -67,20 +67,20 @@ function ConversationItem({
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
           <button
-            className="opacity-0 group-hover:opacity-100 p-1.5 rounded hover:bg-ncl-gray-light transition-opacity"
+            className="opacity-0 group-hover:opacity-100 p-1.5 rounded hover:bg-MTSS-gray-light transition-opacity"
             onClick={(e) => e.stopPropagation()}
           >
-            <MoreVertical className="h-4 w-4 text-ncl-gray" />
+            <MoreVertical className="h-4 w-4 text-MTSS-gray" />
           </button>
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
           <DropdownMenu.Content
-            className="min-w-[140px] bg-white rounded-md shadow-lg border border-ncl-gray-light p-1 z-50"
+            className="min-w-[140px] bg-white rounded-md shadow-lg border border-MTSS-gray-light p-1 z-50"
             align="end"
             onClick={(e) => e.stopPropagation()}
           >
             <DropdownMenu.Item
-              className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-ncl-gray-light/50 rounded outline-none"
+              className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-MTSS-gray-light/50 rounded outline-none"
               onSelect={() => onArchive(conversation)}
             >
               <Archive className="h-4 w-4" />
@@ -123,13 +123,13 @@ function ConversationSkeleton() {
 function EmptyState({ isSearch }: { isSearch: boolean }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-ncl-gray-light mb-4">
-        <MessageSquare className="h-8 w-8 text-ncl-gray" />
+      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-MTSS-gray-light mb-4">
+        <MessageSquare className="h-8 w-8 text-MTSS-gray" />
       </div>
-      <h3 className="text-lg font-medium text-ncl-blue-dark mb-1">
+      <h3 className="text-lg font-medium text-MTSS-blue-dark mb-1">
         {isSearch ? "No conversations found" : "No conversations yet"}
       </h3>
-      <p className="text-sm text-ncl-gray max-w-sm">
+      <p className="text-sm text-MTSS-gray max-w-sm">
         {isSearch
           ? "Try adjusting your search query"
           : "Start a new conversation to search the knowledge base"}
@@ -265,7 +265,7 @@ function ConversationsPage() {
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-ncl-gray">Loading...</div>
+        <div className="text-MTSS-gray">Loading...</div>
       </div>
     );
   }
@@ -280,7 +280,7 @@ function ConversationsPage() {
         {/* Header */}
         <div className="flex items-center gap-4 mb-6">
           <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ncl-gray" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-MTSS-gray" />
             <Input
               type="text"
               placeholder="Search conversations..."
@@ -322,7 +322,7 @@ function ConversationsPage() {
             <div className="space-y-6">
               {groupedConversations.map((group) => (
                 <div key={group.label}>
-                  <h3 className="text-xs font-medium text-ncl-gray uppercase tracking-wider mb-2 px-3">
+                  <h3 className="text-xs font-medium text-MTSS-gray uppercase tracking-wider mb-2 px-3">
                     {group.label}
                   </h3>
                   <div className="space-y-1">

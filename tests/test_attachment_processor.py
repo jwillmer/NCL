@@ -1,4 +1,4 @@
-"""Tests for the AttachmentProcessor class."""
+﻿"""Tests for the AttachmentProcessor class."""
 
 import zipfile
 from pathlib import Path
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ncl.parsers.attachment_processor import AttachmentProcessor
+from mtss.parsers.attachment_processor import AttachmentProcessor
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def mock_settings():
 @pytest.fixture
 def processor(mock_settings):
     """Create an AttachmentProcessor with mocked settings."""
-    with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+    with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
         proc = AttachmentProcessor()
         # Store mock_settings on processor for use in tests that need runtime patching
         proc._test_mock_settings = mock_settings
@@ -95,7 +95,7 @@ class TestExtractZip:
                 zf.writestr("image.png", b"\x89PNG mock content")
 
             # Extract with patched settings
-            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+            with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
                 extracted = processor.extract_zip(zip_path)
 
             # Should have extracted 2 files (PDF and PNG are supported)
@@ -122,7 +122,7 @@ class TestExtractZip:
                 zf.writestr("top_level.pdf", b"%PDF-1.4 top level content")
 
             # Extract with patched settings
-            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+            with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
                 extracted = processor.extract_zip(outer_zip_path)
 
             # Should have extracted files from both levels
@@ -140,7 +140,7 @@ class TestExtractZip:
                 zf.writestr("__MACOSX/resource_fork", b"mac stuff")
                 zf.writestr("visible.pdf", b"%PDF-1.4 visible")
 
-            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+            with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
                 extracted = processor.extract_zip(zip_path)
 
             # Should only have extracted the visible file
@@ -158,7 +158,7 @@ class TestExtractZip:
                 zf.writestr("../../../etc/passwd", b"malicious content")
                 zf.writestr("safe.pdf", b"%PDF-1.4 safe content")
 
-            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+            with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
                 extracted = processor.extract_zip(zip_path)
 
             # Should only have extracted the safe file
@@ -181,7 +181,7 @@ class TestExtractZip:
             with zipfile.ZipFile(zip_path, "w") as zf:
                 zf.writestr("document.pdf", b"%PDF-1.4 content")
 
-            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+            with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
                 extracted = processor.extract_zip(zip_path, extract_dir=custom_dir)
 
             assert len(extracted) == 1
@@ -198,7 +198,7 @@ class TestExtractZip:
                 zf.writestr("folder1/subfolder/doc2.pdf", b"%PDF-1.4 doc2")
                 zf.writestr("folder2/doc3.pdf", b"%PDF-1.4 doc3")
 
-            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+            with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
                 extracted = processor.extract_zip(zip_path)
 
             assert len(extracted) == 3
@@ -211,7 +211,7 @@ class TestExtractZip:
 
     def test_extract_zip_nonexistent_file(self, processor, mock_settings):
         """Test extracting a non-existent ZIP file raises error."""
-        with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+        with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
             with pytest.raises(FileNotFoundError):
                 processor.extract_zip(Path("/nonexistent/path.zip"))
 
@@ -221,7 +221,7 @@ class TestExtractZip:
             invalid_path = Path(tmpdir) / "not_a_zip.zip"
             invalid_path.write_text("This is not a ZIP file")
 
-            with patch("ncl.parsers.attachment_processor.get_settings", return_value=mock_settings):
+            with patch("mtss.parsers.attachment_processor.get_settings", return_value=mock_settings):
                 with pytest.raises(ValueError):
                     processor.extract_zip(invalid_path)
 

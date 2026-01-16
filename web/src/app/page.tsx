@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * Main page - redirects to conversations list.
@@ -22,7 +22,7 @@ export default function Home() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-ncl-gray">Loading...</div>
+        <div className="text-MTSS-gray">Loading...</div>
       </div>
     );
   }
@@ -34,7 +34,7 @@ export default function Home() {
   // Brief loading state while redirecting
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="text-ncl-gray">Redirecting...</div>
+      <div className="text-MTSS-gray">Redirecting...</div>
     </div>
   );
 }

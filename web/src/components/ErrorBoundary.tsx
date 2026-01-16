@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { Component, ErrorInfo, ReactNode } from "react";
 import { AlertCircle } from "lucide-react";
@@ -47,7 +47,7 @@ export class ErrorBoundary extends Component<Props, State> {
               </p>
               <button
                 onClick={() => window.location.reload()}
-                className="rounded-md bg-ncl-blue px-4 py-2 text-sm font-medium text-white hover:bg-ncl-blue/90"
+                className="rounded-md bg-MTSS-blue px-4 py-2 text-sm font-medium text-white hover:bg-MTSS-blue/90"
               >
                 Reload Page
               </button>

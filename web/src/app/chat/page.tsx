@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * Chat page - individual conversation view.
@@ -73,17 +73,17 @@ function VesselSelector({ value, vessels, loading, onChange }: VesselSelectorPro
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
-          className="min-w-[180px] bg-white rounded-md shadow-lg border border-ncl-gray-light z-50"
+          className="min-w-[180px] bg-white rounded-md shadow-lg border border-MTSS-gray-light z-50"
           align="end"
         >
           {/* Search input */}
-          <div className="p-2 border-b border-ncl-gray-light">
+          <div className="p-2 border-b border-MTSS-gray-light">
             <input
               type="text"
               placeholder="Search vessels..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full px-2 py-1 text-sm border border-ncl-gray-light rounded outline-none focus:border-ncl-blue"
+              className="w-full px-2 py-1 text-sm border border-MTSS-gray-light rounded outline-none focus:border-MTSS-blue"
               onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => e.stopPropagation()}
             />
@@ -97,8 +97,8 @@ function VesselSelector({ value, vessels, loading, onChange }: VesselSelectorPro
                   className={cn(
                     "flex items-center gap-2 px-3 py-2 text-sm cursor-pointer rounded outline-none",
                     option.id === value
-                      ? "bg-ncl-blue/10 text-ncl-blue"
-                      : "hover:bg-ncl-gray-light/50"
+                      ? "bg-MTSS-blue/10 text-MTSS-blue"
+                      : "hover:bg-MTSS-gray-light/50"
                   )}
                   onSelect={() => onChange(option.id)}
                 >
@@ -141,7 +141,7 @@ function ChatHeader({
   const isArchived = conversation?.is_archived ?? false;
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-ncl-gray-light bg-white">
+    <header className="sticky top-0 z-40 w-full border-b border-MTSS-gray-light bg-white">
       <div className="flex h-14 items-center justify-between px-4">
         <div className="flex items-center gap-3">
           <Button
@@ -153,8 +153,8 @@ function ChatHeader({
             <ArrowLeft className="h-4 w-4" />
             Back
           </Button>
-          <div className="h-6 w-px bg-ncl-gray-light" />
-          <h1 className="text-sm font-medium text-ncl-blue-dark truncate max-w-[300px]">
+          <div className="h-6 w-px bg-MTSS-gray-light" />
+          <h1 className="text-sm font-medium text-MTSS-blue-dark truncate max-w-[300px]">
             {conversation?.title || "New conversation"}
           </h1>
           {isArchived && (
@@ -274,7 +274,7 @@ function ChatPageContent() {
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-ncl-gray">Loading...</div>
+        <div className="text-MTSS-gray">Loading...</div>
       </div>
     );
   }
@@ -288,7 +288,7 @@ function ChatPageContent() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-ncl-gray">Loading conversation...</div>
+        <div className="text-MTSS-gray">Loading conversation...</div>
       </div>
     );
   }
@@ -336,7 +336,7 @@ export default function ChatPage() {
     <ErrorBoundary>
       <Suspense fallback={
         <div className="min-h-screen flex items-center justify-center bg-gray-50">
-          <div className="text-ncl-gray">Loading...</div>
+          <div className="text-MTSS-gray">Loading...</div>
         </div>
       }>
         <ChatPageContent />

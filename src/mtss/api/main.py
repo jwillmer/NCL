@@ -1,4 +1,4 @@
-"""FastAPI application with LangGraph Agent integration.
+﻿"""FastAPI application with LangGraph Agent integration.
 
 This server exposes the LangGraph agent endpoint via AG-UI protocol with defense-in-depth
 authentication. JWT tokens are validated both at the Next.js API route and here.
@@ -139,7 +139,7 @@ async def lifespan(app: FastAPI):
 
     # Log startup banner with version info
     logger.info("=" * 60)
-    logger.info("NCL Email RAG API v%s (build: %s)", APP_VERSION, GIT_SHA_SHORT)
+    logger.info("MTSS Email RAG API v%s (build: %s)", APP_VERSION, GIT_SHA_SHORT)
     logger.info("=" * 60)
 
     # Initialize Langfuse observability (if enabled)
@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI):
             app=app,
             agent=LangGraphAgent(
                 name="default",
-                description="NCL Email RAG Agent for document Q&A",
+                description="MTSS Email RAG Agent for document Q&A",
                 graph=app.state.agent_graph,
             ),
             path="/agent",
@@ -200,7 +200,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
-        title="NCL Email RAG API",
+        title="MTSS Email RAG API",
         description="LangGraph Agent for email document Q&A with streaming progress",
         version="0.1.0",
         docs_url="/docs",
@@ -244,7 +244,7 @@ def create_app() -> FastAPI:
     async def health_check(request: Request):
         return {
             "status": "healthy",
-            "service": "ncl-api",
+            "service": "MTSS-api",
             "version": APP_VERSION,
             "git_sha": GIT_SHA_SHORT,
         }
@@ -446,7 +446,7 @@ if __name__ == "__main__":
 
     settings = get_settings()
     uvicorn.run(
-        "ncl.api.main:app",
+        "mtss.api.main:app",
         host=settings.api_host,
         port=settings.api_port,
         reload=True,

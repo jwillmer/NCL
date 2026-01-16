@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * Sources components for displaying citations in the chat UI.
@@ -231,7 +231,7 @@ function ImgCiteRenderer(props: ImgCiteProps) {
 
   if (!src) {
     return (
-      <span className="inline-block text-xs text-ncl-gray bg-ncl-gray-light/30 px-2 py-1 rounded">
+      <span className="inline-block text-xs text-MTSS-gray bg-MTSS-gray-light/30 px-2 py-1 rounded">
         [Image unavailable]
       </span>
     );
@@ -265,7 +265,7 @@ function ImgCiteRenderer(props: ImgCiteProps) {
           handleClick();
         }
       }}
-      className="inline-block my-2 cursor-pointer rounded overflow-hidden border border-ncl-gray-light hover:border-ncl-blue transition-colors"
+      className="inline-block my-2 cursor-pointer rounded overflow-hidden border border-MTSS-gray-light hover:border-MTSS-blue transition-colors"
       title={id ? "Click to view source" : "Click to open full size"}
     >
       <img
@@ -375,7 +375,7 @@ function CiteRenderer(props: CiteProps) {
                 onViewCitation(id, parsedLines ? [parsedLines] : undefined);
               }
             }}
-            className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mr-0.5 text-xs font-medium text-ncl-blue bg-ncl-blue/10 rounded hover:bg-ncl-blue/20 transition-colors cursor-pointer align-super"
+            className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mr-0.5 text-xs font-medium text-MTSS-blue bg-MTSS-blue/10 rounded hover:bg-MTSS-blue/20 transition-colors cursor-pointer align-super"
             aria-label={`View source: ${displayTitle}`}
           >
             {children}
@@ -421,23 +421,23 @@ export function SourcesAccordion({ className }: SourcesAccordionProps) {
     <Card className={cn("overflow-hidden", className)}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-ncl-gray-light/20 transition-colors"
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-MTSS-gray-light/20 transition-colors"
       >
         <div className="flex items-center gap-2">
-          <FileText className="h-4 w-4 text-ncl-blue" />
-          <span className="font-medium text-sm text-ncl-blue-dark">
+          <FileText className="h-4 w-4 text-MTSS-blue" />
+          <span className="font-medium text-sm text-MTSS-blue-dark">
             Sources ({citationList.length})
           </span>
         </div>
         {isOpen ? (
-          <ChevronDown className="h-4 w-4 text-ncl-gray" />
+          <ChevronDown className="h-4 w-4 text-MTSS-gray" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-ncl-gray" />
+          <ChevronRight className="h-4 w-4 text-MTSS-gray" />
         )}
       </button>
 
       {isOpen && (
-        <div className="border-t border-ncl-gray-light">
+        <div className="border-t border-MTSS-gray-light">
           <ScrollArea className="max-h-64">
             <div className="p-2 space-y-1">
               {citationList.map((citation, idx) => {
@@ -485,21 +485,21 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
   }
 
   return (
-    <div className="flex items-center justify-between px-3 py-2 rounded-md hover:bg-ncl-gray-light/30 group">
+    <div className="flex items-center justify-between px-3 py-2 rounded-md hover:bg-MTSS-gray-light/30 group">
       <div className="flex items-center gap-3 min-w-0 flex-1">
-        <span className="flex-shrink-0 w-6 h-6 rounded-full bg-ncl-blue/10 text-ncl-blue text-xs font-medium flex items-center justify-center">
+        <span className="flex-shrink-0 w-6 h-6 rounded-full bg-MTSS-blue/10 text-MTSS-blue text-xs font-medium flex items-center justify-center">
           {displayIndex}
         </span>
         <div className="min-w-0 flex-1">
           {citation.titleLoading ? (
             <Skeleton className="h-4 w-48" />
           ) : (
-            <p className="text-sm font-medium text-ncl-blue-dark truncate">
+            <p className="text-sm font-medium text-MTSS-blue-dark truncate">
               {citation.title}
             </p>
           )}
           {locationParts.length > 0 && (
-            <p className="text-xs text-ncl-gray">{locationParts.join(" | ")}</p>
+            <p className="text-xs text-MTSS-gray">{locationParts.join(" | ")}</p>
           )}
         </div>
       </div>
@@ -518,7 +518,7 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
           <a
             href={`${getApiBaseUrl()}/archive/${citation.chunks[0].download}`}
             download
-            className="inline-flex items-center justify-center h-8 px-2 rounded-md text-sm font-medium hover:bg-ncl-gray-light/20 transition-colors"
+            className="inline-flex items-center justify-center h-8 px-2 rounded-md text-sm font-medium hover:bg-MTSS-gray-light/20 transition-colors"
             title="Download original"
           >
             <Download className="h-4 w-4" />
@@ -655,14 +655,14 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
                 {citation?.source_title || "Source Document"}
               </DialogTitle>
               {locationParts.length > 0 && (
-                <p className="text-sm text-ncl-gray mt-1">{locationParts.join(" | ")}</p>
+                <p className="text-sm text-MTSS-gray mt-1">{locationParts.join(" | ")}</p>
               )}
             </div>
             {citation?.archive_download_uri && (
               <a
                 href={`${getApiBaseUrl()}/archive/${citation.archive_download_uri}`}
                 download
-                className="inline-flex items-center justify-center h-9 px-3 rounded-md border border-ncl-gray-light bg-white text-sm font-medium hover:bg-ncl-gray-light/20 transition-colors"
+                className="inline-flex items-center justify-center h-9 px-3 rounded-md border border-MTSS-gray-light bg-white text-sm font-medium hover:bg-MTSS-gray-light/20 transition-colors"
               >
                 <Download className="h-4 w-4 mr-2" />
                 Download
@@ -687,7 +687,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
             )}
 
             {processedContent && !loading && (
-              <div className="prose prose-sm max-w-none prose-headings:text-ncl-blue-dark prose-p:text-ncl-blue-dark prose-li:text-ncl-blue-dark prose-a:text-ncl-blue prose-a:underline prose-hr:my-4 [&_p]:mb-4 [&_br+br]:block [&_br+br]:h-2 [&_.citation-highlight]:bg-yellow-200 [&_.citation-highlight]:px-0.5 [&_.citation-highlight]:rounded">
+              <div className="prose prose-sm max-w-none prose-headings:text-MTSS-blue-dark prose-p:text-MTSS-blue-dark prose-li:text-MTSS-blue-dark prose-a:text-MTSS-blue prose-a:underline prose-hr:my-4 [&_p]:mb-4 [&_br+br]:block [&_br+br]:h-2 [&_.citation-highlight]:bg-yellow-200 [&_.citation-highlight]:px-0.5 [&_.citation-highlight]:rounded">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkBreaks]}
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -761,7 +761,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
             )}
 
             {!processedContent && !loading && !error && (
-              <p className="text-ncl-gray text-sm">No content available for this source.</p>
+              <p className="text-MTSS-gray text-sm">No content available for this source.</p>
             )}
           </div>
         </ScrollArea>

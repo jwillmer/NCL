@@ -1,4 +1,4 @@
-# NCL - Email RAG Pipeline
+﻿# MTSS - Email RAG Pipeline
 
 RAG pipeline for processing EML email files with attachments, preserving document hierarchy for context-aware question answering with source links.
 
@@ -30,10 +30,10 @@ uv sync
 After installation, use `uv run` to execute CLI commands:
 
 ```bash
-uv run ncl --help
+uv run MTSS --help
 ```
 
-Alternatively, activate the virtual environment to use `ncl` directly:
+Alternatively, activate the virtual environment to use `MTSS` directly:
 
 ```bash
 # Linux/macOS
@@ -45,8 +45,8 @@ source .venv/bin/activate
 # Windows (Command Prompt)
 .venv\Scripts\activate.bat
 
-# Now you can use ncl directly
-ncl --help
+# Now you can use MTSS directly
+MTSS --help
 ```
 
 ## Quick Start
@@ -72,19 +72,19 @@ cp .env.template .env
 #
 #    ⚠️ BREAKING CHANGE: The schema has been updated with new fields
 #    for stable IDs, contextual chunking, and archive links. Existing
-#    databases must be recreated (ncl clean) or migrated manually.
+#    databases must be recreated (MTSS clean) or migrated manually.
 
 # 4. Import vessel register (optional - enables vessel filtering)
-uv run ncl vessels import data/vessel-list.csv
+uv run MTSS vessels import data/vessel-list.csv
 
 # 5. Ingest emails
-uv run ncl ingest --source ./data/emails
+uv run MTSS ingest --source ./data/emails
 
 # 6. Query the system
-uv run ncl query "What did John say about the project deadline?"
+uv run MTSS query "What did John say about the project deadline?"
 
 # 7. Search without generating answer
-uv run ncl search "budget allocation" --top-k 10
+uv run MTSS search "budget allocation" --top-k 10
 ```
 
 ## Documentation
@@ -99,38 +99,38 @@ See the [docs/](docs/) folder for detailed documentation:
 
 | Command | Description |
 |---------|-------------|
-| `uv run ncl ingest` | Process EML files into the RAG system |
-| `uv run ncl query` | Ask questions with AI-generated answers |
-| `uv run ncl search` | Search without generating an answer |
-| `uv run ncl stats` | View processing statistics |
-| `uv run ncl failures` | View/export ingest reports |
-| `uv run ncl reset-stale` | Reset files stuck in processing |
-| `uv run ncl reprocess` | Re-ingest documents with older ingest version |
-| `uv run ncl vessels import` | Import vessel register from CSV |
-| `uv run ncl vessels list` | List all vessels in registry |
-| `uv run ncl vessels retag` | Re-tag existing chunks with vessel IDs |
-| `uv run ncl clean` | Delete all data (database + processed files) |
+| `uv run MTSS ingest` | Process EML files into the RAG system |
+| `uv run MTSS query` | Ask questions with AI-generated answers |
+| `uv run MTSS search` | Search without generating an answer |
+| `uv run MTSS stats` | View processing statistics |
+| `uv run MTSS failures` | View/export ingest reports |
+| `uv run MTSS reset-stale` | Reset files stuck in processing |
+| `uv run MTSS reprocess` | Re-ingest documents with older ingest version |
+| `uv run MTSS vessels import` | Import vessel register from CSV |
+| `uv run MTSS vessels list` | List all vessels in registry |
+| `uv run MTSS vessels retag` | Re-tag existing chunks with vessel IDs |
+| `uv run MTSS clean` | Delete all data (database + processed files) |
 
 ### Ingest Options
 
 ```bash
 # Verbose mode - show detailed processing info
-uv run ncl ingest --source ./data/emails --verbose
+uv run MTSS ingest --source ./data/emails --verbose
 
 # Retry failed files
-uv run ncl ingest --retry-failed
+uv run MTSS ingest --retry-failed
 
 # Process without resuming from previous state
-uv run ncl ingest --no-resume
+uv run MTSS ingest --no-resume
 
 # Reprocess files ingested with an older version
-uv run ncl ingest --reprocess-outdated
+uv run MTSS ingest --reprocess-outdated
 
 # Note: By default, ingest reuses previously parsed attachment content
 # from the archive bucket. Use --reprocess-outdated to force re-parsing.
 
 # Process 10 emails concurrently (default: 5)
-MAX_CONCURRENT_FILES=10 uv run ncl ingest
+MAX_CONCURRENT_FILES=10 uv run MTSS ingest
 ```
 
 ### Graceful Shutdown
@@ -143,13 +143,13 @@ After each ingest run, a report is exported to `data/reports/`:
 
 ```bash
 # View recent reports
-uv run ncl failures
+uv run MTSS failures
 
 # Show details of latest report
-uv run ncl failures --latest
+uv run MTSS failures --latest
 
 # Export fresh report from current database state
-uv run ncl failures --export
+uv run MTSS failures --export
 ```
 
 Reports are saved as JSON and CSV. The system keeps the last 30 reports.
@@ -160,16 +160,16 @@ Re-ingest documents that were processed with an older ingest version. Useful aft
 
 ```bash
 # Show documents needing reprocessing (dry run)
-uv run ncl reprocess --dry-run
+uv run MTSS reprocess --dry-run
 
 # Reprocess documents below current version
-uv run ncl reprocess
+uv run MTSS reprocess
 
 # Reprocess documents below a specific version
-uv run ncl reprocess --target-version 2
+uv run MTSS reprocess --target-version 2
 
 # Limit number of documents processed
-uv run ncl reprocess --limit 50
+uv run MTSS reprocess --limit 50
 ```
 
 ### Vessel Commands
@@ -178,22 +178,22 @@ Import and manage the vessel register for document filtering:
 
 ```bash
 # Import vessels from CSV (semicolon-delimited)
-uv run ncl vessels import data/vessel-list.csv
+uv run MTSS vessels import data/vessel-list.csv
 
 # Clear existing vessels before import
-uv run ncl vessels import --clear
+uv run MTSS vessels import --clear
 
 # List all vessels in registry
-uv run ncl vessels list
+uv run MTSS vessels list
 
 # Re-tag existing chunks after adding new vessels (without re-ingesting)
-uv run ncl vessels retag
+uv run MTSS vessels retag
 
 # Preview what would be updated
-uv run ncl vessels retag --dry-run
+uv run MTSS vessels retag --dry-run
 
 # Limit to first N documents
-uv run ncl vessels retag --limit 100
+uv run MTSS vessels retag --limit 100
 ```
 
 CSV format (semicolon-delimited):
@@ -208,13 +208,13 @@ Delete all data from the database and local processed files. Useful for testing:
 
 ```bash
 # Clean all data (prompts for confirmation)
-uv run ncl clean
+uv run MTSS clean
 
 # Skip confirmation prompt
-uv run ncl clean --yes
+uv run MTSS clean --yes
 
 # Clean with verbose output (shows per-table counts)
-uv run ncl clean --verbose
+uv run MTSS clean --verbose
 ```
 
 ## Architecture Overview
@@ -227,7 +227,7 @@ User Query → Embedding → Vector Search → Reranking → LLM → Answer
 
 ## Web Interface
 
-NCL includes a modern web interface built with Next.js and the AG-UI SDK for conversational document search.
+MTSS includes a modern web interface built with Next.js and the AG-UI SDK for conversational document search.
 
 ### Architecture
 
@@ -272,7 +272,7 @@ cd web && npm install      # Next.js app
 # 3. Start services (2 terminals)
 
 # Terminal 1: Python Agent (port 8000)
-uv run python -m ncl.api.main
+uv run python -m mtss.api.main
 
 # Terminal 2: Next.js App (port 3000)
 cd web && npm run dev
@@ -284,7 +284,7 @@ cd web && npm run dev
 
 **Python Agent** (`.env`):
 ```bash
-# Existing NCL config plus:
+# Existing MTSS config plus:
 CORS_ORIGINS=http://localhost:3000
 API_HOST=0.0.0.0
 API_PORT=8000
@@ -314,7 +314,7 @@ NEXT_PUBLIC_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 - **Agent State Sync:** Bidirectional state between frontend and Python agent via AG-UI protocol
 - **User Feedback:** Thumbs up/down feedback on assistant responses, tracked in Langfuse (backend + browser)
 - **Langfuse Browser SDK:** Client-side user interaction tracking with consistent session IDs
-- **Professional Design:** NCL brand colors and responsive layout
+- **Professional Design:** MTSS brand colors and responsive layout
 
 ### Response Format
 
@@ -519,8 +519,8 @@ When running in Docker, everything is served on port 8000:
 ### CI/CD
 
 The GitHub Action (`.github/workflows/docker-build.yml`) automatically builds and pushes images to GitHub Container Registry:
-- Push to `main` → `ghcr.io/<owner>/ncl:latest`
-- Push tag `v1.0.0` → `ghcr.io/<owner>/ncl:1.0.0`
+- Push to `main` → `ghcr.io/<owner>/MTSS:latest`
+- Push tag `v1.0.0` → `ghcr.io/<owner>/MTSS:1.0.0`
 
 ## Testing
 
@@ -529,7 +529,7 @@ The GitHub Action (`.github/workflows/docker-build.yml`) automatically builds an
 uv run pytest tests/
 
 # Run with coverage
-uv run pytest tests/ --cov=ncl --cov-report=term-missing
+uv run pytest tests/ --cov=MTSS --cov-report=term-missing
 
 # Run specific test file
 uv run pytest tests/test_eml_parser.py

@@ -1,4 +1,4 @@
-import type { Config } from "tailwindcss";
+﻿import type { Config } from "tailwindcss";
 
 const config: Config = {
   darkMode: ["class"],
@@ -11,7 +11,7 @@ const config: Config = {
     extend: {
       colors: {
         // Maran Tankers Brand Colors
-        ncl: {
+        MTSS: {
           blue: {
             DEFAULT: "#1B365D",
             dark: "#0F2340",

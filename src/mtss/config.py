@@ -1,4 +1,4 @@
-"""Configuration management using Pydantic settings."""
+﻿"""Configuration management using Pydantic settings."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class Settings(BaseSettings):
         ├── source/           # User-provided data (read-only)
         │   ├── emails/       # EML files (can have subdirectories)
         │   └── ...           # Users can organize as they wish
-        └── processed/        # NCL-generated data
+        └── processed/        # MTSS-generated data
             ├── attachments/  # Extracted email attachments
             └── extracted/    # Extracted ZIP contents
     """
@@ -84,7 +84,7 @@ class Settings(BaseSettings):
         default=Path("./data/source"), validation_alias="DATA_SOURCE_DIR"
     )
 
-    # File Storage Paths - Processed Data (NCL-generated)
+    # File Storage Paths - Processed Data (MTSS-generated)
     data_processed_dir: Path = Field(
         default=Path("./data/processed"), validation_alias="DATA_PROCESSED_DIR"
     )

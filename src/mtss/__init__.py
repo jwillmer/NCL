@@ -1,4 +1,4 @@
-"""NCL - RAG pipeline for email processing with attachments."""
+﻿"""MTSS - RAG pipeline for email processing with attachments."""
 
 import os
 from functools import lru_cache
@@ -27,7 +27,7 @@ def _init_api_keys() -> None:
 
 
 def init() -> None:
-    """Explicitly initialize NCL configuration and API keys.
+    """Explicitly initialize MTSS configuration and API keys.
 
     Call this at application startup if automatic initialization fails.
     """

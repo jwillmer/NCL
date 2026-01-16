@@ -1,4 +1,4 @@
-"""LangGraph Agent for NCL Email RAG with granular UI updates.
+﻿"""LangGraph Agent for MTSS Email RAG with granular UI updates.
 
 Architecture:
     User Question

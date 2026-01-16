@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * Authentication components - AuthProvider, LoginForm, UserMenu.
@@ -90,11 +90,11 @@ export function LoginForm() {
   }, []);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-ncl-blue to-ncl-blue-dark p-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-MTSS-blue to-MTSS-blue-dark p-4">
       <div className="w-full max-w-md bg-white rounded-lg shadow-xl p-8">
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-ncl-blue">Maritime Technical Support System (MTSS)</h1>
-          <p className="text-ncl-gray mt-2">Sign in to access vessel issue history and technical knowledge base</p>
+          <h1 className="text-2xl font-bold text-MTSS-blue">Maritime Technical Support System (MTSS)</h1>
+          <p className="text-MTSS-gray mt-2">Sign in to access vessel issue history and technical knowledge base</p>
         </div>
 
         <Auth
@@ -152,24 +152,24 @@ export function UserMenu() {
         <Button
           variant="ghost"
           size="icon"
-          className="relative h-10 w-10 rounded-full bg-ncl-blue-light"
+          className="relative h-10 w-10 rounded-full bg-MTSS-blue-light"
         >
           <span className="text-sm font-medium text-white">{initials}</span>
         </Button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
-          className="min-w-[200px] bg-white rounded-md shadow-lg border border-ncl-gray-light p-1 z-50"
+          className="min-w-[200px] bg-white rounded-md shadow-lg border border-MTSS-gray-light p-1 z-50"
           align="end"
           sideOffset={5}
         >
-          <div className="px-3 py-2 border-b border-ncl-gray-light">
-            <p className="text-sm font-medium text-ncl-blue-dark truncate">
+          <div className="px-3 py-2 border-b border-MTSS-gray-light">
+            <p className="text-sm font-medium text-MTSS-blue-dark truncate">
               {user.email}
             </p>
           </div>
           <DropdownMenu.Item
-            className="flex items-center gap-2 px-3 py-2 text-sm text-ncl-gray cursor-pointer hover:bg-ncl-gray-light/20 rounded-md outline-none"
+            className="flex items-center gap-2 px-3 py-2 text-sm text-MTSS-gray cursor-pointer hover:bg-MTSS-gray-light/20 rounded-md outline-none"
             onSelect={() => signOut()}
           >
             <LogOut className="h-4 w-4" />

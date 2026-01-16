@@ -1,4 +1,4 @@
-"""Supabase client wrapper for database operations and vector search."""
+﻿"""Supabase client wrapper for database operations and vector search."""
 
 from __future__ import annotations
 
@@ -662,7 +662,7 @@ class SupabaseClient:
         """Reset failed documents by deleting their database entries.
 
         This allows them to be reprocessed on the next ingest run.
-        Used by the `ncl reset-failures` command to clear failed documents
+        Used by the `MTSS reset-failures` command to clear failed documents
         from a JSON failure report.
 
         Deletion order:
