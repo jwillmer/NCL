@@ -69,7 +69,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Skip auth for static frontend files (Next.js static export)
+        # Allow root, .html files, and frontend page routes (chat, conversations)
         if path == "/" or path.endswith(".html"):
+            return await call_next(request)
+        # Allow frontend page routes (these are served as directory index.html)
+        # e.g., /chat, /chat/, /conversations, /conversations/
+        if path in ("/chat", "/chat/", "/conversations", "/conversations/"):
             return await call_next(request)
         if path.startswith(self.STATIC_PREFIXES):
             return await call_next(request)
