@@ -8,8 +8,10 @@ Conversation history is persisted via LangGraph's AsyncPostgresSaver checkpointe
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
+import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -46,7 +48,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """JWT authentication middleware for defense-in-depth security."""
 
     # Paths that don't require authentication
-    PUBLIC_PATHS = {"/health", "/docs", "/redoc", "/openapi.json"}
+    PUBLIC_PATHS = {"/health", "/docs", "/redoc", "/openapi.json", "/config.js"}
 
     async def dispatch(self, request: Request, call_next):
         """Validate JWT token for protected routes."""
@@ -248,6 +250,41 @@ def create_app() -> FastAPI:
             "version": APP_VERSION,
             "git_sha": GIT_SHA_SHORT,
         }
+
+    # Frontend runtime configuration endpoint
+    # Serves env vars as JavaScript for static Next.js export
+    @app.get("/config.js")
+    @limiter.limit("60/minute")
+    async def frontend_config(request: Request):
+        """Serve frontend runtime configuration as JavaScript.
+
+        This endpoint allows runtime configuration of the static Next.js frontend
+        in Docker deployments. The frontend loads this script which sets
+        window.__MTSS_CONFIG__ with the actual environment values.
+
+        Environment variables (set in Docker):
+        - NEXT_PUBLIC_SUPABASE_URL: Supabase project URL
+        - NEXT_PUBLIC_SUPABASE_ANON_KEY: Supabase anonymous key
+        - NEXT_PUBLIC_API_URL: Backend API URL (optional, defaults to same origin)
+        - NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY: Langfuse public key (optional)
+        - NEXT_PUBLIC_LANGFUSE_BASE_URL: Langfuse base URL (optional)
+        """
+        config = {
+            "SUPABASE_URL": os.environ.get("NEXT_PUBLIC_SUPABASE_URL", ""),
+            "SUPABASE_ANON_KEY": os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY", ""),
+            "API_URL": os.environ.get("NEXT_PUBLIC_API_URL", ""),
+            "LANGFUSE_PUBLIC_KEY": os.environ.get("NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY", ""),
+            "LANGFUSE_BASE_URL": os.environ.get("NEXT_PUBLIC_LANGFUSE_BASE_URL", ""),
+        }
+
+        # Generate JavaScript that sets window.__MTSS_CONFIG__
+        js_content = f"window.__MTSS_CONFIG__ = {json.dumps(config)};"
+
+        return Response(
+            content=js_content,
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     # Archive file serving endpoint
     # Uses same JWT auth as all other endpoints (via AuthMiddleware)

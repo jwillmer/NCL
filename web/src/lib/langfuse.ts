@@ -7,6 +7,8 @@
 
 import { LangfuseWeb } from "langfuse";
 
+import { getConfig } from "./config";
+
 let langfuseWeb: LangfuseWeb | null = null;
 
 /**
@@ -14,8 +16,9 @@ let langfuseWeb: LangfuseWeb | null = null;
  * Call this once on app startup.
  */
 export function initLangfuse(): void {
-  const publicKey = process.env.NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY;
-  const baseUrl = process.env.NEXT_PUBLIC_LANGFUSE_BASE_URL;
+  const config = getConfig();
+  const publicKey = config.LANGFUSE_PUBLIC_KEY;
+  const baseUrl = config.LANGFUSE_BASE_URL;
 
   if (!publicKey) {
     console.debug("Langfuse not configured for browser (missing NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY)");

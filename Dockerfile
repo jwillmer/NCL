@@ -24,6 +24,7 @@ ARG GIT_SHA=development
 ENV NEXT_PUBLIC_GIT_SHA=${GIT_SHA}
 
 # Build static export
+# Note: NEXT_PUBLIC_* env vars are loaded at runtime via /config.js endpoint
 RUN npm run build
 
 # -----------------------------------------------------------------------------

@@ -2,6 +2,7 @@
  * Conversations API client for managing chat history.
  */
 
+import { getConfig } from "./config";
 import { getSupabase } from "./supabase";
 
 // ============================================
@@ -81,7 +82,9 @@ async function getAuthHeaders(): Promise<HeadersInit> {
 }
 
 export function getApiBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const config = getConfig();
+  // Use configured API URL, or default to same origin (for Docker deployments)
+  return config.API_URL || "";
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {

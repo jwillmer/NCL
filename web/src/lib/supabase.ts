@@ -1,24 +1,30 @@
 import { createBrowserClient } from "@supabase/ssr";
 import { SupabaseClient } from "@supabase/supabase-js";
 
+import { getConfig } from "./config";
+
 let _supabase: SupabaseClient | null = null;
 
 /**
  * Get the Supabase client (lazy initialization).
  * This avoids creating the client at module load time, which would fail
  * during Next.js static export when env vars are not available.
+ *
+ * Uses runtime config from /config.js in Docker deployments,
+ * falls back to process.env in development.
  */
 export function getSupabase(): SupabaseClient {
   if (_supabase) {
     return _supabase;
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const config = getConfig();
+  const supabaseUrl = config.SUPABASE_URL;
+  const supabaseAnonKey = config.SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error(
-      "Missing Supabase environment variables. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY."
+      "Missing Supabase configuration. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY."
     );
   }
 
