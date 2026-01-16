@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "mtss"
 version = "0.1.0"
 description = "RAG pipeline for email processing with attachments"

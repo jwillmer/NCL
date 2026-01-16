@@ -1,4 +1,4 @@
-﻿{
+{
   "permissions": {
     "allow": [
       "Bash(dir:*)",
@@ -68,7 +68,10 @@
       "Bash(powershell -Command \"cd C:\\\\Projects\\\\GitHub\\\\MTSS; python -m src.mtss.cli ingest-update --source data/emails --limit 3 --verbose\")",
       "Bash(git check-ignore:*)",
       "Bash(git show:*)",
-      "Bash(PGPASSWORD=l6qSeLEx7QIXD8b3 psql:*)"
+      "Bash(PGPASSWORD=l6qSeLEx7QIXD8b3 psql:*)",
+      "Bash(xxd:*)",
+      "Bash(uv lock:*)",
+      "Bash(timeout 10 npm run dev)"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\MTSS\\web\\src\\app\\chat\\[threadId]"

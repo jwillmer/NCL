@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # MTSS Dockerfile
 # Multi-stage build: Frontend (Next.js) + Backend (FastAPI) in single image
 # =============================================================================
@@ -44,7 +44,7 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 
 RUN uv venv /app/.venv && \
-    uv pip install --python /app/.venv/bin/python -e ".[api]"
+    uv pip install --python /app/.venv/bin/python ".[api]"
 
 # -----------------------------------------------------------------------------
 # Stage 3: Runtime
