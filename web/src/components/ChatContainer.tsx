@@ -26,7 +26,7 @@ import {
   SourceViewDialog,
   useCitationContext,
 } from "./Sources";
-import { AgentChat, AssistantMessageRenderProps, ExtendedMessage, VesselLookup } from "./AgentChat";
+import { AgentChat, AssistantMessageRenderProps, ExtendedMessage, VesselLookup, Vessel } from "./AgentChat";
 import { getMessages, touchConversation, generateTitle, submitFeedback, listVessels, getApiBaseUrl } from "@/lib/conversations";
 import { trackFeedback } from "@/lib/langfuse";
 
@@ -173,9 +173,29 @@ interface ChatContainerProps {
   disabled?: boolean;
   /** Selected vessel ID for filtering search results */
   vesselId?: string | null;
+  /** Filter props */
+  vessels?: Vessel[];
+  vesselsLoading?: boolean;
+  vesselClassId?: string | null;
+  vesselTypeId?: string | null;
+  onVesselChange?: (value: string | null) => void;
+  onVesselClassChange?: (value: string | null) => void;
+  onVesselTypeChange?: (value: string | null) => void;
 }
 
-export function ChatContainer({ threadId, authToken, disabled = false, vesselId }: ChatContainerProps) {
+export function ChatContainer({
+  threadId,
+  authToken,
+  disabled = false,
+  vesselId,
+  vessels,
+  vesselsLoading,
+  vesselClassId,
+  vesselTypeId,
+  onVesselChange,
+  onVesselClassChange,
+  onVesselTypeChange,
+}: ChatContainerProps) {
   // History loading state
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [initialMessages, setInitialMessages] = useState<ExtendedMessage[]>([]);
@@ -311,6 +331,13 @@ export function ChatContainer({ threadId, authToken, disabled = false, vesselId 
             onMessagesChange={handleMessagesChange}
             renderAssistantMessage={CustomAssistantMessage}
             vesselLookup={vesselLookup}
+            vessels={vessels}
+            vesselsLoading={vesselsLoading}
+            vesselClassId={vesselClassId}
+            vesselTypeId={vesselTypeId}
+            onVesselChange={onVesselChange}
+            onVesselClassChange={onVesselClassChange}
+            onVesselTypeChange={onVesselTypeChange}
           >
             {/* Show spinner while history is loading */}
             {!historyLoaded && (

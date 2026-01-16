@@ -7,14 +7,12 @@
 
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Ship, ChevronDown, Archive } from "lucide-react";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { ArrowLeft, Archive } from "lucide-react";
 
 import { useAuth, LoginForm } from "@/components/auth";
 import { ChatContainer } from "@/components/ChatContainer";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Button } from "@/components/ui";
-import { cn } from "@/lib/utils";
 import { initLangfuse } from "@/lib/langfuse";
 import {
   Conversation,
@@ -32,111 +30,17 @@ if (typeof window !== "undefined") {
 }
 
 // ============================================
-// Vessel Selector
-// ============================================
-
-interface VesselSelectorProps {
-  value: string | null;
-  vessels: Vessel[];
-  loading?: boolean;
-  onChange: (value: string | null) => void;
-}
-
-function VesselSelector({ value, vessels, loading, onChange }: VesselSelectorProps) {
-  const [search, setSearch] = useState("");
-
-  // Build options list with "All Vessels" at the top
-  const options: { id: string | null; name: string }[] = [
-    { id: null, name: "All Vessels" },
-    ...vessels.map((v) => ({ id: v.id, name: v.name })),
-  ];
-
-  // Filter options by search term
-  const filteredOptions = search
-    ? options.filter((v) =>
-        v.name.toLowerCase().includes(search.toLowerCase())
-      )
-    : options;
-
-  const selectedOption = options.find((v) => v.id === value) || options[0];
-
-  return (
-    <DropdownMenu.Root onOpenChange={(open) => !open && setSearch("")}>
-      <DropdownMenu.Trigger asChild>
-        <Button variant="outline" size="sm" className="gap-2" disabled={loading}>
-          <Ship className="h-4 w-4" />
-          <span className="max-w-[120px] truncate">
-            {loading ? "Loading..." : selectedOption.name}
-          </span>
-          <ChevronDown className="h-3 w-3 opacity-50" />
-        </Button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          className="min-w-[180px] bg-white rounded-md shadow-lg border border-MTSS-gray-light z-50"
-          align="end"
-        >
-          {/* Search input */}
-          <div className="p-2 border-b border-MTSS-gray-light">
-            <input
-              type="text"
-              placeholder="Search vessels..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full px-2 py-1 text-sm border border-MTSS-gray-light rounded outline-none focus:border-MTSS-blue"
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => e.stopPropagation()}
-            />
-          </div>
-          {/* Filtered list */}
-          <div className="max-h-[250px] overflow-y-auto p-1">
-            {filteredOptions.length > 0 ? (
-              filteredOptions.map((option) => (
-                <DropdownMenu.Item
-                  key={option.id || "all"}
-                  className={cn(
-                    "flex items-center gap-2 px-3 py-2 text-sm cursor-pointer rounded outline-none",
-                    option.id === value
-                      ? "bg-MTSS-blue/10 text-MTSS-blue"
-                      : "hover:bg-MTSS-gray-light/50"
-                  )}
-                  onSelect={() => onChange(option.id)}
-                >
-                  {option.name}
-                </DropdownMenu.Item>
-              ))
-            ) : (
-              <div className="px-3 py-2 text-sm text-gray-500">
-                No vessels found
-              </div>
-            )}
-          </div>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
-}
-
-// ============================================
 // Chat Header
 // ============================================
 
 interface ChatHeaderProps {
   conversation: Conversation | null;
-  vesselId: string | null;
-  vessels: Vessel[];
-  vesselsLoading: boolean;
   onBack: () => void;
-  onVesselChange: (value: string | null) => void;
 }
 
 function ChatHeader({
   conversation,
-  vesselId,
-  vessels,
-  vesselsLoading,
   onBack,
-  onVesselChange,
 }: ChatHeaderProps) {
   const isArchived = conversation?.is_archived ?? false;
 
@@ -164,14 +68,6 @@ function ChatHeader({
             </span>
           )}
         </div>
-        {!isArchived && (
-          <VesselSelector
-            value={vesselId}
-            vessels={vessels}
-            loading={vesselsLoading}
-            onChange={onVesselChange}
-          />
-        )}
       </div>
     </header>
   );
@@ -190,6 +86,8 @@ function ChatPageContent() {
 
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [vesselId, setVesselId] = useState<string | null>(null);
+  const [vesselClassId, setVesselClassId] = useState<string | null>(null);
+  const [vesselTypeId, setVesselTypeId] = useState<string | null>(null);
   const [vessels, setVessels] = useState<Vessel[]>([]);
   const [vesselsLoading, setVesselsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -254,10 +152,13 @@ function ChatPageContent() {
     router.push("/conversations");
   }, [router]);
 
-  // Handle vessel filter change
+  // Handle vessel filter change - clears other filters (mutual exclusivity)
   const handleVesselChange = useCallback(
     async (value: string | null) => {
       setVesselId(value);
+      // Always clear other filters for mutual exclusivity
+      setVesselClassId(null);
+      setVesselTypeId(null);
       if (conversation) {
         try {
           // Pass null explicitly to clear vessel filter, or the vessel_id to set it
@@ -269,6 +170,22 @@ function ChatPageContent() {
     },
     [conversation, threadId]
   );
+
+  // Handle vessel class filter change - clears other filters (mutual exclusivity)
+  const handleVesselClassChange = useCallback((value: string | null) => {
+    setVesselClassId(value);
+    // Always clear other filters for mutual exclusivity
+    setVesselId(null);
+    setVesselTypeId(null);
+  }, []);
+
+  // Handle vessel type filter change - clears other filters (mutual exclusivity)
+  const handleVesselTypeChange = useCallback((value: string | null) => {
+    setVesselTypeId(value);
+    // Always clear other filters for mutual exclusivity
+    setVesselId(null);
+    setVesselClassId(null);
+  }, []);
 
   // Auth loading
   if (authLoading) {
@@ -309,11 +226,7 @@ function ChatPageContent() {
     <div className="flex h-screen overflow-hidden flex-col bg-gray-50">
       <ChatHeader
         conversation={conversation}
-        vesselId={vesselId}
-        vessels={vessels}
-        vesselsLoading={vesselsLoading}
         onBack={handleBack}
-        onVesselChange={handleVesselChange}
       />
       <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
         <ChatContainer
@@ -321,6 +234,13 @@ function ChatPageContent() {
           authToken={session.access_token}
           disabled={isArchived}
           vesselId={vesselId}
+          vessels={vessels}
+          vesselsLoading={vesselsLoading}
+          vesselClassId={vesselClassId}
+          vesselTypeId={vesselTypeId}
+          onVesselChange={handleVesselChange}
+          onVesselClassChange={handleVesselClassChange}
+          onVesselTypeChange={handleVesselTypeChange}
         />
       </main>
     </div>

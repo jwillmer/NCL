@@ -11,7 +11,9 @@ import { createContext, useContext, useRef, useEffect, useState, FormEvent, Keyb
 import { Message } from "@ag-ui/client";
 import { useAgentChat, UseAgentChatReturn, ConnectionStatus } from "@/hooks/useAgentChat";
 import { RAGState } from "@/types/rag";
-import { Send, Loader2, AlertCircle, WifiOff, Ship } from "lucide-react";
+import { Send, Loader2, AlertCircle, WifiOff, Ship, ChevronDown } from "lucide-react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -54,6 +56,178 @@ function getMessageText(content: Message["content"]): string {
 // Vessel lookup map for displaying vessel names
 export type VesselLookup = Record<string, string>; // vessel_id -> vessel_name
 
+// Vessel type for filter dropdown
+export interface Vessel {
+  id: string;
+  name: string;
+}
+
+// ============================================
+// Filter Selector Component
+// ============================================
+
+// Mock options for placeholder dropdowns
+const VESSEL_CLASS_OPTIONS = [
+  { id: null, name: "All Classes" },
+  { id: "passenger", name: "Passenger" },
+  { id: "cargo", name: "Cargo" },
+  { id: "tanker", name: "Tanker" },
+];
+
+const VESSEL_TYPE_OPTIONS = [
+  { id: null, name: "All Types" },
+  { id: "cruise", name: "Cruise Ship" },
+  { id: "container", name: "Container" },
+  { id: "bulk", name: "Bulk Carrier" },
+];
+
+interface FilterSelectorProps {
+  vesselId: string | null;
+  vesselClassId: string | null;
+  vesselTypeId: string | null;
+  vessels: Vessel[];
+  vesselsLoading: boolean;
+  onVesselChange: (value: string | null) => void;
+  onVesselClassChange: (value: string | null) => void;
+  onVesselTypeChange: (value: string | null) => void;
+  disabled?: boolean;
+}
+
+function FilterDropdown({
+  label,
+  value,
+  options,
+  loading,
+  onChange,
+  disabled,
+  searchable,
+}: {
+  label: string;
+  value: string | null;
+  options: { id: string | null; name: string }[];
+  loading?: boolean;
+  onChange: (value: string | null) => void;
+  disabled?: boolean;
+  searchable?: boolean;
+}) {
+  const [search, setSearch] = useState("");
+
+  const filteredOptions = searchable && search
+    ? options.filter((v) => v.name.toLowerCase().includes(search.toLowerCase()))
+    : options;
+
+  const selectedOption = options.find((v) => v.id === value) || options[0];
+
+  return (
+    <DropdownMenu.Root onOpenChange={(open) => !open && setSearch("")}>
+      <DropdownMenu.Trigger asChild>
+        <button
+          className={cn(
+            "flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors",
+            disabled && "opacity-50 cursor-not-allowed"
+          )}
+          disabled={disabled || loading}
+        >
+          <Ship className="h-4 w-4 text-gray-500" />
+          <span className="max-w-[100px] truncate">
+            {loading ? "Loading..." : selectedOption.name}
+          </span>
+          <ChevronDown className="h-3 w-3 opacity-50" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          className="min-w-[180px] bg-white rounded-md shadow-lg border border-gray-200 z-50"
+          align="start"
+        >
+          {searchable && (
+            <div className="p-2 border-b border-gray-200">
+              <input
+                type="text"
+                placeholder={`Search ${label.toLowerCase()}...`}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full px-2 py-1 text-sm border border-gray-200 rounded outline-none focus:border-blue-500"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              />
+            </div>
+          )}
+          <div className="max-h-[250px] overflow-y-auto p-1">
+            {filteredOptions.length > 0 ? (
+              filteredOptions.map((option) => (
+                <DropdownMenu.Item
+                  key={option.id || "all"}
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-2 text-sm cursor-pointer rounded outline-none",
+                    option.id === value
+                      ? "bg-blue-50 text-blue-600"
+                      : "hover:bg-gray-100"
+                  )}
+                  onSelect={() => onChange(option.id)}
+                >
+                  {option.name}
+                </DropdownMenu.Item>
+              ))
+            ) : (
+              <div className="px-3 py-2 text-sm text-gray-500">
+                No results found
+              </div>
+            )}
+          </div>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
+function FilterSelector({
+  vesselId,
+  vesselClassId,
+  vesselTypeId,
+  vessels,
+  vesselsLoading,
+  onVesselChange,
+  onVesselClassChange,
+  onVesselTypeChange,
+  disabled,
+}: FilterSelectorProps) {
+  const vesselOptions: { id: string | null; name: string }[] = [
+    { id: null, name: "All Vessels" },
+    ...vessels.map((v) => ({ id: v.id, name: v.name })),
+  ];
+
+  return (
+    <div className="px-4 py-2 bg-gray-50/80 border-b border-gray-200">
+      <div className="max-w-3xl mx-auto flex items-center gap-2">
+        <FilterDropdown
+          label="Vessel"
+          value={vesselId}
+          options={vesselOptions}
+          loading={vesselsLoading}
+          onChange={onVesselChange}
+          disabled={disabled}
+          searchable
+        />
+        <FilterDropdown
+          label="Vessel Class"
+          value={vesselClassId}
+          options={VESSEL_CLASS_OPTIONS}
+          onChange={onVesselClassChange}
+          disabled={disabled}
+        />
+        <FilterDropdown
+          label="Vessel Type"
+          value={vesselTypeId}
+          options={VESSEL_TYPE_OPTIONS}
+          onChange={onVesselTypeChange}
+          disabled={disabled}
+        />
+      </div>
+    </div>
+  );
+}
+
 // Context for sharing agent chat state with child components
 interface AgentChatContextType extends UseAgentChatReturn {
   threadId: string;
@@ -90,6 +264,14 @@ interface AgentChatProps {
   renderAssistantMessage?: (props: AssistantMessageRenderProps) => React.ReactNode;
   vesselLookup?: VesselLookup;
   children?: React.ReactNode;
+  // Filter props
+  vessels?: Vessel[];
+  vesselsLoading?: boolean;
+  vesselClassId?: string | null;
+  vesselTypeId?: string | null;
+  onVesselChange?: (value: string | null) => void;
+  onVesselClassChange?: (value: string | null) => void;
+  onVesselTypeChange?: (value: string | null) => void;
 }
 
 /**
@@ -219,6 +401,7 @@ function RenderAssistantMessage({
  */
 function MessageList({
   messages,
+  isLoading,
   isStreaming,
   streamingContent,
   streamingMessageId,
@@ -227,6 +410,7 @@ function MessageList({
   vesselLookup,
 }: {
   messages: ExtendedMessage[];
+  isLoading: boolean;
   isStreaming: boolean;
   streamingContent: string;
   streamingMessageId: string | null;
@@ -277,7 +461,7 @@ function MessageList({
   const showInitialMessage = visibleMessages.length === 0 && !isStreaming && initialMessage;
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 pb-24 space-y-6 scroll-smooth">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 pb-36 space-y-6 scroll-smooth">
       {showInitialMessage && (
         <div className="flex gap-4 max-w-3xl mx-auto">
           <div className="flex-shrink-0 w-8 h-8 rounded-full bg-MTSS-blue flex items-center justify-center shadow-sm">
@@ -328,6 +512,20 @@ function MessageList({
           </div>
         );
       })}
+
+      {/* Show skeleton loading indicator while waiting for response */}
+      {isLoading && !isStreaming && (
+        <div className="flex gap-4 max-w-3xl mx-auto">
+          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-MTSS-blue flex items-center justify-center shadow-sm">
+            <span className="text-white text-xs font-semibold">AI</span>
+          </div>
+          <div className="flex-1 max-w-[85%] bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-none p-5 space-y-2">
+            <div className="h-4 w-48 bg-gray-200 rounded animate-pulse"></div>
+            <div className="h-4 w-64 bg-gray-200 rounded animate-pulse"></div>
+            <div className="h-4 w-32 bg-gray-200 rounded animate-pulse"></div>
+          </div>
+        </div>
+      )}
 
       {/* Show streaming message as content arrives - displays chunks in real-time */}
       {isStreaming && (
@@ -465,6 +663,14 @@ export function AgentChat({
   renderAssistantMessage,
   vesselLookup,
   children,
+  // Filter props
+  vessels = [],
+  vesselsLoading = false,
+  vesselClassId = null,
+  vesselTypeId = null,
+  onVesselChange,
+  onVesselClassChange,
+  onVesselTypeChange,
 }: AgentChatProps) {
   const chat = useAgentChat({
     agentUrl,
@@ -513,6 +719,7 @@ export function AgentChat({
           {/* Message list - scrollable */}
           <MessageList
             messages={chat.messages as ExtendedMessage[]}
+            isLoading={chat.isLoading}
             isStreaming={chat.isStreaming}
             streamingContent={chat.streamingContent}
             streamingMessageId={chat.streamingMessageId}
@@ -524,6 +731,20 @@ export function AgentChat({
 
         {/* Input - always visible at bottom */}
         <div className="flex-shrink-0 border-t border-gray-200 bg-white fixed bottom-0 left-0 right-0 z-10">
+          {/* Filter row above input */}
+          {onVesselChange && onVesselClassChange && onVesselTypeChange && (
+            <FilterSelector
+              vesselId={vesselId ?? null}
+              vesselClassId={vesselClassId ?? null}
+              vesselTypeId={vesselTypeId ?? null}
+              vessels={vessels}
+              vesselsLoading={vesselsLoading}
+              onVesselChange={onVesselChange}
+              onVesselClassChange={onVesselClassChange}
+              onVesselTypeChange={onVesselTypeChange}
+              disabled={disabled}
+            />
+          )}
           <ChatInput
             onSend={chat.sendMessage}
             disabled={disabled}
