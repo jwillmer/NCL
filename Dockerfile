@@ -73,6 +73,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY src/ ./src/
 COPY pyproject.toml ./
 
+# Set Python path to find modules in src/
+ENV PYTHONPATH="/app/src:$PYTHONPATH"
+
 # Copy frontend static build
 COPY --from=frontend-builder /app/web/out ./web/out
 
