@@ -906,16 +906,14 @@ class SupabaseClient:
         data = {
             "id": str(vessel.id),
             "name": vessel.name,
-            "imo": vessel.imo,
             "vessel_type": vessel.vessel_type,
-            "dwt": vessel.dwt,
-            "aliases": vessel.aliases,
+            "vessel_class": vessel.vessel_class,
         }
         self.client.table("vessels").insert(data).execute()
         return vessel
 
     async def upsert_vessel(self, vessel: Vessel) -> Vessel:
-        """Insert or update a vessel record by IMO number.
+        """Insert or update a vessel record by name.
 
         Args:
             vessel: Vessel to upsert.
@@ -926,12 +924,10 @@ class SupabaseClient:
         data = {
             "id": str(vessel.id),
             "name": vessel.name,
-            "imo": vessel.imo,
             "vessel_type": vessel.vessel_type,
-            "dwt": vessel.dwt,
-            "aliases": vessel.aliases,
+            "vessel_class": vessel.vessel_class,
         }
-        self.client.table("vessels").upsert(data, on_conflict="imo").execute()
+        self.client.table("vessels").upsert(data, on_conflict="name").execute()
         return vessel
 
     async def get_all_vessels(self) -> List[Vessel]:
@@ -956,7 +952,7 @@ class SupabaseClient:
         """
         result = (
             self.client.table("vessels")
-            .select("id, name, imo, vessel_type")
+            .select("id, name, vessel_type, vessel_class")
             .order("name")
             .execute()
         )
@@ -964,8 +960,8 @@ class SupabaseClient:
             VesselSummary(
                 id=UUID(row["id"]) if isinstance(row["id"], str) else row["id"],
                 name=row["name"],
-                imo=row.get("imo"),
-                vessel_type=row.get("vessel_type"),
+                vessel_type=row.get("vessel_type") or "",
+                vessel_class=row.get("vessel_class") or "",
             )
             for row in result.data
         ]
@@ -1003,6 +999,40 @@ class SupabaseClient:
             .execute()
         )
         return len(result.data) if result.data else 0
+
+    async def get_unique_vessel_types(self) -> List[str]:
+        """Get distinct vessel types from the vessels table.
+
+        Returns:
+            List of unique vessel type strings sorted alphabetically.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT vessel_type FROM vessels
+                WHERE vessel_type IS NOT NULL AND vessel_type != ''
+                ORDER BY vessel_type
+                """
+            )
+        return [row["vessel_type"] for row in rows]
+
+    async def get_unique_vessel_classes(self) -> List[str]:
+        """Get distinct vessel classes from the vessels table.
+
+        Returns:
+            List of unique vessel class strings sorted alphabetically.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT vessel_class FROM vessels
+                WHERE vessel_class IS NOT NULL AND vessel_class != ''
+                ORDER BY vessel_class
+                """
+            )
+        return [row["vessel_class"] for row in rows]
 
     async def update_chunks_vessel_ids(
         self, document_id: UUID, vessel_ids: List[str]
@@ -1043,6 +1073,62 @@ class SupabaseClient:
                 """,
                 document_id,
                 vessel_ids,
+            )
+            # Extract count from "UPDATE N" result
+            count_str = result.split()[-1] if result else "0"
+            return int(count_str)
+
+    async def update_chunks_vessel_metadata(
+        self,
+        document_id: UUID,
+        vessel_ids: List[str],
+        vessel_types: List[str],
+        vessel_classes: List[str],
+    ) -> int:
+        """Update vessel_ids, vessel_types, and vessel_classes in chunk metadata.
+
+        Uses JSONB set operations to update all three fields in metadata.
+        Also updates chunks for child documents (attachments).
+
+        Args:
+            document_id: Root document UUID.
+            vessel_ids: List of vessel UUID strings to set.
+            vessel_types: List of unique vessel types for matched vessels.
+            vessel_classes: List of unique vessel classes for matched vessels.
+
+        Returns:
+            Number of chunks updated.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            # Build the metadata update - remove empty arrays, set non-empty ones
+            result = await conn.execute(
+                """
+                UPDATE chunks
+                SET metadata = (
+                    SELECT
+                        CASE WHEN $4::text[] = '{}'::text[] THEN m ELSE jsonb_set(m, '{vessel_classes}', to_jsonb($4::text[])) END
+                    FROM (
+                        SELECT
+                            CASE WHEN $3::text[] = '{}'::text[] THEN m ELSE jsonb_set(m, '{vessel_types}', to_jsonb($3::text[])) END AS m
+                        FROM (
+                            SELECT
+                                CASE WHEN $2::text[] = '{}'::text[]
+                                    THEN COALESCE(metadata, '{}'::jsonb) - 'vessel_ids'
+                                    ELSE jsonb_set(COALESCE(metadata, '{}'::jsonb), '{vessel_ids}', to_jsonb($2::text[]))
+                                END AS m
+                        ) sub1
+                    ) sub2
+                )
+                WHERE document_id IN (
+                    SELECT id FROM documents
+                    WHERE id = $1 OR root_id = $1
+                )
+                """,
+                document_id,
+                vessel_ids,
+                vessel_types,
+                vessel_classes,
             )
             # Extract count from "UPDATE N" result
             count_str = result.split()[-1] if result else "0"
@@ -1106,10 +1192,8 @@ class SupabaseClient:
         return Vessel(
             id=UUID(row["id"]) if isinstance(row["id"], str) else row["id"],
             name=row["name"],
-            imo=row.get("imo"),
-            vessel_type=row.get("vessel_type"),
-            dwt=row.get("dwt"),
-            aliases=row.get("aliases") or [],
+            vessel_type=row.get("vessel_type") or "",
+            vessel_class=row.get("vessel_class") or "",
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
         )

@@ -1,6 +1,6 @@
 """Tests for vessel matching functionality.
 
-Tests for VesselMatcher class that finds vessel names and aliases
+Tests for VesselMatcher class that finds vessel names
 in document text for automatic tagging during ingest.
 """
 
@@ -21,23 +21,20 @@ class TestVesselMatcher:
             Vessel(
                 id=uuid4(),
                 name="MV Nordic Star",
-                imo="1234567",
                 vessel_type="VLCC",
-                aliases=["Nordic Star", "NORDIC STAR"],
+                vessel_class="Nordic Class",
             ),
             Vessel(
                 id=uuid4(),
                 name="MT Ocean Queen",
-                imo="2345678",
-                vessel_type="Suezmax",
-                aliases=["Ocean Queen", "OQ"],
+                vessel_type="SUEZMAX",
+                vessel_class="Ocean Class",
             ),
             Vessel(
                 id=uuid4(),
                 name="MARAN CANOPUS",
-                imo="3456789",
                 vessel_type="VLCC",
-                aliases=["Canopus", "M CANOPUS"],
+                vessel_class="Canopus Class",
             ),
         ]
 
@@ -69,17 +66,6 @@ class TestVesselMatcher:
 
         assert len(result) == 1
         assert sample_vessels[1].id in result
-
-    @pytest.mark.unit
-    def test_finds_vessel_alias(self, vessel_matcher, sample_vessels):
-        """Should find vessel by alias."""
-        result = vessel_matcher.find_vessels_in_email(
-            subject="RE: Canopus Update",
-            body="The Canopus is scheduled for inspection.",
-        )
-
-        assert len(result) == 1
-        assert sample_vessels[2].id in result
 
     @pytest.mark.unit
     def test_no_match_returns_empty_set(self, vessel_matcher):
@@ -117,26 +103,13 @@ class TestVesselMatcher:
     @pytest.mark.unit
     def test_word_boundary_matching(self, vessel_matcher, sample_vessels):
         """Should use word boundaries to avoid false positives."""
-        # "OQ" is an alias for Ocean Queen, but should not match "FREQUENCIES"
         result = vessel_matcher.find_vessels_in_email(
             subject="VHF FREQUENCIES Update",
             body="Check the FREQUENCIES list",
         )
 
-        # Should not match because FREQUENCIES contains "Q" but not as a word boundary
-        # Note: "OQ" is an alias, so this tests that we don't match partial words
+        # Should not match because FREQUENCIES doesn't contain a vessel name
         assert len(result) == 0
-
-    @pytest.mark.unit
-    def test_short_alias_matching(self, vessel_matcher, sample_vessels):
-        """Should match short aliases with proper word boundaries."""
-        result = vessel_matcher.find_vessels_in_email(
-            subject="OQ Status",
-            body="The OQ is underway.",
-        )
-
-        assert len(result) == 1
-        assert sample_vessels[1].id in result
 
     @pytest.mark.unit
     def test_find_vessels_in_text_directly(self, vessel_matcher, sample_vessels):
@@ -169,10 +142,51 @@ class TestVesselMatcher:
 
     @pytest.mark.unit
     def test_name_count_property(self, vessel_matcher):
-        """Should report correct number of names/aliases."""
-        # 3 primary names + 6 aliases = 9 total
-        # But some aliases might be duplicates of primary names when lowercased
-        assert vessel_matcher.name_count >= 6  # At least 3 names + some aliases
+        """Should report correct number of names."""
+        # 3 vessels with 3 names
+        assert vessel_matcher.name_count == 3
+
+    @pytest.mark.unit
+    def test_get_types_for_ids(self, vessel_matcher, sample_vessels):
+        """Should return unique vessel types for matched IDs."""
+        # Get IDs for Nordic Star (VLCC) and MARAN CANOPUS (VLCC)
+        ids = {sample_vessels[0].id, sample_vessels[2].id}
+        types = vessel_matcher.get_types_for_ids(ids)
+        assert types == ["VLCC"]
+
+    @pytest.mark.unit
+    def test_get_types_for_ids_multiple(self, vessel_matcher, sample_vessels):
+        """Should return all unique vessel types for mixed IDs."""
+        # Get IDs for all three vessels
+        ids = {sample_vessels[0].id, sample_vessels[1].id, sample_vessels[2].id}
+        types = vessel_matcher.get_types_for_ids(ids)
+        assert sorted(types) == ["SUEZMAX", "VLCC"]
+
+    @pytest.mark.unit
+    def test_get_classes_for_ids(self, vessel_matcher, sample_vessels):
+        """Should return unique vessel classes for matched IDs."""
+        ids = {sample_vessels[0].id}
+        classes = vessel_matcher.get_classes_for_ids(ids)
+        assert classes == ["Nordic Class"]
+
+    @pytest.mark.unit
+    def test_get_classes_for_ids_multiple(self, vessel_matcher, sample_vessels):
+        """Should return all unique vessel classes for multiple IDs."""
+        ids = {sample_vessels[0].id, sample_vessels[1].id}
+        classes = vessel_matcher.get_classes_for_ids(ids)
+        assert sorted(classes) == ["Nordic Class", "Ocean Class"]
+
+    @pytest.mark.unit
+    def test_get_types_for_empty_ids(self, vessel_matcher):
+        """Should return empty list for empty ID set."""
+        types = vessel_matcher.get_types_for_ids(set())
+        assert types == []
+
+    @pytest.mark.unit
+    def test_get_classes_for_empty_ids(self, vessel_matcher):
+        """Should return empty list for empty ID set."""
+        classes = vessel_matcher.get_classes_for_ids(set())
+        assert classes == []
 
 
 class TestVesselMatcherEdgeCases:
@@ -185,7 +199,7 @@ class TestVesselMatcherEdgeCases:
         from mtss.processing.vessel_matcher import VesselMatcher
 
         vessels = [
-            Vessel(name="M/V Test-Ship", aliases=["Test Ship"]),
+            Vessel(name="M/V Test-Ship", vessel_type="VLCC", vessel_class="Test Class"),
         ]
         matcher = VesselMatcher(vessels)
 
@@ -200,7 +214,7 @@ class TestVesselMatcherEdgeCases:
         from mtss.processing.vessel_matcher import VesselMatcher
 
         vessels = [
-            Vessel(name="  Trimmed Name  ", aliases=["  Also Trimmed  "]),
+            Vessel(name="  Trimmed Name  ", vessel_type="VLCC", vessel_class="Test Class"),
         ]
         matcher = VesselMatcher(vessels)
 
@@ -209,32 +223,12 @@ class TestVesselMatcherEdgeCases:
         assert len(result) == 1
 
     @pytest.mark.unit
-    def test_duplicate_aliases_deduped(self):
-        """Should handle duplicate aliases across vessels."""
-        from mtss.models.vessel import Vessel
-        from mtss.processing.vessel_matcher import VesselMatcher
-
-        v1_id = uuid4()
-        v2_id = uuid4()
-        vessels = [
-            Vessel(id=v1_id, name="Ship One", aliases=["Common Name"]),
-            Vessel(id=v2_id, name="Ship Two", aliases=["Common Name"]),
-        ]
-        matcher = VesselMatcher(vessels)
-
-        # When same alias used by multiple vessels, last one wins
-        result = matcher.find_vessels("Common Name is mentioned")
-        assert len(result) == 1
-        # The second vessel's ID should be in lookup (last write wins)
-        assert v2_id in result
-
-    @pytest.mark.unit
     def test_none_in_subject_or_body(self):
         """Should handle None values for subject or body."""
         from mtss.models.vessel import Vessel
         from mtss.processing.vessel_matcher import VesselMatcher
 
-        vessels = [Vessel(name="Test Ship")]
+        vessels = [Vessel(name="Test Ship", vessel_type="VLCC", vessel_class="Test Class")]
         matcher = VesselMatcher(vessels)
 
         result = matcher.find_vessels_in_email(subject=None, body=None)

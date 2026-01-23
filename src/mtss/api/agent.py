@@ -119,7 +119,10 @@ class AgentState(MessagesState):
 
     search_progress: str = ""
     error_message: Optional[str] = None
+    # Filter fields (mutually exclusive - only one can be active)
     selected_vessel_id: Optional[str] = None
+    selected_vessel_type: Optional[str] = None
+    selected_vessel_class: Optional[str] = None
     # Citation map for response validation (internal use)
     citation_map: Optional[Dict[str, Any]] = None
 
@@ -338,8 +341,11 @@ async def search_node(
         settings = get_settings()
         citation_processor = CitationProcessor()
 
-        # Read vessel filter from shared state (synced from frontend via useCoAgent)
+        # Read vessel filters from shared state (synced from frontend)
+        # Only one filter can be active at a time (mutually exclusive)
         vessel_id = state.get("selected_vessel_id")
+        vessel_type = state.get("selected_vessel_type")
+        vessel_class = state.get("selected_vessel_class")
 
         # Progress callback to emit state updates
         async def on_progress(message: str) -> None:
@@ -352,6 +358,8 @@ async def search_node(
             top_k=settings.rerank_top_n if settings.rerank_enabled else 10,
             use_rerank=settings.rerank_enabled,
             vessel_id=vessel_id,
+            vessel_type=vessel_type,
+            vessel_class=vessel_class,
             on_progress=on_progress,
         )
 

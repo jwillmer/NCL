@@ -23,6 +23,8 @@ export interface UseAgentChatOptions {
   threadId: string;
   authToken: string;
   vesselId?: string | null;
+  vesselType?: string | null;
+  vesselClass?: string | null;
   initialState?: RAGState;
   initialMessages?: Message[];
 }
@@ -49,7 +51,7 @@ const RETRY_DELAY_BASE = 1000; // 1 second base delay for exponential backoff
  * Hook for managing AG-UI agent communication with React state.
  */
 export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
-  const { agentUrl, threadId, authToken, vesselId, initialState, initialMessages } = options;
+  const { agentUrl, threadId, authToken, vesselId, vesselType, vesselClass, initialState, initialMessages } = options;
 
   // Core state
   const [messages, setMessages] = useState<Message[]>(initialMessages || []);
@@ -282,8 +284,11 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
             {
               forwardedProps: {
                 state: {
-                  // Use vesselId prop directly to avoid stale closure issues
+                  // Use filter props directly to avoid stale closure issues
+                  // Only one filter can be active (mutually exclusive)
                   selected_vessel_id: vesselId ?? null,
+                  selected_vessel_type: vesselType ?? null,
+                  selected_vessel_class: vesselClass ?? null,
                 },
               },
             },
@@ -309,7 +314,7 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
 
       await attemptRun();
     },
-    [vesselId]
+    [vesselId, vesselType, vesselClass]
   );
 
   // Abort the current run

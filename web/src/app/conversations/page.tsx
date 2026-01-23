@@ -17,10 +17,12 @@ import { Button, Input, ScrollArea, Skeleton } from "@/components/ui";
 import { cn, formatRelativeTime, groupByDate } from "@/lib/utils";
 import {
   Conversation,
+  Vessel,
   listConversations,
   deleteConversation,
   updateConversation,
   createConversation,
+  listVessels,
 } from "@/lib/conversations";
 
 // ============================================
@@ -29,17 +31,38 @@ import {
 
 interface ConversationItemProps {
   conversation: Conversation;
+  vesselLookup: Record<string, string>;  // vessel_id -> vessel name
   onSelect: (conv: Conversation) => void;
   onArchive: (conv: Conversation) => void;
   onDelete: (conv: Conversation) => void;
 }
 
+/**
+ * Get filter badge text based on which filter is active.
+ */
+function getFilterBadge(conversation: Conversation, vesselLookup: Record<string, string>): string | null {
+  if (conversation.vessel_id) {
+    const vesselName = vesselLookup[conversation.vessel_id];
+    return vesselName ? `Vessel: ${vesselName}` : null;
+  }
+  if (conversation.vessel_type) {
+    return `Type: ${conversation.vessel_type}`;
+  }
+  if (conversation.vessel_class) {
+    return `Class: ${conversation.vessel_class}`;
+  }
+  return null;
+}
+
 function ConversationItem({
   conversation,
+  vesselLookup,
   onSelect,
   onArchive,
   onDelete,
 }: ConversationItemProps) {
+  const filterBadge = getFilterBadge(conversation, vesselLookup);
+
   return (
     <div
       className={cn(
@@ -55,12 +78,16 @@ function ConversationItem({
         <p className="text-sm font-medium text-MTSS-blue-dark truncate">
           {conversation.title || "New conversation"}
         </p>
-        <p className="text-xs text-MTSS-gray mt-0.5">
-          {formatRelativeTime(conversation.last_message_at || conversation.created_at)}
-          {conversation.vessel_id && (
-            <span className="ml-2 text-MTSS-blue">{conversation.vessel_id}</span>
+        <div className="flex items-center gap-2 mt-0.5">
+          <span className="text-xs text-MTSS-gray">
+            {formatRelativeTime(conversation.last_message_at || conversation.created_at)}
+          </span>
+          {filterBadge && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-MTSS-blue/10 text-MTSS-blue">
+              {filterBadge}
+            </span>
           )}
-        </p>
+        </div>
       </div>
 
       {/* Actions dropdown */}
@@ -147,6 +174,7 @@ function ConversationsPage() {
   const { session, loading: authLoading } = useAuth();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [vesselLookup, setVesselLookup] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -155,6 +183,26 @@ function ConversationsPage() {
   const [offset, setOffset] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Load vessels for name lookup
+  useEffect(() => {
+    if (!session) return;
+
+    async function loadVessels() {
+      try {
+        const vessels = await listVessels();
+        const lookup: Record<string, string> = {};
+        for (const vessel of vessels) {
+          lookup[vessel.id] = vessel.name;
+        }
+        setVesselLookup(lookup);
+      } catch (error) {
+        console.error("Failed to load vessels:", error);
+      }
+    }
+
+    loadVessels();
+  }, [session]);
 
   const LIMIT = 50;
 
@@ -330,6 +378,7 @@ function ConversationsPage() {
                       <ConversationItem
                         key={conv.id}
                         conversation={conv}
+                        vesselLookup={vesselLookup}
                         onSelect={handleSelectConversation}
                         onArchive={handleArchive}
                         onDelete={handleDelete}

@@ -21,6 +21,8 @@ import {
   createConversation,
   updateConversation,
   listVessels,
+  listVesselTypes,
+  listVesselClasses,
   ConversationApiError,
 } from "@/lib/conversations";
 
@@ -89,27 +91,36 @@ function ChatPageContent() {
   const [vesselClassId, setVesselClassId] = useState<string | null>(null);
   const [vesselTypeId, setVesselTypeId] = useState<string | null>(null);
   const [vessels, setVessels] = useState<Vessel[]>([]);
+  const [vesselTypes, setVesselTypes] = useState<string[]>([]);
+  const [vesselClasses, setVesselClasses] = useState<string[]>([]);
   const [vesselsLoading, setVesselsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Load vessels from API
+  // Load vessels, types, and classes from API
   useEffect(() => {
     if (!session) return;
 
-    async function loadVessels() {
+    async function loadFilters() {
       try {
-        const vesselList = await listVessels();
+        // Load all filter options in parallel
+        const [vesselList, types, classes] = await Promise.all([
+          listVessels(),
+          listVesselTypes(),
+          listVesselClasses(),
+        ]);
         setVessels(vesselList);
+        setVesselTypes(types);
+        setVesselClasses(classes);
       } catch (err) {
-        console.error("Failed to load vessels:", err);
-        // Non-fatal error - continue without vessels
+        console.error("Failed to load filter options:", err);
+        // Non-fatal error - continue without filters
       } finally {
         setVesselsLoading(false);
       }
     }
 
-    loadVessels();
+    loadFilters();
   }, [session]);
 
   // Load or create conversation
@@ -124,7 +135,10 @@ function ChatPageContent() {
         // Try to load existing conversation
         const conv = await getConversation(threadId);
         setConversation(conv);
+        // Restore filter state from conversation
         setVesselId(conv.vessel_id);
+        setVesselTypeId(conv.vessel_type);
+        setVesselClassId(conv.vessel_class);
       } catch (err) {
         if (err instanceof ConversationApiError && err.status === 404) {
           // Conversation doesn't exist yet - create it
@@ -161,8 +175,12 @@ function ChatPageContent() {
       setVesselTypeId(null);
       if (conversation) {
         try {
-          // Pass null explicitly to clear vessel filter, or the vessel_id to set it
-          await updateConversation(threadId, { vessel_id: value });
+          // Update conversation with new filter (and clear others)
+          await updateConversation(threadId, {
+            vessel_id: value,
+            vessel_type: null,
+            vessel_class: null,
+          });
         } catch (err) {
           console.error("Failed to update vessel filter:", err);
         }
@@ -171,21 +189,51 @@ function ChatPageContent() {
     [conversation, threadId]
   );
 
-  // Handle vessel class filter change - clears other filters (mutual exclusivity)
-  const handleVesselClassChange = useCallback((value: string | null) => {
-    setVesselClassId(value);
-    // Always clear other filters for mutual exclusivity
-    setVesselId(null);
-    setVesselTypeId(null);
-  }, []);
-
   // Handle vessel type filter change - clears other filters (mutual exclusivity)
-  const handleVesselTypeChange = useCallback((value: string | null) => {
-    setVesselTypeId(value);
-    // Always clear other filters for mutual exclusivity
-    setVesselId(null);
-    setVesselClassId(null);
-  }, []);
+  const handleVesselTypeChange = useCallback(
+    async (value: string | null) => {
+      setVesselTypeId(value);
+      // Always clear other filters for mutual exclusivity
+      setVesselId(null);
+      setVesselClassId(null);
+      if (conversation) {
+        try {
+          // Update conversation with new filter (and clear others)
+          await updateConversation(threadId, {
+            vessel_id: null,
+            vessel_type: value,
+            vessel_class: null,
+          });
+        } catch (err) {
+          console.error("Failed to update type filter:", err);
+        }
+      }
+    },
+    [conversation, threadId]
+  );
+
+  // Handle vessel class filter change - clears other filters (mutual exclusivity)
+  const handleVesselClassChange = useCallback(
+    async (value: string | null) => {
+      setVesselClassId(value);
+      // Always clear other filters for mutual exclusivity
+      setVesselId(null);
+      setVesselTypeId(null);
+      if (conversation) {
+        try {
+          // Update conversation with new filter (and clear others)
+          await updateConversation(threadId, {
+            vessel_id: null,
+            vessel_type: null,
+            vessel_class: value,
+          });
+        } catch (err) {
+          console.error("Failed to update class filter:", err);
+        }
+      }
+    },
+    [conversation, threadId]
+  );
 
   // Auth loading
   if (authLoading) {
@@ -235,6 +283,8 @@ function ChatPageContent() {
           disabled={isArchived}
           vesselId={vesselId}
           vessels={vessels}
+          vesselTypes={vesselTypes}
+          vesselClasses={vesselClasses}
           vesselsLoading={vesselsLoading}
           vesselClassId={vesselClassId}
           vesselTypeId={vesselTypeId}

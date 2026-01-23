@@ -231,11 +231,13 @@ uv run MTSS vessels retag --dry-run
 uv run MTSS vessels retag --limit 100
 ```
 
-CSV format (semicolon-delimited):
+CSV format (semicolon-delimited, 3 required columns):
 ```csv
-IMO_Number;Vessel_Name;Vessel_type;DWT
-9527295;MARAN THALEIA;VLCC;321225
+NAME;TYPE;CLASS
+MARAN THALEIA;VLCC;Canopus Class
 ```
+
+The vessel type/class are used for filtering RAG results. Only one filter can be active at a time (vessel OR type OR class).
 
 ### Clean Command
 

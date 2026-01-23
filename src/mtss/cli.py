@@ -206,7 +206,7 @@ async def _ingest(
     vessels = await db.get_all_vessels()
     vessel_matcher = VesselMatcher(vessels) if vessels else None
     if vessel_matcher:
-        vprint(f"Loaded {vessel_matcher.vessel_count} vessels ({vessel_matcher.name_count} names/aliases)")
+        vprint(f"Loaded {vessel_matcher.vessel_count} vessels ({vessel_matcher.name_count} names)")
     else:
         vprint("No vessels in registry - vessel tagging disabled")
 
@@ -540,6 +540,8 @@ async def _process_single_email(
 
     # Match vessels in email content
     vessel_ids: list[str] = []
+    vessel_types: list[str] = []
+    vessel_classes: list[str] = []
     if vessel_matcher:
         body_text_for_matching = eml_parser.get_body_text(parsed_email)
         matched_vessels = vessel_matcher.find_vessels_in_email(
@@ -548,6 +550,8 @@ async def _process_single_email(
         )
         vessel_ids = [str(v) for v in matched_vessels]
         if vessel_ids:
+            vessel_types = vessel_matcher.get_types_for_ids(matched_vessels)
+            vessel_classes = vessel_matcher.get_classes_for_ids(matched_vessels)
             vprint(f"Matched {len(vessel_ids)} vessel(s)", file_ctx)
 
     # Create chunks from email body
@@ -594,10 +598,14 @@ async def _process_single_email(
             if context_summary:
                 embedding_text = context_generator.build_embedding_text(context_summary, cleaned_message)
 
-            # Build chunk metadata including vessel_ids for filtering
-            chunk_metadata = {"type": "email_body", "message_index": msg_idx}
+            # Build chunk metadata including vessel info for filtering
+            chunk_metadata: dict = {"type": "email_body", "message_index": msg_idx}
             if vessel_ids:
                 chunk_metadata["vessel_ids"] = vessel_ids
+            if vessel_types:
+                chunk_metadata["vessel_types"] = vessel_types
+            if vessel_classes:
+                chunk_metadata["vessel_classes"] = vessel_classes
 
             email_chunks.append(
                 Chunk(
@@ -644,6 +652,8 @@ async def _process_single_email(
             context_generator=context_generator,
             archive_generator=archive_generator,
             vessel_ids=vessel_ids,
+            vessel_types=vessel_types,
+            vessel_classes=vessel_classes,
             force_reparse=force_reparse,
             lenient=lenient,
         )
@@ -736,6 +746,8 @@ async def _process_attachment(
     context_generator: ContextGenerator | None = None,
     archive_generator: ArchiveGenerator | None = None,
     vessel_ids: list[str] | None = None,
+    vessel_types: list[str] | None = None,
+    vessel_classes: list[str] | None = None,
     force_reparse: bool = False,
     lenient: bool = False,
 ) -> list[Chunk]:
@@ -747,6 +759,8 @@ async def _process_attachment(
     """
     chunks: list[Chunk] = []
     vessel_ids = vessel_ids or []
+    vessel_types = vessel_types or []
+    vessel_classes = vessel_classes or []
     file_path = Path(attachment.saved_path)
 
     # Format size for display
@@ -802,6 +816,8 @@ async def _process_attachment(
                 unsupported_logger=unsupported_logger,
                 archive_generator=archive_generator,
                 vessel_ids=vessel_ids,
+                vessel_types=vessel_types,
+                vessel_classes=vessel_classes,
                 force_reparse=force_reparse,
                 lenient=lenient,
             )
@@ -938,12 +954,17 @@ async def _process_attachment(
     # Enrich chunks with document citation metadata (source_id, source_title, archive URIs)
     enrich_chunks_with_document_metadata(chunks, attach_doc)
 
-    # Add vessel_ids to chunk metadata for filtering
-    if vessel_ids:
+    # Add vessel metadata to chunk metadata for filtering
+    if vessel_ids or vessel_types or vessel_classes:
         for chunk in chunks:
             if chunk.metadata is None:
                 chunk.metadata = {}
-            chunk.metadata["vessel_ids"] = vessel_ids
+            if vessel_ids:
+                chunk.metadata["vessel_ids"] = vessel_ids
+            if vessel_types:
+                chunk.metadata["vessel_types"] = vessel_types
+            if vessel_classes:
+                chunk.metadata["vessel_classes"] = vessel_classes
 
     return chunks
 
@@ -959,9 +980,11 @@ async def _process_zip_attachment(
     unsupported_logger: UnsupportedFileLogger,
     archive_generator: ArchiveGenerator | None = None,
     vessel_ids: list[str] | None = None,
+    vessel_types: list[str] | None = None,
+    vessel_classes: list[str] | None = None,
     force_reparse: bool = False,
     lenient: bool = False,
-) -> list[Chunk]:
+) -> list[Chunk] :
     """Extract and process files from a ZIP attachment.
 
     Note: ZIP contents don't use the archive cache since they don't have
@@ -969,6 +992,8 @@ async def _process_zip_attachment(
     """
     chunks: list[Chunk] = []
     vessel_ids = vessel_ids or []
+    vessel_types = vessel_types or []
+    vessel_classes = vessel_classes or []
 
     try:
         extracted_files = attachment_processor.extract_zip(
@@ -1018,12 +1043,17 @@ async def _process_zip_attachment(
                         parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
                 # Enrich chunks with document citation metadata
                 enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
-                # Add vessel_ids to chunk metadata for filtering
-                if vessel_ids:
+                # Add vessel metadata to chunk metadata for filtering
+                if vessel_ids or vessel_types or vessel_classes:
                     for chunk in attach_chunks:
                         if chunk.metadata is None:
                             chunk.metadata = {}
-                        chunk.metadata["vessel_ids"] = vessel_ids
+                        if vessel_ids:
+                            chunk.metadata["vessel_ids"] = vessel_ids
+                        if vessel_types:
+                            chunk.metadata["vessel_types"] = vessel_types
+                        if vessel_classes:
+                            chunk.metadata["vessel_classes"] = vessel_classes
                 chunks.extend(attach_chunks)
                 await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
 
@@ -2634,8 +2664,9 @@ def vessels_import(
 
     Default file: data/vessel-list.csv
 
-    CSV format (semicolon-delimited):
-        IMO_Number;Vessel_Name;Vessel_type;DWT
+    CSV format (semicolon-delimited, 3 required columns):
+        NAME;TYPE;CLASS
+        MARAN THALEIA;VLCC;Canopus Class
     """
     asyncio.run(_vessels_import(csv_file, clear))
 
@@ -2674,30 +2705,32 @@ async def _vessels_import(csv_file: Optional[Path], clear: bool):
 
             reader = csv.DictReader(f, delimiter=delimiter)
 
+            # Validate required columns are present
+            required_columns = {"NAME", "TYPE", "CLASS"}
+            if reader.fieldnames:
+                actual_columns = set(reader.fieldnames)
+                missing = required_columns - actual_columns
+                if missing:
+                    console.print(f"[red]Missing required columns: {', '.join(missing)}[/red]")
+                    console.print("[dim]Required columns: NAME, TYPE, CLASS[/dim]")
+                    raise typer.Exit(1)
+
             for row in reader:
-                # Handle different column naming conventions
-                imo = row.get("IMO_Number") or row.get("imo") or row.get("IMO")
-                name = row.get("Vessel_Name") or row.get("name") or row.get("Name")
-                vessel_type = row.get("Vessel_type") or row.get("vessel_type") or row.get("Type")
-                dwt_str = row.get("DWT") or row.get("dwt") or ""
+                name = row.get("NAME", "").strip()
+                vessel_type = row.get("TYPE", "").strip()
+                vessel_class = row.get("CLASS", "").strip()
 
                 if not name:
                     continue  # Skip rows without vessel name
 
-                # Parse DWT (might have commas or other formatting)
-                dwt = None
-                if dwt_str:
-                    try:
-                        dwt = int(dwt_str.replace(",", "").replace(".", "").strip())
-                    except ValueError:
-                        pass
+                if not vessel_type or not vessel_class:
+                    console.print(f"[yellow]Warning: Skipping {name} - missing TYPE or CLASS[/yellow]")
+                    continue
 
                 vessel = Vessel(
-                    name=name.strip(),
-                    imo=imo.strip() if imo else None,
-                    vessel_type=vessel_type.strip() if vessel_type else None,
-                    dwt=dwt,
-                    aliases=[],  # Can be extended later
+                    name=name,
+                    vessel_type=vessel_type,
+                    vessel_class=vessel_class,
                 )
                 vessels_to_import.append(vessel)
 
@@ -2785,7 +2818,7 @@ async def _vessels_retag(dry_run: bool, limit: int | None):
             return
 
         vessel_matcher = VesselMatcher(vessels)
-        console.print(f"Loaded {vessel_matcher.vessel_count} vessels ({vessel_matcher.name_count} names/aliases)")
+        console.print(f"Loaded {vessel_matcher.vessel_count} vessels ({vessel_matcher.name_count} names)")
 
         # Initialize archive storage
         try:
@@ -2865,24 +2898,27 @@ async def _vessels_retag(dry_run: bool, limit: int | None):
                 combined_content = "\n\n".join(content_parts)
                 matched_vessels = vessel_matcher.find_vessels(combined_content)
                 new_vessel_ids = sorted([str(v) for v in matched_vessels])
+                new_vessel_types = vessel_matcher.get_types_for_ids(matched_vessels)
+                new_vessel_classes = vessel_matcher.get_classes_for_ids(matched_vessels)
 
                 # Get current vessel IDs
                 current_vessel_ids = await db.get_current_vessel_ids(document_uuid)
 
-                # Check if update is needed
-                if set(new_vessel_ids) != set(current_vessel_ids):
+                # Check if update is needed (always update to add types/classes for backfill)
+                if set(new_vessel_ids) != set(current_vessel_ids) or new_vessel_types or new_vessel_classes:
                     added = set(new_vessel_ids) - set(current_vessel_ids)
                     removed = set(current_vessel_ids) - set(new_vessel_ids)
 
-                    if added or removed:
+                    if added or removed or new_vessel_types or new_vessel_classes:
                         vprint(
-                            f"{file_name}: +{len(added)} -{len(removed)} vessels",
+                            f"{file_name}: +{len(added)} -{len(removed)} vessels, "
+                            f"{len(new_vessel_types)} types, {len(new_vessel_classes)} classes",
                             doc_id[:8],
                         )
 
                         if not dry_run:
-                            updated = await db.update_chunks_vessel_ids(
-                                document_uuid, new_vessel_ids
+                            updated = await db.update_chunks_vessel_metadata(
+                                document_uuid, new_vessel_ids, new_vessel_types, new_vessel_classes
                             )
                             chunks_updated += updated
 

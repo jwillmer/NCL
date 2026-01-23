@@ -175,6 +175,8 @@ interface ChatContainerProps {
   vesselId?: string | null;
   /** Filter props */
   vessels?: Vessel[];
+  vesselTypes?: string[];
+  vesselClasses?: string[];
   vesselsLoading?: boolean;
   vesselClassId?: string | null;
   vesselTypeId?: string | null;
@@ -189,6 +191,8 @@ export function ChatContainer({
   disabled = false,
   vesselId,
   vessels,
+  vesselTypes,
+  vesselClasses,
   vesselsLoading,
   vesselClassId,
   vesselTypeId,
@@ -332,6 +336,8 @@ export function ChatContainer({
             renderAssistantMessage={CustomAssistantMessage}
             vesselLookup={vesselLookup}
             vessels={vessels}
+            vesselTypes={vesselTypes}
+            vesselClasses={vesselClasses}
             vesselsLoading={vesselsLoading}
             vesselClassId={vesselClassId}
             vesselTypeId={vesselTypeId}

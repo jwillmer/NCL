@@ -66,26 +66,15 @@ export interface Vessel {
 // Filter Selector Component
 // ============================================
 
-// Mock options for placeholder dropdowns
-const VESSEL_CLASS_OPTIONS = [
-  { id: null, name: "All Classes" },
-  { id: "passenger", name: "Passenger" },
-  { id: "cargo", name: "Cargo" },
-  { id: "tanker", name: "Tanker" },
-];
-
-const VESSEL_TYPE_OPTIONS = [
-  { id: null, name: "All Types" },
-  { id: "cruise", name: "Cruise Ship" },
-  { id: "container", name: "Container" },
-  { id: "bulk", name: "Bulk Carrier" },
-];
+// Filter options built from API data (populated by props)
 
 interface FilterSelectorProps {
   vesselId: string | null;
   vesselClassId: string | null;
   vesselTypeId: string | null;
   vessels: Vessel[];
+  vesselTypes: string[];
+  vesselClasses: string[];
   vesselsLoading: boolean;
   onVesselChange: (value: string | null) => void;
   onVesselClassChange: (value: string | null) => void;
@@ -117,6 +106,7 @@ function FilterDropdown({
     : options;
 
   const selectedOption = options.find((v) => v.id === value) || options[0];
+  const hasSelection = value !== null;
 
   return (
     <DropdownMenu.Root onOpenChange={(open) => !open && setSearch("")}>
@@ -124,13 +114,20 @@ function FilterDropdown({
         <button
           className={cn(
             "flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors",
-            disabled && "opacity-50 cursor-not-allowed"
+            disabled && "opacity-50 cursor-not-allowed",
+            hasSelection && "border-blue-300 bg-blue-50"
           )}
           disabled={disabled || loading}
         >
           <Ship className="h-4 w-4 text-gray-500" />
-          <span className="max-w-[100px] truncate">
-            {loading ? "Loading..." : selectedOption.name}
+          <span className="max-w-[250px] truncate">
+            {loading ? "Loading..." : (
+              hasSelection ? (
+                <><span className="font-medium text-gray-600">{label}:</span> {selectedOption.name}</>
+              ) : (
+                selectedOption.name
+              )
+            )}
           </span>
           <ChevronDown className="h-3 w-3 opacity-50" />
         </button>
@@ -186,6 +183,8 @@ function FilterSelector({
   vesselClassId,
   vesselTypeId,
   vessels,
+  vesselTypes,
+  vesselClasses,
   vesselsLoading,
   onVesselChange,
   onVesselClassChange,
@@ -195,6 +194,16 @@ function FilterSelector({
   const vesselOptions: { id: string | null; name: string }[] = [
     { id: null, name: "All Vessels" },
     ...vessels.map((v) => ({ id: v.id, name: v.name })),
+  ];
+
+  const typeOptions: { id: string | null; name: string }[] = [
+    { id: null, name: "All Types" },
+    ...vesselTypes.map((t) => ({ id: t, name: t })),
+  ];
+
+  const classOptions: { id: string | null; name: string }[] = [
+    { id: null, name: "All Classes" },
+    ...vesselClasses.map((c) => ({ id: c, name: c })),
   ];
 
   return (
@@ -210,17 +219,17 @@ function FilterSelector({
           searchable
         />
         <FilterDropdown
-          label="Vessel Class"
-          value={vesselClassId}
-          options={VESSEL_CLASS_OPTIONS}
-          onChange={onVesselClassChange}
+          label="Type"
+          value={vesselTypeId}
+          options={typeOptions}
+          onChange={onVesselTypeChange}
           disabled={disabled}
         />
         <FilterDropdown
-          label="Vessel Type"
-          value={vesselTypeId}
-          options={VESSEL_TYPE_OPTIONS}
-          onChange={onVesselTypeChange}
+          label="Class"
+          value={vesselClassId}
+          options={classOptions}
+          onChange={onVesselClassChange}
           disabled={disabled}
         />
       </div>
@@ -266,6 +275,8 @@ interface AgentChatProps {
   children?: React.ReactNode;
   // Filter props
   vessels?: Vessel[];
+  vesselTypes?: string[];
+  vesselClasses?: string[];
   vesselsLoading?: boolean;
   vesselClassId?: string | null;
   vesselTypeId?: string | null;
@@ -665,6 +676,8 @@ export function AgentChat({
   children,
   // Filter props
   vessels = [],
+  vesselTypes = [],
+  vesselClasses = [],
   vesselsLoading = false,
   vesselClassId = null,
   vesselTypeId = null,
@@ -677,6 +690,8 @@ export function AgentChat({
     threadId,
     authToken,
     vesselId,
+    vesselType: vesselTypeId,
+    vesselClass: vesselClassId,
     initialMessages,
   });
 
@@ -738,6 +753,8 @@ export function AgentChat({
               vesselClassId={vesselClassId ?? null}
               vesselTypeId={vesselTypeId ?? null}
               vessels={vessels}
+              vesselTypes={vesselTypes}
+              vesselClasses={vesselClasses}
               vesselsLoading={vesselsLoading}
               onVesselChange={onVesselChange}
               onVesselClassChange={onVesselClassChange}

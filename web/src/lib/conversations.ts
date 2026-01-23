@@ -14,7 +14,10 @@ export interface Conversation {
   thread_id: string;
   user_id: string;
   title: string | null;
+  // Filter fields (mutually exclusive - only one can be active)
   vessel_id: string | null;  // UUID of selected vessel (null = all vessels)
+  vessel_type: string | null;  // Vessel type filter e.g. VLCC
+  vessel_class: string | null;  // Vessel class filter e.g. Canopus Class
   is_archived: boolean;
   created_at: string;
   updated_at: string;
@@ -30,12 +33,18 @@ export interface ConversationListResponse {
 export interface CreateConversationParams {
   thread_id?: string;
   title?: string;
+  // Filter fields (mutually exclusive - only one should be set)
   vessel_id?: string;  // UUID of vessel (null = all vessels)
+  vessel_type?: string;  // Vessel type filter e.g. VLCC
+  vessel_class?: string;  // Vessel class filter e.g. Canopus Class
 }
 
 export interface UpdateConversationParams {
   title?: string;
+  // Filter fields (mutually exclusive - only one should be set)
   vessel_id?: string | null;  // UUID of vessel, or null to clear filter
+  vessel_type?: string | null;  // Vessel type, or null to clear filter
+  vessel_class?: string | null;  // Vessel class, or null to clear filter
   is_archived?: boolean;
 }
 
@@ -49,8 +58,8 @@ export interface ChatMessage {
 export interface Vessel {
   id: string;
   name: string;
-  imo: string | null;
-  vessel_type: string | null;
+  vessel_type: string;
+  vessel_class: string;
 }
 
 // ============================================
@@ -282,6 +291,28 @@ export async function listVessels(): Promise<Vessel[]> {
   const response = await fetch(`${getApiBaseUrl()}/vessels`, { headers });
 
   return handleResponse<Vessel[]>(response);
+}
+
+/**
+ * Get distinct vessel types for filter dropdown.
+ */
+export async function listVesselTypes(): Promise<string[]> {
+  const headers = await getAuthHeaders();
+
+  const response = await fetch(`${getApiBaseUrl()}/vessel-types`, { headers });
+
+  return handleResponse<string[]>(response);
+}
+
+/**
+ * Get distinct vessel classes for filter dropdown.
+ */
+export async function listVesselClasses(): Promise<string[]> {
+  const headers = await getAuthHeaders();
+
+  const response = await fetch(`${getApiBaseUrl()}/vessel-classes`, { headers });
+
+  return handleResponse<string[]>(response);
 }
 
 /**

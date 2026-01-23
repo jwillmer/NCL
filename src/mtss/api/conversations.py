@@ -37,14 +37,20 @@ class ConversationCreate(BaseModel):
 
     thread_id: Optional[UUID] = Field(default=None, description="Thread ID (auto-generated if not provided)")
     title: Optional[str] = Field(default=None, max_length=200)
+    # Filter fields (mutually exclusive - only one should be set)
     vessel_id: Optional[UUID] = Field(default=None, description="Vessel filter (UUID)")
+    vessel_type: Optional[str] = Field(default=None, description="Vessel type filter e.g. VLCC")
+    vessel_class: Optional[str] = Field(default=None, description="Vessel class filter e.g. Canopus Class")
 
 
 class ConversationUpdate(BaseModel):
     """Update conversation metadata."""
 
     title: Optional[str] = Field(default=None, max_length=200)
+    # Filter fields (mutually exclusive - only one should be set)
     vessel_id: Optional[UUID] = Field(default=None, description="Vessel filter (UUID)")
+    vessel_type: Optional[str] = Field(default=None, description="Vessel type filter e.g. VLCC")
+    vessel_class: Optional[str] = Field(default=None, description="Vessel class filter e.g. Canopus Class")
     is_archived: Optional[bool] = None
 
 
@@ -55,7 +61,10 @@ class ConversationResponse(BaseModel):
     thread_id: UUID
     user_id: UUID
     title: Optional[str]
+    # Filter fields (mutually exclusive)
     vessel_id: Optional[UUID]  # Vessel filter (UUID)
+    vessel_type: Optional[str] = None  # Vessel type filter e.g. VLCC
+    vessel_class: Optional[str] = None  # Vessel class filter e.g. Canopus Class
     is_archived: bool
     created_at: datetime
     updated_at: datetime
@@ -137,6 +146,8 @@ async def list_conversations(
             user_id=row["user_id"],
             title=row["title"],
             vessel_id=row.get("vessel_id"),
+            vessel_type=row.get("vessel_type"),
+            vessel_class=row.get("vessel_class"),
             is_archived=row["is_archived"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -169,6 +180,8 @@ async def create_conversation(
                 "user_id": user.sub,
                 "title": data.title,
                 "vessel_id": str(data.vessel_id) if data.vessel_id else None,
+                "vessel_type": data.vessel_type,
+                "vessel_class": data.vessel_class,
             }
         )
         .execute()
@@ -189,6 +202,8 @@ async def create_conversation(
         user_id=row["user_id"],
         title=row["title"],
         vessel_id=row.get("vessel_id"),
+        vessel_type=row.get("vessel_type"),
+        vessel_class=row.get("vessel_class"),
         is_archived=row["is_archived"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -299,6 +314,8 @@ async def get_conversation(
         user_id=row["user_id"],
         title=row.get("title"),
         vessel_id=row.get("vessel_id"),
+        vessel_type=row.get("vessel_type"),
+        vessel_class=row.get("vessel_class"),
         is_archived=row["is_archived"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -312,7 +329,7 @@ async def update_conversation(
     data: ConversationUpdate,
     user: UserPayload = Depends(get_current_user),
 ):
-    """Update conversation metadata (title, vessel_id, archive status)."""
+    """Update conversation metadata (title, vessel_id/type/class, archive status)."""
     client = SupabaseClient()
 
     # Build update data from explicitly provided fields only
@@ -349,6 +366,8 @@ async def update_conversation(
         user_id=row["user_id"],
         title=row["title"],
         vessel_id=row.get("vessel_id"),
+        vessel_type=row.get("vessel_type"),
+        vessel_class=row.get("vessel_class"),
         is_archived=row["is_archived"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -420,6 +439,8 @@ async def touch_conversation(
         user_id=row["user_id"],
         title=row["title"],
         vessel_id=row.get("vessel_id"),
+        vessel_type=row.get("vessel_type"),
+        vessel_class=row.get("vessel_class"),
         is_archived=row["is_archived"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -624,6 +645,8 @@ async def generate_title(
         user_id=row["user_id"],
         title=row["title"],
         vessel_id=row.get("vessel_id"),
+        vessel_type=row.get("vessel_type"),
+        vessel_class=row.get("vessel_class"),
         is_archived=row["is_archived"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],

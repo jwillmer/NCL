@@ -462,7 +462,7 @@ def create_app() -> FastAPI:
     async def list_vessels(request: Request):
         """Get all vessels for dropdown selection.
 
-        Returns minimal vessel info (id, name, imo, type) for filtering.
+        Returns minimal vessel info (id, name, type, class) for filtering.
 
         Args:
             request: FastAPI request object (user available in request.state.user)
@@ -483,11 +483,41 @@ def create_app() -> FastAPI:
                 {
                     "id": str(v.id),
                     "name": v.name,
-                    "imo": v.imo,
                     "vessel_type": v.vessel_type,
+                    "vessel_class": v.vessel_class,
                 }
                 for v in vessels
             ]
+        finally:
+            await client.close()
+
+    @app.get("/api/vessel-types")
+    @limiter.limit("60/minute")
+    async def list_vessel_types(request: Request):
+        """Get distinct vessel types for filter dropdown.
+
+        Returns:
+            List of unique vessel type strings
+        """
+        client = SupabaseClient()
+        try:
+            types = await client.get_unique_vessel_types()
+            return types
+        finally:
+            await client.close()
+
+    @app.get("/api/vessel-classes")
+    @limiter.limit("60/minute")
+    async def list_vessel_classes(request: Request):
+        """Get distinct vessel classes for filter dropdown.
+
+        Returns:
+            List of unique vessel class strings
+        """
+        client = SupabaseClient()
+        try:
+            classes = await client.get_unique_vessel_classes()
+            return classes
         finally:
             await client.close()
 

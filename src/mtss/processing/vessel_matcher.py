@@ -10,9 +10,9 @@ from ..models.vessel import Vessel
 
 
 class VesselMatcher:
-    """Matches vessel names/aliases in document text.
+    """Matches vessel names in document text.
 
-    Builds a case-insensitive lookup from vessel names and aliases to vessel IDs.
+    Builds a case-insensitive lookup from vessel names to vessel IDs.
     Used during ingest to tag documents with the vessels they reference.
     """
 
@@ -20,24 +20,20 @@ class VesselMatcher:
         """Initialize matcher with vessel registry.
 
         Args:
-            vessels: List of vessels with names and aliases.
+            vessels: List of vessels with names.
         """
-        self.lookup: Dict[str, UUID] = {}
+        self.lookup: Dict[str, UUID] = {}  # name → id
+        self.vessels: Dict[UUID, Vessel] = {}  # id → full vessel
         self._build_lookup(vessels)
 
     def _build_lookup(self, vessels: List[Vessel]) -> None:
-        """Build case-insensitive lookup from names and aliases to IDs."""
+        """Build case-insensitive lookup from names to IDs."""
         for vessel in vessels:
             # Add primary name (lowercased)
             name_lower = vessel.name.lower().strip()
             if name_lower:
                 self.lookup[name_lower] = vessel.id
-
-            # Add aliases (lowercased)
-            for alias in vessel.aliases:
-                alias_lower = alias.lower().strip()
-                if alias_lower:
-                    self.lookup[alias_lower] = vessel.id
+                self.vessels[vessel.id] = vessel
 
     def find_vessels(self, text: str) -> Set[UUID]:
         """Find all vessel IDs mentioned in text.
@@ -95,5 +91,35 @@ class VesselMatcher:
 
     @property
     def name_count(self) -> int:
-        """Number of names/aliases in the lookup."""
+        """Number of names in the lookup."""
         return len(self.lookup)
+
+    def get_types_for_ids(self, ids: Set[UUID]) -> List[str]:
+        """Get unique vessel types for matched vessel IDs.
+
+        Args:
+            ids: Set of vessel UUIDs.
+
+        Returns:
+            Sorted list of unique vessel types.
+        """
+        return sorted(set(
+            self.vessels[id].vessel_type
+            for id in ids
+            if id in self.vessels
+        ))
+
+    def get_classes_for_ids(self, ids: Set[UUID]) -> List[str]:
+        """Get unique vessel classes for matched vessel IDs.
+
+        Args:
+            ids: Set of vessel UUIDs.
+
+        Returns:
+            Sorted list of unique vessel classes.
+        """
+        return sorted(set(
+            self.vessels[id].vessel_class
+            for id in ids
+            if id in self.vessels
+        ))
