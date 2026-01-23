@@ -71,7 +71,14 @@
       "Bash(PGPASSWORD=l6qSeLEx7QIXD8b3 psql:*)",
       "Bash(xxd:*)",
       "Bash(uv lock:*)",
-      "Bash(timeout 10 npm run dev)"
+      "Bash(timeout 10 npm run dev)",
+      "Bash(where python:*)",
+      "Bash(C:/Projects/GitHub/NCL/.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/pip.exe install:*)",
+      "Bash(cmd /c \"C:\\\\Projects\\\\GitHub\\\\NCL\\\\.venv\\\\Scripts\\\\pip.exe install pytest-asyncio\")",
+      "Bash(\"C:/Projects/GitHub/NCL/.venv/Scripts/python.exe\" -m pip install pytest-asyncio)",
+      "Bash(\"C:/Projects/GitHub/NCL/.venv/Scripts/python.exe\" -m ensurepip)",
+      "Bash(\"C:/Projects/GitHub/NCL/.venv/Scripts/python.exe\" -m pytest:*)"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\MTSS\\web\\src\\app\\chat\\[threadId]"

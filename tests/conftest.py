@@ -8,6 +8,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
+# Configure pytest-asyncio mode for VS Code compatibility
+pytest_plugins = ["pytest_asyncio"]
+
 
 @pytest.fixture
 def temp_dir():

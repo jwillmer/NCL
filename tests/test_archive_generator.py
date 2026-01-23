@@ -28,7 +28,7 @@ class TestArchiveGenerator:
     def archive_generator(self, mock_storage, comprehensive_mock_settings, temp_dir):
         """Create an ArchiveGenerator with mocked storage."""
         with patch(
-            "mtss.processing.archive_generator.get_settings",
+            "mtss.config.get_settings",
             return_value=comprehensive_mock_settings,
         ):
             with patch(
@@ -231,7 +231,7 @@ class TestArchiveGenerator:
         result = archive_generator.get_archive_uris("abc123def456789")
 
         assert result["browse_uri"] is not None
-        assert result["download_uri"] is None  # get_archive_uris returns None for download
+        assert result["download_uri"] is not None  # returns download URI when archive exists
 
     @pytest.mark.unit
     def test_get_archive_uris_when_not_exists(self, archive_generator, mock_storage):
