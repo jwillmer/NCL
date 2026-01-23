@@ -7,8 +7,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from .middleware.auth import UserPayload, get_current_user
 from ..observability import get_langfuse_client
+from .middleware.auth import UserPayload, get_current_user
 
 logger = logging.getLogger(__name__)
 

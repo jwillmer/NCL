@@ -1,6 +1,6 @@
 ﻿
-import json
 from fastapi import FastAPI
+
 from mtss.api.conversations import router
 
 app = FastAPI()

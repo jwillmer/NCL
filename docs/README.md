@@ -7,6 +7,7 @@ Welcome to the MTSS documentation. MTSS is an Email RAG Pipeline for processing 
 | Document | Description |
 |----------|-------------|
 | [Processing Flow](processing-flow.md) | Visual flowcharts of the data pipeline using Mermaid diagrams |
+| [Ingest-Update Flow](ingest-update-flow.md) | ASCII flowcharts for the ingest-update validation and repair command |
 | [Architecture](architecture.md) | Technical architecture, components, database schema, and technology stack |
 | [Features](features.md) | Comprehensive feature guide with CLI usage examples |
 

@@ -2,17 +2,63 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Callable, List, Optional
+from typing import Awaitable, Callable, List, Optional, TypeVar
 
 import tiktoken
 from litellm import aembedding
+from litellm.exceptions import APIConnectionError, RateLimitError, Timeout
 
 from ..config import get_settings
 from ..models.chunk import Chunk
 from ..observability import get_langfuse_metadata
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+async def _call_with_retry(
+    func: Callable[[], Awaitable[T]],
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+) -> T:
+    """Call an async function with exponential backoff retry.
+
+    Retries on rate limits, timeouts, and transient connection errors.
+
+    Args:
+        func: Async function to call.
+        max_retries: Maximum number of retry attempts.
+        base_delay: Base delay in seconds (doubles each retry).
+
+    Returns:
+        The result of the function call.
+
+    Raises:
+        The last exception if all retries are exhausted.
+    """
+    last_exception = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return await func()
+        except (RateLimitError, Timeout, APIConnectionError) as e:
+            last_exception = e
+            if attempt == max_retries:
+                logger.error(f"API call failed after {max_retries + 1} attempts: {e}")
+                raise
+
+            delay = base_delay * (2 ** attempt)
+            logger.warning(
+                f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                f"Retrying in {delay:.1f}s..."
+            )
+            await asyncio.sleep(delay)
+
+    # This should never be reached, but satisfy type checker
+    raise last_exception  # type: ignore
 
 
 class EmbeddingGenerator:
@@ -59,6 +105,8 @@ class EmbeddingGenerator:
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a single text.
 
+        Includes automatic retry with exponential backoff for transient failures.
+
         Args:
             text: Text to embed.
 
@@ -66,16 +114,22 @@ class EmbeddingGenerator:
             Embedding vector as list of floats.
         """
         truncated = self._truncate_to_max_tokens(text)
-        response = await aembedding(
-            model=self.model,
-            input=[truncated],
-            dimensions=self.dimensions,
-            metadata=get_langfuse_metadata(),
-        )
+
+        async def _call():
+            return await aembedding(
+                model=self.model,
+                input=[truncated],
+                dimensions=self.dimensions,
+                metadata=get_langfuse_metadata(),
+            )
+
+        response = await _call_with_retry(_call)
         return response.data[0]["embedding"]
 
     async def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for multiple texts in batch.
+
+        Includes automatic retry with exponential backoff for transient failures.
 
         Args:
             texts: List of texts to embed.
@@ -95,12 +149,16 @@ class EmbeddingGenerator:
 
         for i in range(0, len(truncated_texts), self.batch_size):
             batch = truncated_texts[i : i + self.batch_size]
-            response = await aembedding(
-                model=self.model,
-                input=batch,
-                dimensions=self.dimensions,
-                metadata=metadata,
-            )
+
+            async def _call(b=batch):  # Capture batch by value to avoid closure bug
+                return await aembedding(
+                    model=self.model,
+                    input=b,
+                    dimensions=self.dimensions,
+                    metadata=metadata,
+                )
+
+            response = await _call_with_retry(_call)
             batch_embeddings = [item["embedding"] for item in response.data]
             all_embeddings.extend(batch_embeddings)
 
@@ -135,6 +193,8 @@ class EmbeddingGenerator:
     ) -> List[Chunk]:
         """Embed chunks with progress reporting.
 
+        Includes automatic retry with exponential backoff for transient failures.
+
         Args:
             chunks: List of chunks to embed.
             progress_callback: Optional callback(completed, total) for progress updates.
@@ -155,12 +215,15 @@ class EmbeddingGenerator:
             # otherwise fall back to raw content
             texts = [self._truncate_to_max_tokens(chunk.embedding_text or chunk.content) for chunk in batch]
 
-            response = await aembedding(
-                model=self.model,
-                input=texts,
-                dimensions=self.dimensions,
-                metadata=metadata,
-            )
+            async def _call(t=texts):  # Capture texts by value to avoid closure bug
+                return await aembedding(
+                    model=self.model,
+                    input=t,
+                    dimensions=self.dimensions,
+                    metadata=metadata,
+                )
+
+            response = await _call_with_retry(_call)
 
             for chunk, item in zip(batch, response.data):
                 chunk.embedding = item["embedding"]

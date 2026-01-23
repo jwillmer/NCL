@@ -1,4 +1,4 @@
-﻿# MTSS Processing Flow
+# MTSS Processing Flow
 
 This document describes the data flow through the MTSS email RAG pipeline.
 
@@ -29,98 +29,139 @@ data/
 
 ## High-Level Architecture
 
-```mermaid
-flowchart TB
-    subgraph Input["Source Data"]
-        EML[EML Files]
-    end
-
-    subgraph Parsing["Parsing Layer"]
-        EP[EML Parser]
-        PP[Preprocessor]
-        PR[Parser Registry]
-        LP[LlamaParse]
-        ZIP[ZIP Extractor]
-    end
-
-    subgraph Processing["Processing Layer"]
-        IP[Image Processor<br/>OpenAI Vision]
-        CH[Document Chunker<br/>LangChain]
-        EMB[Embedding Generator]
-    end
-
-    subgraph Storage["Storage Layer"]
-        DB[(Supabase<br/>pgvector)]
-        UF[Unsupported Files Log]
-    end
-
-    EML --> EP
-    EP --> |Attachments| PP
-    PP --> |Route| PR
-    PP --> |Images| IP
-    PP --> |ZIP| ZIP
-    PR --> LP
-    ZIP --> PP
-    LP --> CH
-    IP --> CH
-    CH --> EMB
-    EMB --> DB
-    PP --> |Unsupported| UF
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              SOURCE DATA                                     │
+│                                                                             │
+│                             [ EML Files ]                                   │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            PARSING LAYER                                     │
+│                                                                             │
+│  ┌─────────────┐    ┌──────────────┐    ┌───────────────┐                  │
+│  │ EML Parser  │───▶│ Preprocessor │───▶│Parser Registry│                  │
+│  └─────────────┘    └──────┬───────┘    └───────┬───────┘                  │
+│                            │                    │                           │
+│                     ┌──────┴──────┐      ┌──────┴──────┐                   │
+│                     ▼             ▼      ▼             ▼                   │
+│              ┌───────────┐  ┌─────────┐  ┌───────────────┐                 │
+│              │ZIP Extract│  │ Images  │  │  LlamaParse   │                 │
+│              └───────────┘  └─────────┘  └───────────────┘                 │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          PROCESSING LAYER                                    │
+│                                                                             │
+│  ┌──────────────────┐    ┌──────────────────┐    ┌─────────────────────┐   │
+│  │  Image Processor │    │  Document Chunker│    │ Embedding Generator │   │
+│  │  (OpenAI Vision) │───▶│   (LangChain)    │───▶│   (OpenAI + retry)  │   │
+│  └──────────────────┘    └──────────────────┘    └─────────────────────┘   │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           STORAGE LAYER                                      │
+│                                                                             │
+│         ┌───────────────────────┐    ┌─────────────────────────┐           │
+│         │   Supabase + pgvector │    │   Ingest Events Log     │           │
+│         │   (documents, chunks) │    │   (errors, warnings)    │           │
+│         └───────────────────────┘    └─────────────────────────┘           │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Ingest Pipeline Flow
 
-```mermaid
-flowchart TD
-    START([MTSS ingest]) --> LOAD_VESSELS[Load vessel registry]
-    LOAD_VESSELS --> SCAN[Scan source directory]
-    SCAN --> HASH{Hash exists?}
-
-    HASH --> |Completed| SKIP[Skip file]
-    HASH --> |New/Failed| PARSE[Parse EML]
-
-    PARSE --> BODY[Extract body text]
-    PARSE --> ATTACH[Save attachments]
-
-    BODY --> VESSEL_MATCH[Match vessels in<br/>subject + body]
-    VESSEL_MATCH --> CHUNK_BODY[Create body chunks<br/>with vessel_ids]
-
-    ATTACH --> PREPROCESS[Preprocess attachment]
-
-    subgraph Preprocessor["Preprocessor Decision"]
-        PREPROCESS --> TYPE{File type?}
-        TYPE --> |ZIP| IS_ZIP[is_zip=true]
-        TYPE --> |Image| CLASSIFY{Classify image}
-        TYPE --> |Document| FIND_PARSER[Find parser]
-
-        CLASSIFY --> |Logo/Banner| SKIP_IMG[should_process=false]
-        CLASSIFY --> |Meaningful| DESCRIBE[Get description]
-
-        FIND_PARSER --> |Found| HAS_PARSER[parser_name=llamaparse]
-        FIND_PARSER --> |None| NO_PARSER[should_process=false]
-    end
-
-    IS_ZIP --> EXTRACT[Extract ZIP]
-    EXTRACT --> PREPROCESS
-
-    DESCRIBE --> CREATE_IMG_CHUNK[Create image chunk<br/>inherit vessel_ids]
-    HAS_PARSER --> LLAMAPARSE[Parse with LlamaParse]
-    LLAMAPARSE --> CHUNK_DOC[Chunk with LangChain<br/>inherit vessel_ids]
-
-    SKIP_IMG --> LOG_SKIP[Log as non-content]
-    NO_PARSER --> LOG_UNSUP[Log as unsupported]
-
-    CHUNK_BODY --> EMBED
-    CREATE_IMG_CHUNK --> EMBED
-    CHUNK_DOC --> EMBED
-
-    EMBED[Generate embeddings] --> STORE[Store in Supabase<br/>with vessel_ids metadata]
-    STORE --> COMPLETE[Mark completed]
-
-    SKIP --> END([Next file])
-    LOG_SKIP --> END
-    LOG_UNSUP --> END
-    COMPLETE --> END
+```
+┌──────────────────┐
+│   MTSS ingest    │
+│   [--lenient]    │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────────────────────────┐
+│ 1. Load vessel registry              │
+└────────┬─────────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────────┐
+│ 2. Scan source directory for .eml    │
+└────────┬─────────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────────┐
+│ 3. Check hash - already processed?   │
+├──────────────────────────────────────┤
+│ YES (Completed) ──▶ Skip file        │
+│ NO  (New/Failed) ──▶ Continue        │
+└────────┬─────────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────────┐
+│ 4. Parse EML file                    │
+│    • Extract body text (multi-charset│
+│      decode with fallback)           │
+│    • Save attachments to temp folder │
+└────────┬─────────────────────────────┘
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+┌────────┐  ┌─────────────────────────────┐
+│ BODY   │  │ ATTACHMENTS                 │
+└───┬────┘  └─────────────┬───────────────┘
+    │                     │
+    ▼                     ▼
+┌────────────────┐  ┌─────────────────────────────────────────┐
+│Match vessels in│  │ 5. Preprocess each attachment           │
+│subject + body  │  │                                         │
+└───┬────────────┘  │    ┌─────────────────────────────────┐  │
+    │               │    │ File Type?                      │  │
+    ▼               │    ├─────────────────────────────────┤  │
+┌────────────────┐  │    │                                 │  │
+│Create body     │  │    │ ZIP ──────▶ Extract contents    │  │
+│chunks with     │  │    │            (recurse to preproc) │  │
+│vessel_ids      │  │    │                                 │  │
+└───┬────────────┘  │    │ Image ───▶ Classify via Vision  │  │
+    │               │    │            Logo/Banner? Skip    │  │
+    │               │    │            Meaningful? Describe │  │
+    │               │    │                                 │  │
+    │               │    │ Document ▶ Find parser          │  │
+    │               │    │            Found? LlamaParse    │  │
+    │               │    │            None? Log unsupported│  │
+    │               │    └─────────────────────────────────┘  │
+    │               └─────────────┬───────────────────────────┘
+    │                             │
+    │    ┌────────────────────────┤
+    │    │                        │
+    │    ▼                        ▼
+    │ ┌──────────────┐    ┌───────────────────┐
+    │ │Image chunk   │    │Document chunks    │
+    │ │(description) │    │(LangChain split)  │
+    │ │+ vessel_ids  │    │+ vessel_ids       │
+    │ └──────┬───────┘    └─────────┬─────────┘
+    │        │                      │
+    └────────┴──────────┬───────────┘
+                        │
+                        ▼
+         ┌──────────────────────────────┐
+         │ 6. Generate embeddings       │
+         │    (with retry + backoff)    │
+         └──────────────┬───────────────┘
+                        │
+                        ▼
+         ┌──────────────────────────────┐
+         │ 7. Store in Supabase         │
+         │    • Insert chunks           │
+         │    • vessel_ids in metadata  │
+         └──────────────┬───────────────┘
+                        │
+                        ▼
+         ┌──────────────────────────────┐
+         │ 8. Mark document COMPLETED   │
+         └──────────────────────────────┘
 ```
 
 ## Component Responsibilities
@@ -129,31 +170,51 @@ flowchart TD
 
 Routes files to appropriate handlers and filters non-content images.
 
-```mermaid
-flowchart LR
-    subgraph Preprocess["preprocess(file, classify_images)"]
-        INPUT[File] --> CHECK_ZIP{ZIP file?}
-
-        CHECK_ZIP --> |Yes| ZIP_RESULT[PreprocessResult<br/>is_zip=true]
-        CHECK_ZIP --> |No| CHECK_IMG{Image?}
-
-        CHECK_IMG --> |Yes| CLASSIFY{classify_images?}
-        CHECK_IMG --> |No| CHECK_PARSER{Parser exists?}
-
-        CLASSIFY --> |True| VISION[Vision API classify]
-        CLASSIFY --> |False| IMG_RESULT[PreprocessResult<br/>is_image=true]
-
-        VISION --> |Logo/Banner| SKIP_RESULT[PreprocessResult<br/>should_process=false]
-        VISION --> |Meaningful| DESC_RESULT[PreprocessResult<br/>image_description=...]
-
-        CHECK_PARSER --> |Found| PARSER_RESULT[PreprocessResult<br/>parser_name=...]
-        CHECK_PARSER --> |None| UNSUP_RESULT[PreprocessResult<br/>should_process=false]
-    end
+```
+                    ┌─────────────────┐
+                    │ preprocess(file,│
+                    │ classify_images)│
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌────────────────┐
+                    │  ZIP file?     │
+                    └───┬────────┬───┘
+                        │        │
+                       YES       NO
+                        │        │
+                        ▼        ▼
+            ┌───────────────┐  ┌──────────────┐
+            │PreprocessResult│  │  Image?      │
+            │is_zip=true     │  └──┬───────┬──┘
+            └───────────────┘     │       │
+                                 YES      NO
+                                  │       │
+                                  ▼       ▼
+                    ┌─────────────────┐  ┌──────────────┐
+                    │classify_images? │  │Parser exists?│
+                    └──┬──────────┬──┘  └──┬───────┬──┘
+                      YES         NO      YES      NO
+                       │          │        │       │
+                       ▼          ▼        ▼       ▼
+              ┌─────────────┐ ┌──────┐ ┌──────┐ ┌──────────┐
+              │Vision API   │ │Result│ │Result│ │Result    │
+              │classify     │ │image │ │parser│ │should_   │
+              └──┬──────┬──┘ │=true │ │=name │ │process=  │
+                 │      │    └──────┘ └──────┘ │false     │
+           Logo/Banner  Meaningful             └──────────┘
+                 │      │
+                 ▼      ▼
+          ┌──────────┐ ┌────────────┐
+          │should_   │ │image_      │
+          │process=  │ │description │
+          │false     │ │=...        │
+          └──────────┘ └────────────┘
 ```
 
 ### Parser Registry (`ParserRegistry`)
 
-Simple lookup for file type → parser mapping.
+Simple lookup for file type to parser mapping.
 
 | MIME Type / Extension | Parser |
 |-----------------------|--------|
@@ -171,27 +232,49 @@ Uses OpenAI Vision API for:
 1. **Classification**: Detect logos, banners, signatures (skip these)
 2. **Description**: Generate text description of meaningful images
 
-```mermaid
-flowchart LR
-    IMG[Image] --> CLASSIFY[classify_and_describe]
-    CLASSIFY --> |API Call| VISION[OpenAI Vision]
-    VISION --> RESULT{Classification}
-    RESULT --> |logo/banner/signature| SKIP[should_skip=true]
-    RESULT --> |meaningful| DESC[description=...]
+```
+┌─────────┐     ┌─────────────────────┐     ┌───────────────┐
+│ Image   │────▶│ classify_and_describe│────▶│ OpenAI Vision │
+└─────────┘     └─────────────────────┘     └───────┬───────┘
+                                                    │
+                                           ┌────────┴────────┐
+                                           │                 │
+                                           ▼                 ▼
+                                  ┌─────────────────┐ ┌────────────────┐
+                                  │logo/banner/sig  │ │ meaningful     │
+                                  │should_skip=true │ │ description=...│
+                                  └─────────────────┘ └────────────────┘
 ```
 
 ### Document Chunker (`DocumentChunker`)
 
 Uses LangChain text splitters with tiktoken tokenization.
 
-```mermaid
-flowchart LR
-    TEXT[Markdown Text] --> SPLITTER{Content type?}
-    SPLITTER --> |Markdown| MD[MarkdownTextSplitter]
-    SPLITTER --> |Plain| REC[RecursiveCharacterTextSplitter]
-    MD --> CHUNKS[Chunk objects]
-    REC --> CHUNKS
-    CHUNKS --> HEADERS[Extract heading_path]
+```
+┌───────────────┐
+│ Markdown Text │
+└───────┬───────┘
+        │
+        ▼
+┌───────────────────┐
+│ Content type?     │
+├─────────┬─────────┤
+│Markdown │ Plain   │
+└────┬────┴────┬────┘
+     │         │
+     ▼         ▼
+┌──────────┐ ┌────────────────────────┐
+│Markdown  │ │RecursiveCharacter      │
+│TextSplit │ │TextSplitter            │
+└────┬─────┘ └───────────┬────────────┘
+     │                   │
+     └─────────┬─────────┘
+               │
+               ▼
+     ┌─────────────────┐
+     │ Chunk objects   │
+     │ + heading_path  │
+     └─────────────────┘
 ```
 
 Configuration:
@@ -201,79 +284,194 @@ Configuration:
 
 ## ZIP Extraction Security
 
-```mermaid
-flowchart TD
-    ZIP[ZIP File] --> VALID{Valid ZIP?}
-    VALID --> |No| ERROR[Raise ValueError]
-    VALID --> |Yes| DEPTH{Depth > 3?}
-
-    DEPTH --> |Yes| DEPTH_ERROR[Raise ZipExtractionError]
-    DEPTH --> |No| ITERATE[Iterate members]
-
-    ITERATE --> PATH{Path traversal?}
-    PATH --> |../ or absolute| SKIP_DANGEROUS[Skip file]
-    PATH --> |Safe| HIDDEN{Hidden file?}
-
-    HIDDEN --> |.file or __MACOSX| SKIP_HIDDEN[Skip file]
-    HIDDEN --> |No| SIZE{Total size OK?}
-
-    SIZE --> |> 500MB| SIZE_ERROR[Raise ZipExtractionError]
-    SIZE --> |OK| COUNT{File count OK?}
-
-    COUNT --> |> 100 files| COUNT_ERROR[Raise ZipExtractionError]
-    COUNT --> |OK| EXTRACT[Extract file]
-
-    EXTRACT --> NESTED{Nested ZIP?}
-    NESTED --> |Yes| RECURSE[Recursive extract]
-    RECURSE --> DEPTH
-    NESTED --> |No| ADD[Add to results]
+```
+┌──────────┐
+│ ZIP File │
+└────┬─────┘
+     │
+     ▼
+┌────────────────┐
+│ Valid ZIP?     │
+├────────┬───────┤
+│   NO   │  YES  │
+└────┬───┴───┬───┘
+     │       │
+     ▼       ▼
+┌─────────┐ ┌──────────────────┐
+│ Raise   │ │ Depth > 3?       │
+│ValueError│ ├──────────┬───────┤
+└─────────┘ │   YES    │  NO   │
+            └────┬─────┴───┬───┘
+                 │         │
+                 ▼         ▼
+       ┌──────────────┐ ┌────────────────────┐
+       │ZipExtraction │ │ For each member:   │
+       │Error         │ └─────────┬──────────┘
+       └──────────────┘           │
+                                  ▼
+                     ┌────────────────────────┐
+                     │ Path traversal?        │
+                     │ (../ or absolute)      │
+                     ├────────────┬───────────┤
+                     │    YES     │    NO     │
+                     └─────┬──────┴─────┬─────┘
+                           │            │
+                           ▼            ▼
+                    ┌───────────┐ ┌───────────────┐
+                    │Skip file  │ │Hidden file?   │
+                    └───────────┘ │(. or __MACOSX)│
+                                  ├───────┬───────┤
+                                  │  YES  │  NO   │
+                                  └───┬───┴───┬───┘
+                                      │       │
+                                      ▼       ▼
+                               ┌──────────┐ ┌──────────────┐
+                               │Skip file │ │Total size OK?│
+                               └──────────┘ │(< 500MB)     │
+                                            ├──────┬───────┤
+                                            │  NO  │  YES  │
+                                            └──┬───┴───┬───┘
+                                               │       │
+                                               ▼       ▼
+                                  ┌──────────────┐ ┌─────────────┐
+                                  │ZipExtraction │ │File count OK│
+                                  │Error         │ │(< 100)      │
+                                  └──────────────┘ ├──────┬──────┤
+                                                   │  NO  │ YES  │
+                                                   └──┬───┴──┬───┘
+                                                      │      │
+                                                      ▼      ▼
+                                         ┌──────────────┐ ┌────────────┐
+                                         │ZipExtraction │ │Extract file│
+                                         │Error         │ └─────┬──────┘
+                                         └──────────────┘       │
+                                                                ▼
+                                                    ┌───────────────────┐
+                                                    │Nested ZIP?        │
+                                                    ├─────────┬─────────┤
+                                                    │   YES   │   NO    │
+                                                    └────┬────┴────┬────┘
+                                                         │         │
+                                                         ▼         ▼
+                                                ┌─────────────┐ ┌────────────┐
+                                                │Recurse with │ │Add to      │
+                                                │depth + 1    │ │results     │
+                                                └─────────────┘ └────────────┘
 ```
 
-Limits (configurable via environment):
+**Limits (configurable via environment):**
 - `ZIP_MAX_DEPTH`: 3
 - `ZIP_MAX_FILES`: 100
 - `ZIP_MAX_TOTAL_SIZE_MB`: 500
 
 ## Query Flow
 
-```mermaid
-flowchart TD
-    Q([User Query]) --> VESSEL{Vessel selected?}
-    VESSEL --> |Yes| BUILD_FILTER[Build metadata filter<br/>vessel_ids contains uuid]
-    VESSEL --> |No| EMBED
-
-    BUILD_FILTER --> EMBED[Generate embedding]
-    EMBED --> SEARCH[Vector search<br/>top_k=20<br/>+ metadata filter]
-
-    SEARCH --> RERANK{Reranking?}
-    RERANK --> |Enabled| COHERE[Cohere rerank<br/>top_n=5]
-    RERANK --> |Disabled| RESULTS
-    COHERE --> RESULTS[Final results]
-
-    RESULTS --> CONTEXT[Build context]
-    CONTEXT --> LLM[GPT-4o-mini]
-    LLM --> ANSWER[Answer + Sources]
+```
+┌─────────────────┐
+│   User Query    │
+└────────┬────────┘
+         │
+         ▼
+┌──────────────────────┐
+│ Vessel selected?     │
+├──────────┬───────────┤
+│   YES    │    NO     │
+└────┬─────┴─────┬─────┘
+     │           │
+     ▼           │
+┌────────────────┐  │
+│Build metadata  │  │
+│filter:         │  │
+│vessel_ids      │  │
+│contains uuid   │  │
+└────────┬───────┘  │
+         │          │
+         └────┬─────┘
+              │
+              ▼
+    ┌─────────────────────┐
+    │ Generate embedding  │
+    └──────────┬──────────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │ Vector search       │
+    │ top_k=20            │
+    │ + metadata filter   │
+    └──────────┬──────────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │ Reranking enabled?  │
+    ├──────────┬──────────┤
+    │   YES    │    NO    │
+    └────┬─────┴─────┬────┘
+         │           │
+         ▼           │
+  ┌─────────────┐    │
+  │Cohere rerank│    │
+  │top_n=5      │    │
+  └──────┬──────┘    │
+         │           │
+         └─────┬─────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │ Build context from  │
+    │ final results       │
+    └──────────┬──────────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │ GPT-4o generate     │
+    │ answer              │
+    └──────────┬──────────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │ Answer + Sources    │
+    └─────────────────────┘
 ```
 
 ### Vessel Filtering
 
 When a user selects a vessel in the UI, the search is filtered to only return chunks from documents tagged with that vessel.
 
-```mermaid
-flowchart LR
-    subgraph Frontend
-        UI[Vessel Dropdown] --> |vessel_id| COPILOT[CopilotKit properties]
-    end
-
-    subgraph Agent
-        COPILOT --> |selected_vessel_id| SEARCH_NODE[search_node]
-        SEARCH_NODE --> |metadata_filter| QUERY[query_engine.search_only]
-    end
-
-    subgraph Database
-        QUERY --> |vessel_ids contains uuid| MATCH[match_chunks function]
-        MATCH --> |chunks.metadata @> filter| RESULTS[Filtered results]
-    end
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ FRONTEND                                                                     │
+│                                                                             │
+│   ┌────────────────┐      ┌─────────────────────┐                          │
+│   │ Vessel Dropdown│─────▶│ CopilotKit props    │                          │
+│   │ (UI component) │      │ selected_vessel_id  │                          │
+│   └────────────────┘      └──────────┬──────────┘                          │
+└──────────────────────────────────────┼──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ AGENT                                                                        │
+│                                                                             │
+│   ┌─────────────────┐      ┌─────────────────────┐                         │
+│   │ search_node     │─────▶│ query_engine.search │                         │
+│   │ (LangGraph)     │      │ with metadata_filter│                         │
+│   └─────────────────┘      └──────────┬──────────┘                         │
+└──────────────────────────────────────┼──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ DATABASE                                                                     │
+│                                                                             │
+│   ┌─────────────────────┐      ┌─────────────────────┐                     │
+│   │ match_chunks()      │─────▶│ chunks.metadata     │                     │
+│   │ vessel_ids contains │      │ @> filter           │                     │
+│   │ uuid                │      │                     │                     │
+│   └─────────────────────┘      └──────────┬──────────┘                     │
+│                                           │                                 │
+│                                           ▼                                 │
+│                                ┌─────────────────────┐                     │
+│                                │ Filtered results    │                     │
+│                                └─────────────────────┘                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Tagging scope:** Only email subject and body are scanned for vessel names during ingest. Attachments inherit vessel tags from their parent email. See [features.md](features.md#11-vessel-filtering) for details.
@@ -303,5 +501,5 @@ flowchart LR
 | `chunks` | Text chunks with embeddings (pgvector), vessel_ids in metadata |
 | `vessels` | Vessel registry (name, IMO, type, aliases) |
 | `conversations` | Chat conversations with vessel_id filter |
-| `unsupported_files` | Logged unsupported/skipped files |
+| `ingest_events` | Processing events (errors, warnings, unsupported files) |
 | `processing_log` | Progress tracking for resume |

@@ -16,6 +16,7 @@ nest_asyncio.apply()
 # Disable Langfuse tracing for CLI operations (only used for API)
 # This prevents "[non-fatal] Tracing: server error 503" messages during ingest
 import litellm
+
 litellm.success_callback = [cb for cb in litellm.success_callback if "langfuse" not in cb]
 litellm.failure_callback = [cb for cb in litellm.failure_callback if "langfuse" not in cb]
 from pathlib import Path
@@ -35,13 +36,16 @@ from rich.progress import (
 from rich.table import Table
 
 from .config import get_settings
+from .ingest.helpers import (
+    IssueTracker,
+    enrich_chunks_with_document_metadata,
+    get_format_name,
+)
 from .models.chunk import Chunk
 from .models.document import ProcessingStatus
 from .parsers.attachment_processor import AttachmentProcessor
 from .parsers.chunker import ContextGenerator, DocumentChunker
-from .storage.archive_storage import ArchiveStorage
 from .parsers.email_cleaner import (
-    clean_email_body,
     remove_boilerplate_from_message,
     split_into_messages,
 )
@@ -53,15 +57,11 @@ from .processing.lane_classifier import LaneClassifier
 from .processing.version_manager import VersionManager
 from .processing.vessel_matcher import VesselMatcher
 from .rag.query_engine import RAGQueryEngine, format_response_with_sources
-from .storage.unsupported_file_logger import UnsupportedFileLogger
+from .storage.archive_storage import ArchiveStorage
 from .storage.progress_tracker import ProgressTracker
 from .storage.supabase_client import SupabaseClient
+from .storage.unsupported_file_logger import UnsupportedFileLogger
 from .utils import compute_chunk_id
-from .ingest.helpers import (
-    enrich_chunks_with_document_metadata,
-    get_format_name,
-    IssueTracker,
-)
 
 app = typer.Typer(
     name="MTSS",
@@ -143,6 +143,11 @@ def ingest(
         "--reprocess-outdated",
         help="Reprocess files that were ingested with an older version",
     ),
+    lenient: bool = typer.Option(
+        False,
+        "--lenient",
+        help="Continue processing on errors instead of failing (logs to ingest_events)",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -159,7 +164,7 @@ def ingest(
     original_handler = signal.signal(signal.SIGINT, _handle_interrupt)
 
     try:
-        asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed, reprocess_outdated))
+        asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed, reprocess_outdated, lenient))
     finally:
         # Restore original signal handler
         signal.signal(signal.SIGINT, original_handler)
@@ -173,6 +178,7 @@ async def _ingest(
     resume: bool,
     retry_failed: bool,
     reprocess_outdated: bool = False,
+    lenient: bool = False,
 ):
     """Async implementation of ingest command."""
     global _shutdown_requested
@@ -332,6 +338,7 @@ async def _ingest(
                         worker_task=worker_task,
                         slot_idx=slot_idx,
                         force_reparse=reprocess_outdated,
+                        lenient=lenient,
                     )
                     processed_count += 1
                 except Exception as e:
@@ -432,6 +439,7 @@ async def _process_single_email(
     worker_task: TaskID | None = None,
     slot_idx: int | None = None,
     force_reparse: bool = False,
+    lenient: bool = False,
 ):
     """Process a single EML file with all its attachments."""
     file_hash = tracker.compute_file_hash(eml_path)
@@ -441,7 +449,7 @@ async def _process_single_email(
 
     # Check using version manager if available
     # Use hierarchy_manager's ingest_root to ensure consistent doc_id computation
-    from .utils import normalize_source_id, compute_doc_id
+    from .utils import compute_doc_id, normalize_source_id
     source_id = normalize_source_id(source_eml_path, hierarchy_manager.ingest_root)
 
     if version_manager:
@@ -637,6 +645,7 @@ async def _process_single_email(
             archive_generator=archive_generator,
             vessel_ids=vessel_ids,
             force_reparse=force_reparse,
+            lenient=lenient,
         )
         attachment_chunk_count += len(attachment_chunks)
         email_chunks.extend(attachment_chunks)
@@ -728,6 +737,7 @@ async def _process_attachment(
     archive_generator: ArchiveGenerator | None = None,
     vessel_ids: list[str] | None = None,
     force_reparse: bool = False,
+    lenient: bool = False,
 ) -> list[Chunk]:
     """Process a single attachment and return its chunks.
 
@@ -766,7 +776,7 @@ async def _process_attachment(
         # Log skipped file
         reason = result.skip_reason or "unsupported_format"
         if "non_content" in reason.lower() or result.is_image:
-            vprint(f"  -> Skipped: non-content image (logo/banner/signature)", file_ctx)
+            vprint("  -> Skipped: non-content image (logo/banner/signature)", file_ctx)
             reason = "classified_as_non_content"
         else:
             vprint(f"  -> Skipped: {reason}", file_ctx)
@@ -793,6 +803,7 @@ async def _process_attachment(
                 archive_generator=archive_generator,
                 vessel_ids=vessel_ids,
                 force_reparse=force_reparse,
+                lenient=lenient,
             )
         )
         return chunks
@@ -817,7 +828,7 @@ async def _process_attachment(
             )
             chunks.append(chunk)
             parsed_content = result.image_description
-            vprint(f"  -> 1 chunk created (image described)", file_ctx)
+            vprint("  -> 1 chunk created (image described)", file_ctx)
             await db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
         elif result.is_image:
             # Image needs description (preprocessing didn't provide one)
@@ -871,7 +882,7 @@ async def _process_attachment(
                     parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
                     vprint(f"  -> {len(attach_chunks)} chunks created", file_ctx)
                 else:
-                    vprint(f"  -> 0 chunks (document has no extractable text)", file_ctx)
+                    vprint("  -> 0 chunks (document has no extractable text)", file_ctx)
 
             # Generate context summary for better search relevance
             if attach_chunks and context_generator and parsed_content:
@@ -910,9 +921,9 @@ async def _process_attachment(
                 attach_doc.archive_browse_uri = browse_uri
                 await db.update_document_archive_browse_uri(attach_doc.id, browse_uri)
             else:
-                vprint(f"  -> update_attachment_markdown returned None", file_ctx)
+                vprint("  -> update_attachment_markdown returned None", file_ctx)
         else:
-            vprint(f"  -> Skipping .md creation", file_ctx)
+            vprint("  -> Skipping .md creation", file_ctx)
 
     except Exception as e:
         track_issue(file_ctx, attachment.filename, str(e))
@@ -949,6 +960,7 @@ async def _process_zip_attachment(
     archive_generator: ArchiveGenerator | None = None,
     vessel_ids: list[str] | None = None,
     force_reparse: bool = False,
+    lenient: bool = False,
 ) -> list[Chunk]:
     """Extract and process files from a ZIP attachment.
 
@@ -959,7 +971,9 @@ async def _process_zip_attachment(
     vessel_ids = vessel_ids or []
 
     try:
-        extracted_files = attachment_processor.extract_zip(Path(attachment.saved_path))
+        extracted_files = attachment_processor.extract_zip(
+            Path(attachment.saved_path), lenient=lenient
+        )
         for extracted_path, extracted_content_type in extracted_files:
             # Preprocess extracted file (classify_images=False - trust ZIP contents)
             result = await attachment_processor.preprocess(
@@ -1259,7 +1273,7 @@ async def _failures(latest: bool, export: bool, limit: int):
         if latest:
             # Show details of latest report
             latest_report = reports[0]
-            console.print(f"\n[bold]Latest Ingest Report[/bold]")
+            console.print("\n[bold]Latest Ingest Report[/bold]")
             console.print(f"Timestamp: {latest_report['timestamp']}")
             console.print(f"Issues: {latest_report['total_failures']}")
             console.print(f"File: {latest_report['json_path']}")
@@ -1447,11 +1461,11 @@ async def _reset_failures(report_file: Path, eml_only: bool, dry_run: bool, yes:
     db = SupabaseClient()
     try:
         counts = await db.reset_failed_documents(eml_paths)
-        console.print(f"\n[green]Reset complete:[/green]")
+        console.print("\n[green]Reset complete:[/green]")
         console.print(f"  Documents deleted: {counts['documents']}")
         console.print(f"  Processing log entries deleted: {counts['processing_log']}")
         console.print(f"  Archive folders deleted: {counts['archives']}")
-        console.print(f"\n[dim]Run 'MTSS ingest' to reprocess these files[/dim]")
+        console.print("\n[dim]Run 'MTSS ingest' to reprocess these files[/dim]")
     finally:
         await db.close()
 
@@ -1628,7 +1642,7 @@ async def _reprocess(target_version: int | None, limit: int, dry_run: bool):
                 )
 
             console.print(table)
-            console.print(f"\n[dim]Run without --dry-run to process these documents[/dim]")
+            console.print("\n[dim]Run without --dry-run to process these documents[/dim]")
             return
 
         # Get documents to reprocess
@@ -1849,7 +1863,7 @@ async def _reindex_chunks(
                 progress.advance(task)
 
         # Print summary
-        console.print(f"\n[green]✓ Re-index complete[/green]")
+        console.print("\n[green]✓ Re-index complete[/green]")
         console.print(f"  Documents: {stats['success']} success, {stats['failed']} failed")
         console.print(f"  Chunks created: {stats['chunks_created']}")
 
@@ -1959,7 +1973,6 @@ async def _ingest_update(
 ):
     """Async implementation of ingest-update command."""
     from .ingest.components import create_ingest_components
-    from .utils import normalize_source_id
 
     settings = get_settings()
     source_dir = source_dir or settings.eml_source_dir
@@ -2056,7 +2069,7 @@ async def _ingest_update(
                     progress.advance(task)
 
         # Print summary
-        console.print(f"\n[green]✓ Ingest update complete[/green]")
+        console.print("\n[green]✓ Ingest update complete[/green]")
         console.print(f"  Documents fixed: {stats['fixed']}")
         console.print(f"  Documents failed: {stats['failed']}")
         console.print(f"  Chunks created/updated: {stats['chunks_created']}")
@@ -2294,8 +2307,9 @@ async def _fix_missing_archives(
         components: Shared ingest components.
         parsed_email: Parsed email object.
     """
-    from .models.document import DocumentType
     from urllib.parse import quote
+
+    from .models.document import DocumentType
 
     if not parsed_email:
         vprint("Cannot fix archives: email not parsed", record.eml_path.name)
@@ -2352,6 +2366,7 @@ async def _fix_missing_archives(
         else:
             # File doesn't exist - upload original from email and regenerate .md from chunks
             from pathlib import Path
+
             from .processing.archive_generator import _sanitize_storage_key
 
             # Find matching attachment in parsed email and upload original
@@ -2364,7 +2379,7 @@ async def _fix_missing_archives(
 
             if not matching_att:
                 vprint(f"Attachment not found in parsed email: {child.file_name}", record.eml_path.name)
-                vprint(f"Deleting email data for clean re-ingest...", record.eml_path.name)
+                vprint("Deleting email data for clean re-ingest...", record.eml_path.name)
                 # Delete from bucket first
                 if folder_id:
                     components.archive_storage.delete_folder(folder_id)
@@ -2628,6 +2643,7 @@ def vessels_import(
 async def _vessels_import(csv_file: Optional[Path], clear: bool):
     """Async implementation of vessels import command."""
     import csv
+
     from .models.vessel import Vessel
 
     settings = get_settings()
@@ -2756,6 +2772,7 @@ def vessels_retag(
 async def _vessels_retag(dry_run: bool, limit: int | None):
     """Async implementation of vessels retag command."""
     from uuid import UUID as UUIDType
+
     from .storage.archive_storage import ArchiveStorage, ArchiveStorageError
 
     db = SupabaseClient()

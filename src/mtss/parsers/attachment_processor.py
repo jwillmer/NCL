@@ -27,6 +27,20 @@ class ZipExtractionError(Exception):
     pass
 
 
+class ZipMemberExtractionError(Exception):
+    """Raised when a ZIP member fails to extract.
+
+    This indicates data loss from the ZIP archive and should be handled
+    appropriately by the caller (either fail the document or log and continue
+    in lenient mode).
+    """
+
+    def __init__(self, member: str, reason: str):
+        self.member = member
+        self.reason = reason
+        super().__init__(f"Failed to extract ZIP member '{member}': {reason}")
+
+
 class AttachmentProcessor:
     """Process attachments using parser plugins for text extraction and chunking.
 
@@ -341,6 +355,7 @@ class AttachmentProcessor:
         self,
         zip_path: Path,
         extract_dir: Optional[Path] = None,
+        lenient: bool = False,
         _depth: int = 0,
         _file_count: int = 0,
         _total_size: int = 0,
@@ -354,6 +369,8 @@ class AttachmentProcessor:
             zip_path: Path to the ZIP file.
             extract_dir: Directory to extract to. If None, extracts to same directory
                         as ZIP file with _extracted suffix.
+            lenient: If True, log extraction errors and continue. If False (default),
+                    raise ZipMemberExtractionError on any member failure.
             _depth: Internal parameter for tracking nested ZIP depth.
             _file_count: Internal parameter for tracking total extracted files.
             _total_size: Internal parameter for tracking total extracted size.
@@ -365,6 +382,7 @@ class AttachmentProcessor:
             FileNotFoundError: If ZIP file doesn't exist.
             ValueError: If ZIP file is invalid or cannot be opened.
             ZipExtractionError: If extraction limits are exceeded.
+            ZipMemberExtractionError: If a member fails to extract (when lenient=False).
         """
         settings = get_settings()
 
@@ -453,6 +471,7 @@ class AttachmentProcessor:
                         # Recursively extract nested ZIPs with updated counters
                         nested_files = self.extract_zip(
                             target_path,
+                            lenient=lenient,
                             _depth=_depth + 1,
                             _file_count=_file_count,
                             _total_size=_total_size,
@@ -470,9 +489,16 @@ class AttachmentProcessor:
                     # Re-raise limit errors
                     raise
                 except (OSError, IOError, zipfile.BadZipFile) as e:
-                    # Skip files that fail to extract for file system or ZIP errors
-                    logger.debug(f"Failed to extract {member}: {e}")
-                    continue
+                    # Handle file extraction errors based on lenient mode
+                    error_msg = f"Failed to extract {member}: {e}"
+                    if lenient:
+                        # Log and continue in lenient mode
+                        logger.warning(error_msg)
+                        continue
+                    else:
+                        # Raise in strict mode to prevent data loss
+                        logger.error(error_msg)
+                        raise ZipMemberExtractionError(member, str(e))
 
         return extracted_files
 

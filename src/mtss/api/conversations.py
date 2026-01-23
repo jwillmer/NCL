@@ -11,17 +11,17 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 import litellm
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 # Drop unsupported parameters for models that don't support them
 litellm.drop_params = True
 
-from .middleware.auth import UserPayload, get_current_user
 from ..config import get_settings
 from ..storage.supabase_client import SupabaseClient
+from .middleware.auth import UserPayload, get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conversations", tags=["conversations"])

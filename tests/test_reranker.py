@@ -139,7 +139,7 @@ class TestRerankerInit:
         mock_settings.cohere_api_key = None
 
         with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
-            with patch.dict("os.environ", {"COHERE_API_KEY": ""}, clear=False) as env:
+            with patch.dict("os.environ", {"COHERE_API_KEY": ""}, clear=False):
                 # Should not raise an error
                 reranker = Reranker()
                 assert reranker.enabled is True

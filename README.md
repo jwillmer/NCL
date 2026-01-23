@@ -92,6 +92,7 @@ uv run MTSS search "budget allocation" --top-k 10
 See the [docs/](docs/) folder for detailed documentation:
 
 - [Processing Flow](docs/processing-flow.md) - Visual flowcharts of the data pipeline
+- [Ingest Flow](docs/ingest-flow.md) - Detailed ingest and update flow documentation
 - [Architecture](docs/architecture.md) - Technical architecture and components
 - [Features](docs/features.md) - Comprehensive feature guide with CLI examples
 
@@ -131,7 +132,41 @@ uv run MTSS ingest --reprocess-outdated
 
 # Process 10 emails concurrently (default: 5)
 MAX_CONCURRENT_FILES=10 uv run MTSS ingest
+
+# Lenient mode - continue processing on errors instead of failing documents
+uv run MTSS ingest --lenient
 ```
+
+### Data Integrity
+
+The ingest command now fails documents by default when critical data loss is detected:
+- Attachment parsing failures
+- ZIP member extraction failures
+
+Use `--lenient` to continue processing despite errors (logs to `ingest_events` table).
+
+**Monitoring Ingest Quality:**
+
+```sql
+-- View all events by type
+SELECT event_type, severity, COUNT(*)
+FROM ingest_events
+GROUP BY event_type, severity;
+
+-- Find documents with errors
+SELECT parent_document_id, event_type, reason
+FROM ingest_events
+WHERE severity = 'error'
+ORDER BY discovered_at DESC;
+```
+
+**Event Types:**
+- `unsupported_file` - File format not supported
+- `encoding_fallback` - Character replacement used during decoding
+- `parse_failure` - Parser returned empty or error
+- `archive_failure` - Archive generation failed
+- `context_failure` - LLM context generation failed
+- `empty_content` - Content empty after processing
 
 ### Graceful Shutdown
 
@@ -524,18 +559,75 @@ The GitHub Action (`.github/workflows/docker-build.yml`) automatically builds an
 
 ## Testing
 
+Tests are designed to run without external dependencies (database, APIs). All external calls are mocked.
+
 ```bash
 # Run all tests
-uv run pytest tests/
+uv run pytest tests/ -v
 
-# Run with coverage
-uv run pytest tests/ --cov=MTSS --cov-report=term-missing
+# Run with coverage (target: 80%+)
+uv run pytest tests/ --cov=src/mtss --cov-report=term-missing --cov-report=html
 
 # Run specific test file
-uv run pytest tests/test_eml_parser.py
+uv run pytest tests/test_eml_parser.py -v
+
+# Run specific test categories
+uv run pytest -m unit          # Unit tests only
+uv run pytest -m integration   # Integration tests only
+
+# Run ingest-specific tests
+uv run pytest tests/test_ingest*.py tests/test_version_manager.py tests/test_archive_generator.py tests/test_vessel_matcher.py -v
+
+# Run in parallel (requires pytest-xdist)
+uv run pytest tests/ -v -n auto
 ```
 
+### Test Documentation
+
+See [docs/ingest-flow-tests.md](docs/ingest-flow-tests.md) for detailed documentation of:
+- Each ingest processing step
+- What each step does and why
+- Which tests validate each step
+- Current test coverage status
+
+### Test Structure
+
+| File | Description |
+|------|-------------|
+| `tests/conftest.py` | Shared fixtures for all tests |
+| `tests/test_eml_parser.py` | Email parsing tests |
+| `tests/test_attachment_processor.py` | Attachment extraction tests |
+| `tests/test_ingest_processing.py` | Chunker, embeddings, hierarchy, attachment processor tests |
+| `tests/test_ingest_storage.py` | Database client, helpers tests |
+| `tests/test_ingest_flow.py` | Integration tests (full flow with mocks) |
+| `tests/test_ingest_update_flow.py` | Update flow tests (fix missing data) |
+| `tests/test_version_manager.py` | Version management and deduplication tests |
+| `tests/test_archive_generator.py` | Archive generation tests |
+| `tests/test_vessel_matcher.py` | Vessel name matching tests |
+| `tests/test_ingest_consistency.py` | Ingest/update consistency validation |
+
 Test fixtures are located in `tests/fixtures/` including a sample email with PDF, ZIP, and PNG attachments.
+
+### Local Storage Output (Development)
+
+For debugging ingest behavior without Supabase, tests can use local storage mocks:
+
+```python
+# In your test
+def test_ingest_output(local_ingest_output):
+    # Use local_ingest_output.db instead of SupabaseClient
+    # Use local_ingest_output.bucket instead of ArchiveStorage
+
+    # After running ingest, inspect output:
+    docs = local_ingest_output.read_documents_jsonl()
+    chunks = local_ingest_output.read_chunks_jsonl()
+    events = local_ingest_output.read_events_jsonl()
+```
+
+Output files:
+- `tmp/database/documents.jsonl` - Document records
+- `tmp/database/chunks.jsonl` - Chunk records
+- `tmp/bucket/{doc_id}/` - Archive files
 
 ## License
 

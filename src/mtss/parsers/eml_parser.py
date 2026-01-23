@@ -13,7 +13,6 @@ from html import unescape
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
-
 from ..config import get_settings
 from ..models.document import EmailMessage, EmailMetadata, ParsedAttachment, ParsedEmail
 from ..utils import sanitize_filename
@@ -408,23 +407,53 @@ class EMLParser:
     def _decode_payload(self, part: EmailMsg) -> str | None:
         """Decode email part payload to string.
 
+        Tries multiple character encodings before falling back to replacement.
+        This prevents silent data corruption from using errors="replace" immediately.
+
         Args:
             part: Email part to decode.
 
         Returns:
             Decoded string content or None.
         """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         try:
             payload = part.get_payload(decode=True)
-            if payload:
-                charset = part.get_content_charset() or "utf-8"
-                return payload.decode(charset, errors="replace")
-        except (UnicodeDecodeError, LookupError, TypeError):
-            # UnicodeDecodeError: decoding failed even with error replacement
-            # LookupError: unknown charset encoding
+            if not payload:
+                return None
+
+            # Build list of charsets to try: declared charset first, then common alternatives
+            declared_charset = part.get_content_charset()
+            charsets_to_try = [
+                declared_charset,
+                "utf-8",
+                "iso-8859-1",
+                "windows-1252",
+                "cp1252",
+            ]
+            # Remove None/duplicates while preserving order
+            charsets_to_try = list(dict.fromkeys(c for c in charsets_to_try if c))
+
+            # Try each charset in order
+            for charset in charsets_to_try:
+                try:
+                    return payload.decode(charset)
+                except (UnicodeDecodeError, LookupError):
+                    continue
+
+            # Last resort: replacement with WARNING
+            logger.warning(
+                f"Encoding fallback used for email part - tried {charsets_to_try}, "
+                f"using utf-8 with replacement characters"
+            )
+            return payload.decode("utf-8", errors="replace")
+
+        except TypeError:
             # TypeError: payload is not bytes
-            pass
-        return None
+            return None
 
     def _extract_attachments(
         self, msg: EmailMsg, source_path: Path

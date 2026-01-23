@@ -13,7 +13,7 @@ from uuid import UUID
 
 from ..config import get_settings
 from ..storage.supabase_client import SupabaseClient
-from ..utils import compute_doc_id, normalize_source_id
+from ..utils import compute_doc_id
 
 logger = logging.getLogger(__name__)
 

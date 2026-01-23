@@ -1,16 +1,16 @@
 ﻿"""Data models for mtss."""
 
+from .chunk import Chunk, ChunkWithContext, SourceReference
 from .document import (
+    AttachmentMetadata,
     Document,
     DocumentType,
-    ProcessingStatus,
-    EmailMetadata,
     EmailMessage,
-    AttachmentMetadata,
-    ParsedEmail,
+    EmailMetadata,
     ParsedAttachment,
+    ParsedEmail,
+    ProcessingStatus,
 )
-from .chunk import Chunk, ChunkWithContext, SourceReference
 from .vessel import Vessel, VesselSummary
 
 __all__ = [

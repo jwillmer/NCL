@@ -3,8 +3,6 @@
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from mtss.parsers.eml_parser import EMLParser
 
 

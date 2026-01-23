@@ -68,13 +68,13 @@ class SupabaseClient:
 
         Child documents (attachments) and chunks are automatically deleted
         due to ON DELETE CASCADE constraints in the database schema.
-        unsupported_files must be deleted explicitly as it lacks CASCADE.
+        ingest_events must be deleted explicitly as it lacks CASCADE.
 
         Args:
             doc_id: UUID of the document to delete.
         """
-        # Delete unsupported_files first (no CASCADE constraint)
-        self.client.table("unsupported_files").delete().eq(
+        # Delete ingest_events first (no CASCADE constraint)
+        self.client.table("ingest_events").delete().eq(
             "parent_document_id", str(doc_id)
         ).execute()
         # Now delete the document (cascades to child docs and chunks)
@@ -611,6 +611,54 @@ class SupabaseClient:
 
         return result.count or 0
 
+    # ==================== Ingest Events ====================
+
+    def log_ingest_event(
+        self,
+        document_id: UUID,
+        event_type: str,
+        severity: str = "warning",
+        message: Optional[str] = None,
+        file_path: Optional[str] = None,
+        file_name: Optional[str] = None,
+        source_eml_path: Optional[str] = None,
+    ) -> None:
+        """Log an ingest event to the ingest_events table.
+
+        Used to track processing issues, encoding fallbacks, parse failures, etc.
+        for visibility and debugging.
+
+        Note: This is a synchronous method as it uses the sync Supabase client.
+
+        Args:
+            document_id: Parent document UUID.
+            event_type: Type of event (e.g., 'parse_failure', 'encoding_fallback').
+            severity: Event severity ('error', 'warning', 'info').
+            message: Description of the event (truncated to 200 chars for security).
+            file_path: Path to the file that caused the event.
+            file_name: Original filename.
+            source_eml_path: Source EML file path.
+        """
+        data: Dict[str, Any] = {
+            "parent_document_id": str(document_id),
+            "event_type": event_type,
+            "severity": severity,
+            "reason": message[:200] if message else event_type,
+        }
+
+        if file_path:
+            data["file_path"] = file_path
+        if file_name:
+            data["file_name"] = file_name
+        if source_eml_path:
+            data["source_eml_path"] = source_eml_path
+
+        try:
+            self.client.table("ingest_events").insert(data).execute()
+        except Exception as e:
+            # Log but don't fail the ingest if event logging fails
+            logger.warning(f"Failed to log ingest event: {e}")
+
     # ==================== Cleanup Operations ====================
 
     async def get_all_root_source_ids(self) -> Dict[str, UUID]:
@@ -645,8 +693,8 @@ class SupabaseClient:
         deleted = 0
         for doc_id in doc_ids:
             try:
-                # Delete unsupported_files first (no CASCADE)
-                self.client.table("unsupported_files").delete().eq(
+                # Delete ingest_events first (no CASCADE)
+                self.client.table("ingest_events").delete().eq(
                     "parent_document_id", str(doc_id)
                 ).execute()
 
@@ -668,7 +716,7 @@ class SupabaseClient:
         Deletion order:
         1. processing_log entries (tracks file processing state)
         2. Query child document IDs (attachments)
-        3. unsupported_files for root + children (no CASCADE)
+        3. ingest_events for root + children (no CASCADE)
         4. documents (CASCADE deletes children and chunks)
         5. archive folders from Supabase Storage
 
@@ -709,7 +757,7 @@ class SupabaseClient:
 
         if doc_ids:
             # Get all child document IDs (attachments) - these will be CASCADE deleted
-            # but we need their IDs to clean up unsupported_files first
+            # but we need their IDs to clean up ingest_events first
             child_result = (
                 self.client.table("documents")
                 .select("id")
@@ -719,8 +767,8 @@ class SupabaseClient:
             child_doc_ids = [doc["id"] for doc in child_result.data]
             all_doc_ids = doc_ids + child_doc_ids
 
-            # Delete unsupported_files for root docs AND their children (no CASCADE)
-            self.client.table("unsupported_files").delete().in_(
+            # Delete ingest_events for root docs AND their children (no CASCADE)
+            self.client.table("ingest_events").delete().in_(
                 "parent_document_id", all_doc_ids
             ).execute()
 
@@ -786,14 +834,14 @@ class SupabaseClient:
                 # Table may not exist yet if no conversations have been created
                 counts[table] = 0
 
-        # unsupported_files has FK to documents
+        # ingest_events has FK to documents
         result = (
-            self.client.table("unsupported_files")
+            self.client.table("ingest_events")
             .delete()
             .neq("id", "00000000-0000-0000-0000-000000000000")
             .execute()
         )
-        counts["unsupported_files"] = len(result.data) if result.data else 0
+        counts["ingest_events"] = len(result.data) if result.data else 0
 
         # chunks has FK to documents (will also be deleted by CASCADE, but explicit is clearer)
         # Delete in batches to avoid statement timeout on large tables

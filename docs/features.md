@@ -469,6 +469,126 @@ Options:
   -m, --max-age INT   Max age in minutes (default: 60)
 ```
 
+### `MTSS ingest-update`
+
+Validate and repair ingested data. Scans all ingested emails and automatically fixes common issues.
+
+```bash
+MTSS ingest-update [OPTIONS]
+
+Options:
+  -s, --source PATH   Directory containing EML files
+  -n, --dry-run       Scan and report issues without fixing
+  -l, --limit INT     Max documents to process (0 = all)
+  -v, --verbose       Show detailed progress
+```
+
+**What it fixes:**
+| Issue Type | Detection | Fix Action |
+|------------|-----------|------------|
+| Orphaned documents | Source .eml file deleted | Remove document and chunks from DB |
+| Missing archives | No browse URI in DB | Check bucket, update link or regenerate |
+| Missing line numbers | Chunks lack `line_from`/`line_to` | Re-chunk from archive, atomic replace |
+| Missing context | Chunks lack `context_summary` | Regenerate with LLM |
+
+**Examples:**
+```bash
+# Scan only, show issues found
+MTSS ingest-update --dry-run
+
+# Fix all detected issues
+MTSS ingest-update
+
+# Fix up to 10 documents with verbose output
+MTSS ingest-update --limit 10 --verbose
+```
+
+See [Ingest-Update Flow](ingest-update-flow.md) for detailed flowcharts.
+
+### `MTSS reset-failures`
+
+Reset failed documents from a failure report file for reprocessing.
+
+```bash
+MTSS reset-failures <REPORT_FILE> [OPTIONS]
+
+Arguments:
+  REPORT_FILE         Path to JSON report file from failed ingest
+
+Options:
+  -e, --eml-only      Only reset EML file failures (skip attachment failures)
+  -n, --dry-run       Show what would be reset without making changes
+  -y, --yes           Skip confirmation prompt
+```
+
+**What it deletes:**
+- `processing_log` entries (file processing state)
+- Documents and their children (attachments, chunks)
+- `unsupported_files` records
+- Archive folders from Supabase Storage
+
+**Workflow:**
+```bash
+# 1. View latest failure report
+MTSS failures --latest
+
+# 2. Preview what will be reset
+MTSS reset-failures data/reports/ingest_20260105_170109.json --dry-run
+
+# 3. Reset the failed documents
+MTSS reset-failures data/reports/ingest_20260105_170109.json --yes
+
+# 4. Reprocess the files
+MTSS ingest
+```
+
+**Examples:**
+```bash
+# Reset with confirmation prompt
+MTSS reset-failures data/reports/ingest_20260105_170109.json
+
+# Reset without confirmation
+MTSS reset-failures data/reports/ingest_20260105_170109.json -y
+
+# Only reset EML failures (not attachment failures)
+MTSS reset-failures data/reports/ingest_20260105_170109.json --eml-only
+```
+
+### `MTSS reindex-chunks`
+
+Re-create chunks from archived markdown files with line numbers and context.
+
+```bash
+MTSS reindex-chunks [OPTIONS]
+
+Options:
+  -d, --doc-id UUID    Re-index a specific document by UUID
+  -m, --missing-lines  Re-index all documents with chunks missing line numbers
+  -n, --dry-run        Show what would be processed without making changes
+  -l, --limit INT      Maximum number of documents to process (default: 100)
+  -v, --verbose        Enable verbose output
+```
+
+**Use cases:**
+- Add line numbers for citation highlighting (`--missing-lines`)
+- Regenerate chunks for a specific document (`--doc-id`)
+- Preview scope before processing (`--dry-run`)
+
+**Examples:**
+```bash
+# Preview documents missing line numbers
+MTSS reindex-chunks --missing-lines --dry-run
+
+# Re-index all documents missing line numbers
+MTSS reindex-chunks --missing-lines
+
+# Re-index a specific document
+MTSS reindex-chunks --doc-id abc123-def456-...
+
+# Limit processing to 50 documents
+MTSS reindex-chunks --missing-lines --limit 50 --verbose
+```
+
 ## Configuration
 
 ### Environment Variables
