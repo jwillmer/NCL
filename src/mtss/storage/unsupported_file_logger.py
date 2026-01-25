@@ -68,7 +68,7 @@ class UnsupportedFileLogger:
         if parent_document_id:
             data["parent_document_id"] = str(parent_document_id)
 
-        self.db.client.table("unsupported_files").upsert(
+        self.db.client.table("ingest_events").upsert(
             data, on_conflict="file_path"
         ).execute()
 
@@ -79,7 +79,7 @@ class UnsupportedFileLogger:
             Dictionary with counts by reason and mime_type.
         """
         result = (
-            self.db.client.table("unsupported_files")
+            self.db.client.table("ingest_events")
             .select("reason, mime_type")
             .execute()
         )

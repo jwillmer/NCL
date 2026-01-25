@@ -15,6 +15,8 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 - **Browsable Archive:** Markdown versions of all content with download links via API
 - **Ingest Versioning:** Track schema version for bulk re-processing capability
 - **Vessel Filtering:** Filter search results by vessel - documents are automatically tagged during ingest
+- **Topic Extraction:** Auto-categorization with semantic deduplication during ingest
+- **Topic Pre-filtering:** Early return for faster queries when no results exist in detected topics
 
 ## Installation
 
@@ -110,6 +112,7 @@ See the [docs/](docs/) folder for detailed documentation:
 | `uv run MTSS vessels import` | Import vessel register from CSV |
 | `uv run MTSS vessels list` | List all vessels in registry |
 | `uv run MTSS vessels retag` | Re-tag existing chunks with vessel IDs |
+| `uv run MTSS topics list` | List all topics with document counts |
 | `uv run MTSS clean` | Delete all data (database + processed files) |
 
 ### Ingest Options

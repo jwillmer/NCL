@@ -208,9 +208,9 @@ class FailureReportGenerator:
         return records
 
     async def collect_attachment_failures(self) -> List[FailureRecord]:
-        """Collect attachment failures from unsupported_files."""
+        """Collect attachment failures from ingest_events."""
         result = (
-            self.db.client.table("unsupported_files")
+            self.db.client.table("ingest_events")
             .select(
                 "file_path, file_name, source_eml_path, mime_type, reason, discovered_at"
             )

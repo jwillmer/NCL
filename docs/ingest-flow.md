@@ -124,6 +124,27 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
                                      │
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 6b: TOPIC EXTRACTION                                                    │
+│                                                                              │
+│ Uses archived markdown content (cleaner than raw email body):              │
+│ - Banners, signatures, and HTML artifacts already removed                  │
+│ - Falls back to raw body_text if archive not available                     │
+│                                                                              │
+│ Multi-source extraction (for long email threads):                           │
+│ - Subject line: Usually contains core topic                                 │
+│ - Original message: Bottom of thread = problem description (NOT solutions) │
+│ - Context summary: Semantic-rich overview from Step 6                       │
+│                                                                              │
+│ topic_extractor.extract_topics(structured_input) → 1-5 topics per email    │
+│ - For each extracted topic:                                                 │
+│   - topic_matcher.get_or_create_topic() with semantic deduplication        │
+│   - Dedup threshold: >=0.85 auto-merge, <0.85 create new                   │
+│ - Store topic_ids in chunk.metadata for query-time filtering               │
+│ - Topics enable early-return optimization in RAG queries                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 7: CHUNK EMAIL BODY                                                     │
 │                                                                              │
 │ - split_into_messages(body_text) → individual messages                      │
@@ -131,7 +152,7 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 │   - remove_boilerplate_from_message()                                       │
 │   - Compute chunk_id from doc_id + char positions                           │
 │   - Build embedding_text with context                                       │
-│   - Create Chunk with vessel_ids in metadata                                │
+│   - Create Chunk with vessel_ids and topic_ids in metadata                  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼

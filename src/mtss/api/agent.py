@@ -37,8 +37,11 @@ from langgraph.types import Command
 from ..config import get_settings
 from ..models.chunk import RetrievalResult
 from ..models.vessel import Vessel
+from ..processing.embeddings import EmbeddingGenerator
+from ..processing.topics import TopicExtractor, TopicMatcher
 from ..rag.citation_processor import CitationProcessor
 from ..rag.query_engine import RAGQueryEngine
+from ..rag.topic_filter import TopicFilter, TopicFilterResult
 from ..storage.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
@@ -347,19 +350,71 @@ async def search_node(
         vessel_type = state.get("selected_vessel_type")
         vessel_class = state.get("selected_vessel_class")
 
+        # Build vessel filter dict for topic pre-filtering
+        vessel_filter = None
+        if vessel_id:
+            vessel_filter = {"vessel_ids": [vessel_id]}
+        elif vessel_type:
+            vessel_filter = {"vessel_types": [vessel_type]}
+        elif vessel_class:
+            vessel_filter = {"vessel_classes": [vessel_class]}
+
         # Progress callback to emit state updates
         async def on_progress(message: str) -> None:
             state["search_progress"] = message
             await emit_state(config, state)
+
+        # Topic pre-filtering for early return
+        await on_progress("Analyzing query")
+        topic_filter = TopicFilter(
+            topic_extractor=TopicExtractor(),
+            topic_matcher=TopicMatcher(engine.db, engine.embeddings),
+            db=engine.db,
+        )
+        filter_result = await topic_filter.analyze_query(question, vessel_filter)
+
+        # EARLY RETURN: Skip RAG if no results possible
+        if filter_result.should_skip_rag:
+            state["search_progress"] = ""
+            await emit_state(config, state)
+
+            tool_response = ToolMessage(
+                content=json.dumps({
+                    "context": filter_result.message,
+                    "available_chunk_ids": [],
+                    "topic_info": {
+                        "detected": filter_result.detected_topics,
+                        "matched": filter_result.matched_topic_names,
+                        "unmatched": filter_result.unmatched_topics,
+                        "chunk_count": filter_result.total_chunk_count,
+                        "should_skip": True,
+                    },
+                }),
+                tool_call_id=tool_call["id"],
+            )
+            return Command(
+                goto="chat_node",
+                update={"messages": [tool_response], "citation_map": None},
+            )
+
+        # Build combined metadata filter for RAG
+        # Uses OR logic across topic_ids (match any topic)
+        metadata_filter = None
+        if filter_result.matched_topic_ids or vessel_filter:
+            metadata_filter = {}
+            if filter_result.matched_topic_ids:
+                metadata_filter["topic_ids"] = [
+                    str(tid) for tid in filter_result.matched_topic_ids
+                ]
+            if vessel_filter:
+                metadata_filter.update(vessel_filter)
 
         # Get raw search results (no LLM generation)
         retrieval_results = await engine.search_only(
             question=question,
             top_k=settings.rerank_top_n if settings.rerank_enabled else 10,
             use_rerank=settings.rerank_enabled,
-            vessel_id=vessel_id,
-            vessel_type=vessel_type,
-            vessel_class=vessel_class,
+            metadata_filter=metadata_filter,
             on_progress=on_progress,
         )
 

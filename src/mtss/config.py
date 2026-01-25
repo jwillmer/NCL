@@ -117,8 +117,13 @@ class Settings(BaseSettings):
     )
 
     # Ingest Versioning
+    # Version history:
+    #   1 - Initial ingest
+    #   2 - Added line numbers
+    #   3 - Added context summaries
+    #   4 - Added topic extraction
     current_ingest_version: int = Field(
-        default=1, validation_alias="CURRENT_INGEST_VERSION"
+        default=4, validation_alias="CURRENT_INGEST_VERSION"
     )
 
     # Processing Options

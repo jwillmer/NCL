@@ -78,7 +78,10 @@
       "Bash(cmd /c \"C:\\\\Projects\\\\GitHub\\\\NCL\\\\.venv\\\\Scripts\\\\pip.exe install pytest-asyncio\")",
       "Bash(\"C:/Projects/GitHub/NCL/.venv/Scripts/python.exe\" -m pip install pytest-asyncio)",
       "Bash(\"C:/Projects/GitHub/NCL/.venv/Scripts/python.exe\" -m ensurepip)",
-      "Bash(\"C:/Projects/GitHub/NCL/.venv/Scripts/python.exe\" -m pytest:*)"
+      "Bash(\"C:/Projects/GitHub/NCL/.venv/Scripts/python.exe\" -m pytest:*)",
+      "Bash(cmd /c \"uv run pytest tests/ -q --tb=short\")",
+      "Bash(powershell.exe -Command \"cd C:\\\\Projects\\\\GitHub\\\\NCL; uv run pytest tests/ -q --tb=short\")",
+      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest:*)"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\MTSS\\web\\src\\app\\chat\\[threadId]"

@@ -83,6 +83,7 @@ class ArchiveResult:
     original_path: str  # Relative path to original email (e.g., "abc123def456/email.eml")
     doc_id: str
     attachment_files: List[ContentFileResult]  # List of attachment file results
+    markdown_content: Optional[str] = None  # Email markdown content (for topic extraction)
 
 
 class ArchiveGenerator:
@@ -190,6 +191,7 @@ class ArchiveGenerator:
             original_path=f"{folder_id}/email.eml",
             doc_id=doc_id,
             attachment_files=attachment_files,
+            markdown_content=email_md_content,
         )
 
     def _generate_email_markdown(

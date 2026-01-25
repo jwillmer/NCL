@@ -55,6 +55,7 @@ from .processing.embeddings import EmbeddingGenerator
 from .processing.hierarchy_manager import HierarchyManager
 from .processing.lane_classifier import LaneClassifier
 from .processing.version_manager import VersionManager
+from .processing.topics import TopicExtractor, TopicMatcher
 from .processing.vessel_matcher import VesselMatcher
 from .rag.query_engine import RAGQueryEngine, format_response_with_sources
 from .storage.archive_storage import ArchiveStorage
@@ -69,6 +70,8 @@ app = typer.Typer(
 )
 vessels_app = typer.Typer(help="Vessel registry management")
 app.add_typer(vessels_app, name="vessels")
+topics_app = typer.Typer(help="Topic management for categorization and filtering")
+app.add_typer(topics_app, name="topics")
 console = Console()
 
 # Module-level verbose flag
@@ -210,6 +213,11 @@ async def _ingest(
     else:
         vprint("No vessels in registry - vessel tagging disabled")
 
+    # Initialize topic extraction for categorization
+    topic_extractor = TopicExtractor()
+    topic_matcher = TopicMatcher(db, embeddings)
+    vprint("Topic extraction enabled")
+
     # Initialize continuous report writer
     from .storage.failure_report import IngestReportWriter
     report_writer = IngestReportWriter(source_dir=str(source_dir))
@@ -334,6 +342,8 @@ async def _ingest(
                         context_generator=context_generator,
                         version_manager=version_manager,
                         vessel_matcher=vessel_matcher,
+                        topic_extractor=topic_extractor,
+                        topic_matcher=topic_matcher,
                         progress=progress,
                         worker_task=worker_task,
                         slot_idx=slot_idx,
@@ -435,6 +445,8 @@ async def _process_single_email(
     context_generator: ContextGenerator | None = None,
     version_manager: VersionManager | None = None,
     vessel_matcher: VesselMatcher | None = None,
+    topic_extractor: TopicExtractor | None = None,
+    topic_matcher: TopicMatcher | None = None,
     progress: Progress | None = None,
     worker_task: TaskID | None = None,
     slot_idx: int | None = None,
@@ -569,6 +581,77 @@ async def _process_single_email(
         except Exception as e:
             vprint(f"Context generation failed: {e}", file_ctx)
 
+    # Extract topics from email content for categorization and pre-filtering
+    # Strategy: Use archived markdown (cleaner) + subject + original message + context summary
+    # In email threads, the ORIGINAL message (at bottom) contains the problem description,
+    # while recent messages (at top) often just contain solutions/acknowledgments.
+    topic_ids: list[str] = []
+    if topic_extractor and topic_matcher:
+        try:
+            # Prefer archived markdown content (banners/signatures already removed)
+            # Fall back to raw body_text if archive not available
+            topic_content = None
+            if archive_result and archive_result.markdown_content:
+                topic_content = archive_result.markdown_content
+                vprint(f"Using archived content for topics ({len(topic_content)} chars)", file_ctx)
+            elif body_text:
+                topic_content = body_text
+
+            if topic_content:
+                # Build topic extraction input from most relevant sources
+                topic_input_parts = []
+
+                # 1. Subject line - usually contains the core topic
+                subject = parsed_email.metadata.get("subject", "")
+                if subject:
+                    topic_input_parts.append(f"Subject: {subject}")
+
+                # Check if content is markdown (archived) or raw email text
+                is_markdown = topic_content.strip().startswith("#")
+
+                if is_markdown:
+                    # For markdown content, it's already clean
+                    # Skip header to get to message content
+                    msg_start = topic_content.find("## Message")
+                    if msg_start == -1:
+                        msg_start = topic_content.find("## Content")
+                    if msg_start == -1:
+                        msg_start = topic_content.find("---")
+                        if msg_start != -1:
+                            msg_start = topic_content.find("\n", msg_start + 3)
+
+                    message_content = topic_content[msg_start:] if msg_start > 0 else topic_content
+                    topic_input_parts.append(f"Content:\n{message_content[:3000]}")
+                else:
+                    # For raw email text, split into messages to find original problem
+                    thread_messages = split_into_messages(topic_content)
+                    if thread_messages:
+                        # Get the original message (bottom of thread = last in list)
+                        original_msg = thread_messages[-1] if len(thread_messages) > 1 else thread_messages[0]
+                        # Clean boilerplate
+                        original_msg = remove_boilerplate_from_message(original_msg)
+                        if original_msg.strip():
+                            topic_input_parts.append(f"Original message:\n{original_msg[:2000]}")
+
+                # 3. Context summary if available (semantic-rich)
+                if context_summary:
+                    topic_input_parts.append(f"Summary: {context_summary}")
+
+                topic_input = "\n\n".join(topic_input_parts)
+
+                if topic_input.strip():
+                    extracted_topics = await topic_extractor.extract_topics(topic_input)
+                    for topic in extracted_topics:
+                        topic_id = await topic_matcher.get_or_create_topic(
+                            topic.name, topic.description
+                        )
+                        topic_ids.append(str(topic_id))
+                    if topic_ids:
+                        vprint(f"Topics extracted: {len(topic_ids)}", file_ctx)
+        except Exception as e:
+            vprint(f"Topic extraction failed (continuing): {e}", file_ctx)
+            # Don't fail ingest on topic extraction failure
+
     if body_text:
         # Split email thread into individual messages for better embedding quality
         # Each message becomes a separate chunk to improve semantic search relevance
@@ -598,7 +681,7 @@ async def _process_single_email(
             if context_summary:
                 embedding_text = context_generator.build_embedding_text(context_summary, cleaned_message)
 
-            # Build chunk metadata including vessel info for filtering
+            # Build chunk metadata including vessel and topic info for filtering
             chunk_metadata: dict = {"type": "email_body", "message_index": msg_idx}
             if vessel_ids:
                 chunk_metadata["vessel_ids"] = vessel_ids
@@ -606,6 +689,8 @@ async def _process_single_email(
                 chunk_metadata["vessel_types"] = vessel_types
             if vessel_classes:
                 chunk_metadata["vessel_classes"] = vessel_classes
+            if topic_ids:
+                chunk_metadata["topic_ids"] = topic_ids
 
             email_chunks.append(
                 Chunk(
@@ -696,6 +781,15 @@ async def _process_single_email(
         email_chunks = await embeddings.embed_chunks(email_chunks)
         await db.insert_chunks(email_chunks)
         vprint(f"Inserted {len(email_chunks)} chunks to database", file_ctx)
+
+        # Update topic counts for accurate pre-filtering
+        if topic_ids:
+            from uuid import UUID
+            await db.increment_topic_counts(
+                [UUID(tid) for tid in topic_ids],
+                chunk_delta=len(email_chunks),
+                document_delta=1,
+            )
 
     # Mark email as completed
     await db.update_document_status(email_doc.id, ProcessingStatus.COMPLETED)
@@ -2023,8 +2117,8 @@ async def _ingest_update(
         # Create shared components (same as regular ingest)
         components = create_ingest_components(db, source_dir, vessels)
 
-        # Always check all issue types
-        checks = {"archives", "chunks", "context"}
+        # Always check all issue types (now includes topics)
+        checks = {"archives", "chunks", "context", "topics"}
 
         # Phase 1a: Scan for issues in existing documents
         issues = await _scan_ingest_issues(source_dir, components, checks, limit)
@@ -2243,8 +2337,8 @@ async def _check_document_issues(
                 issues.append("missing_child_archive")
                 break
 
-    # Fetch chunks once for both checks (avoid duplicate DB calls)
-    need_chunks = "chunks" in checks or "context" in checks
+    # Fetch chunks once for all checks (avoid duplicate DB calls)
+    need_chunks = "chunks" in checks or "context" in checks or "topics" in checks
 
     if need_chunks:
         doc_chunks = await components.db.get_chunks_by_document(doc.id)
@@ -2281,6 +2375,17 @@ async def _check_document_issues(
                 issues.append("missing_child_context")
                 break
 
+    if "topics" in checks:
+        # Check if any chunks are missing topic_ids
+        doc_chunks = cached_chunks.get(doc.id, [])
+        if doc_chunks:
+            has_topics = any(
+                c.metadata and c.metadata.get("topic_ids")
+                for c in doc_chunks
+            )
+            if not has_topics:
+                issues.append("missing_topics")
+
     return issues, cached_chunks
 
 
@@ -2315,9 +2420,13 @@ async def _fix_document_issues(
     if "chunks" in checks and ("missing_lines" in record.issues or "missing_child_lines" in record.issues):
         chunks_created += await _fix_missing_lines(record, components)
 
-    # 3. Context last
+    # 3. Context third
     if "context" in checks and ("missing_context" in record.issues or "missing_child_context" in record.issues):
         chunks_created += await _fix_missing_context(record, components)
+
+    # 4. Topics last (doesn't depend on others, just needs content)
+    if "topics" in checks and "missing_topics" in record.issues:
+        await _fix_missing_topics(record, components)
 
     return chunks_created
 
@@ -2642,6 +2751,132 @@ async def _fix_missing_context(
         vprint(f"Updated context for {len(chunks)} chunks in {target_doc.file_name}", record.eml_path.name)
 
     return chunks_updated
+
+
+async def _fix_missing_topics(
+    record: IssueRecord,
+    components: "IngestComponents",
+) -> None:
+    """Extract topics and update chunk metadata for documents missing topics.
+
+    This is a lightweight fix that:
+    1. Downloads archived markdown (or parses email if no archive)
+    2. Extracts topics using LLM
+    3. Updates chunk metadata with topic_ids (no re-chunking/re-embedding)
+
+    Args:
+        record: Issue record with document info.
+        components: Shared ingest components.
+    """
+    from uuid import UUID as UUIDType
+
+    from .parsers.email_cleaner import split_into_messages
+
+    # Check if topic extraction is enabled
+    if not components.topic_extractor or not components.topic_matcher:
+        vprint("Topic extraction not enabled", record.eml_path.name)
+        return
+
+    # Get content for topic extraction
+    content = None
+
+    # Try to get content from archive first
+    if record.doc.archive_browse_uri:
+        try:
+            relative_path = record.doc.archive_browse_uri
+            if relative_path.startswith("/archive/"):
+                relative_path = relative_path[len("/archive/"):]
+            content_bytes = components.archive_storage.download_file(relative_path)
+            content = content_bytes.decode("utf-8")
+            vprint(f"Using archived content ({len(content)} chars)", record.eml_path.name)
+        except Exception as e:
+            vprint(f"Failed to download archive: {e}", record.eml_path.name)
+
+    # Fallback: parse email directly
+    if not content:
+        parsed = components.eml_parser.parse_file(record.eml_path)
+        if parsed and parsed.body_text:
+            content = parsed.body_text
+            vprint(f"Using parsed email body ({len(content)} chars)", record.eml_path.name)
+
+    if not content:
+        vprint("No content available for topic extraction", record.eml_path.name)
+        return
+
+    # Get subject from email_metadata or fall back to source_title
+    subject = ""
+    if record.doc.email_metadata and record.doc.email_metadata.subject:
+        subject = record.doc.email_metadata.subject
+    elif record.doc.source_title:
+        subject = record.doc.source_title
+
+    # Check if content is markdown (archived) or raw email text
+    is_markdown = content.strip().startswith("#")
+
+    if is_markdown:
+        # For markdown content, it's already clean - use directly
+        # Skip the metadata header (first ~500 chars typically) to get to message content
+        # Find the first "## Message" or "## Content" section
+        msg_start = content.find("## Message")
+        if msg_start == -1:
+            msg_start = content.find("## Content")
+        if msg_start == -1:
+            msg_start = content.find("---")  # After metadata
+            if msg_start != -1:
+                msg_start = content.find("\n", msg_start + 3)  # After the ---
+
+        message_content = content[msg_start:] if msg_start > 0 else content
+
+        structured_input = f"""Subject: {subject}
+
+Content:
+{message_content[:4000]}"""
+    else:
+        # For raw email text, split into messages to find original problem
+        thread_messages = split_into_messages(content)
+        if len(thread_messages) > 1:
+            original_msg = thread_messages[-1][:1500]  # Bottom = original problem
+        else:
+            original_msg = thread_messages[0][:1500] if thread_messages else ""
+
+        structured_input = f"""Subject: {subject}
+
+Original Message:
+{original_msg}
+
+Summary:
+{content[:2000]}"""
+
+    # Extract topics
+    try:
+        extracted = await components.topic_extractor.extract_topics(structured_input)
+        if not extracted:
+            vprint("No topics extracted", record.eml_path.name)
+            return
+
+        # Get or create topic IDs
+        topic_ids: list[str] = []
+        for topic in extracted:
+            topic_id = await components.topic_matcher.get_or_create_topic(
+                topic.name, topic.description
+            )
+            topic_ids.append(str(topic_id))
+
+        vprint(f"Extracted {len(topic_ids)} topics", record.eml_path.name)
+
+        # Update chunk metadata
+        updated = await components.db.update_chunks_topic_ids(record.doc.id, topic_ids)
+        vprint(f"Updated {updated} chunks with topic_ids", record.eml_path.name)
+
+        # Update topic counts
+        await components.db.increment_topic_counts(
+            [UUIDType(tid) for tid in topic_ids],
+            chunk_delta=updated,
+            document_delta=1,
+        )
+
+    except Exception as e:
+        vprint(f"Topic extraction failed: {e}", record.eml_path.name)
 
 
 # ==================== Vessel Commands ====================
@@ -2981,6 +3216,42 @@ async def _vessels_list():
                 vessel.imo or "-",
                 vessel.vessel_type or "-",
                 dwt_str,
+            )
+
+        console.print(table)
+
+    finally:
+        await db.close()
+
+
+# ==================== Topics Commands ====================
+
+
+@topics_app.command("list")
+def topics_list():
+    """List all topics with document counts."""
+    asyncio.run(_topics_list())
+
+
+async def _topics_list():
+    """Async implementation of topics list command."""
+    db = SupabaseClient()
+
+    try:
+        topics = await db.get_all_topics()
+
+        if not topics:
+            console.print("[dim]No topics in database[/dim]")
+            return
+
+        table = Table(title=f"Topics ({len(topics)} total)")
+        table.add_column("Name", style="cyan")
+        table.add_column("Chunks", justify="right", style="green")
+
+        for topic in topics:
+            table.add_row(
+                topic.display_name,
+                str(topic.chunk_count),
             )
 
         console.print(table)

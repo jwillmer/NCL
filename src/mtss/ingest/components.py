@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..processing.archive_generator import ArchiveGenerator
     from ..processing.embeddings import EmbeddingGenerator
     from ..processing.hierarchy_manager import HierarchyManager
+    from ..processing.topics import TopicExtractor, TopicMatcher
     from ..processing.vessel_matcher import VesselMatcher
     from ..storage.archive_storage import ArchiveStorage
     from ..storage.supabase_client import SupabaseClient
@@ -40,12 +41,15 @@ class IngestComponents:
     chunker: DocumentChunker
     archive_storage: ArchiveStorage
     vessel_matcher: Optional[VesselMatcher] = None
+    topic_extractor: Optional[TopicExtractor] = None
+    topic_matcher: Optional[TopicMatcher] = None
 
 
 def create_ingest_components(
     db: SupabaseClient,
     source_dir: Path,
     vessels: Optional[list] = None,
+    enable_topics: bool = True,
 ) -> IngestComponents:
     """Create all ingest components with identical initialization.
 
@@ -56,6 +60,7 @@ def create_ingest_components(
         db: Initialized Supabase client.
         source_dir: Root directory for email ingestion.
         vessels: Optional list of vessels for VesselMatcher.
+        enable_topics: Whether to enable topic extraction (default True).
 
     Returns:
         IngestComponents dataclass with all initialized components.
@@ -67,18 +72,30 @@ def create_ingest_components(
     from ..processing.archive_generator import ArchiveGenerator
     from ..processing.embeddings import EmbeddingGenerator
     from ..processing.hierarchy_manager import HierarchyManager
+    from ..processing.topics import TopicExtractor, TopicMatcher
     from ..processing.vessel_matcher import VesselMatcher
     from ..storage.archive_storage import ArchiveStorage
+
+    embeddings = EmbeddingGenerator()
+
+    # Create topic components if enabled
+    topic_extractor = None
+    topic_matcher = None
+    if enable_topics:
+        topic_extractor = TopicExtractor()
+        topic_matcher = TopicMatcher(db, embeddings)
 
     return IngestComponents(
         db=db,
         eml_parser=EMLParser(),
         attachment_processor=AttachmentProcessor(),
         hierarchy_manager=HierarchyManager(db, ingest_root=source_dir),
-        embeddings=EmbeddingGenerator(),
+        embeddings=embeddings,
         archive_generator=ArchiveGenerator(ingest_root=source_dir),
         context_generator=ContextGenerator(),
         chunker=DocumentChunker(),
         archive_storage=ArchiveStorage(),
         vessel_matcher=VesselMatcher(vessels) if vessels else None,
+        topic_extractor=topic_extractor,
+        topic_matcher=topic_matcher,
     )

@@ -20,6 +20,7 @@ from ..models.document import (
     EmailMetadata,
     ProcessingStatus,
 )
+from ..models.topic import Topic, TopicSummary
 from ..models.vessel import Vessel, VesselSummary
 
 
@@ -1299,4 +1300,260 @@ class SupabaseClient:
             archive_download_uri=row.get("archive_download_uri"),
             embedding=row.get("embedding"),
             metadata=row.get("metadata") or {},
+        )
+
+    # ==================== Topic Operations ====================
+
+    async def insert_topic(self, topic: Topic) -> Topic:
+        """Insert a new topic.
+
+        Args:
+            topic: Topic to insert.
+
+        Returns:
+            The inserted topic with generated ID.
+        """
+        data = {
+            "name": topic.name,
+            "display_name": topic.display_name,
+            "description": topic.description,
+            "embedding": topic.embedding,
+        }
+        result = self.client.table("topics").insert(data).execute()
+        if result.data:
+            return self._row_to_topic(result.data[0])
+        return topic
+
+    async def get_topic_by_name(self, name: str) -> Optional[Topic]:
+        """Get topic by canonical name (exact match).
+
+        Args:
+            name: Canonical topic name (lowercase).
+
+        Returns:
+            Topic if found, None otherwise.
+        """
+        result = (
+            self.client.table("topics")
+            .select("*")
+            .eq("name", name.lower().strip())
+            .limit(1)
+            .execute()
+        )
+        return self._row_to_topic(result.data[0]) if result.data else None
+
+    async def get_topic_by_id(self, topic_id: UUID) -> Optional[Topic]:
+        """Get topic by ID.
+
+        Args:
+            topic_id: Topic UUID.
+
+        Returns:
+            Topic if found, None otherwise.
+        """
+        result = (
+            self.client.table("topics")
+            .select("*")
+            .eq("id", str(topic_id))
+            .limit(1)
+            .execute()
+        )
+        return self._row_to_topic(result.data[0]) if result.data else None
+
+    async def find_similar_topics(
+        self,
+        embedding: List[float],
+        threshold: float = 0.85,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Find topics with similar embeddings.
+
+        Args:
+            embedding: Query embedding vector.
+            threshold: Minimum similarity threshold (0-1).
+            limit: Maximum results to return.
+
+        Returns:
+            List of dicts with id, name, display_name, similarity.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM find_similar_topics($1, $2, $3)
+                """,
+                embedding,
+                threshold,
+                limit,
+            )
+        return [dict(row) for row in rows]
+
+    async def get_all_topics(self) -> List[TopicSummary]:
+        """Get all topics ordered by chunk_count.
+
+        Returns:
+            List of topic summaries.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM get_topics_with_counts()")
+        return [
+            TopicSummary(
+                id=row["id"],
+                name=row["name"],
+                display_name=row["display_name"],
+                chunk_count=row["chunk_count"],
+            )
+            for row in rows
+        ]
+
+    async def get_chunks_count_for_topic(
+        self, topic_id: UUID, vessel_filter: Optional[Dict] = None
+    ) -> int:
+        """Count chunks tagged with a specific topic.
+
+        Args:
+            topic_id: Topic UUID.
+            vessel_filter: Optional vessel filter dict.
+
+        Returns:
+            Count of matching chunks.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT count_chunks_by_topic($1, $2::jsonb)",
+                topic_id,
+                json.dumps(vessel_filter) if vessel_filter else None,
+            )
+        return result or 0
+
+    async def get_chunks_count_for_topics(
+        self, topic_ids: List[UUID], vessel_filter: Optional[Dict] = None
+    ) -> int:
+        """Count chunks tagged with ANY of the given topics (OR logic).
+
+        Args:
+            topic_ids: List of topic UUIDs.
+            vessel_filter: Optional vessel filter dict.
+
+        Returns:
+            Count of matching chunks (deduplicated).
+        """
+        if not topic_ids:
+            return 0
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT count_chunks_by_topics($1, $2::jsonb)",
+                topic_ids,
+                json.dumps(vessel_filter) if vessel_filter else None,
+            )
+        return result or 0
+
+    async def increment_topic_counts(
+        self,
+        topic_ids: List[UUID],
+        chunk_delta: int = 0,
+        document_delta: int = 0,
+    ) -> None:
+        """Increment usage counts for topics.
+
+        Args:
+            topic_ids: List of topic UUIDs to update.
+            chunk_delta: Amount to add to chunk_count.
+            document_delta: Amount to add to document_count.
+        """
+        if not topic_ids:
+            return
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            for topic_id in topic_ids:
+                await conn.execute(
+                    """
+                    UPDATE topics
+                    SET chunk_count = chunk_count + $2,
+                        document_count = document_count + $3,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    topic_id,
+                    chunk_delta,
+                    document_delta,
+                )
+
+    async def update_chunks_topic_ids(
+        self, document_id: UUID, topic_ids: List[str]
+    ) -> int:
+        """Update topic_ids in chunk metadata for all chunks of a document.
+
+        Uses JSONB set operation to update the topic_ids field in metadata.
+        Also updates chunks for child documents (attachments).
+
+        Args:
+            document_id: Root document UUID.
+            topic_ids: List of topic UUID strings to set.
+
+        Returns:
+            Number of chunks updated.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE chunks
+                SET metadata = CASE
+                    WHEN $2::text[] = '{}'::text[] THEN
+                        metadata - 'topic_ids'
+                    ELSE
+                        jsonb_set(
+                            COALESCE(metadata, '{}'::jsonb),
+                            '{topic_ids}',
+                            to_jsonb($2::text[])
+                        )
+                END
+                WHERE document_id IN (
+                    SELECT id FROM documents
+                    WHERE id = $1 OR root_id = $1
+                )
+                """,
+                document_id,
+                topic_ids,
+            )
+            count_str = result.split()[-1] if result else "0"
+            return int(count_str)
+
+    async def delete_all_topics(self) -> int:
+        """Delete all topics from the database.
+
+        Returns:
+            Number of topics deleted.
+        """
+        result = (
+            self.client.table("topics")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        return len(result.data) if result.data else 0
+
+    def _row_to_topic(self, row: Dict[str, Any]) -> Topic:
+        """Convert database row to Topic model.
+
+        Args:
+            row: Database row as dictionary.
+
+        Returns:
+            Topic model instance.
+        """
+        return Topic(
+            id=UUID(row["id"]) if isinstance(row["id"], str) else row["id"],
+            name=row["name"],
+            display_name=row["display_name"],
+            description=row.get("description"),
+            embedding=row.get("embedding"),
+            chunk_count=row.get("chunk_count", 0),
+            document_count=row.get("document_count", 0),
+            created_at=row.get("created_at"),
+            updated_at=row.get("updated_at"),
         )
