@@ -74,6 +74,50 @@ It has multiple lines.
 
 
 @pytest.fixture
+def bom_prefixed_eml_content():
+    """Multipart EML file with UTF-8 BOM prefix (common in some email clients).
+
+    The BOM (\\xef\\xbb\\xbf) at the start can corrupt parsing, causing
+    multipart emails to be misidentified as text/plain.
+    """
+    return b"\xef\xbb\xbf" + b"""From: sender@example.com
+To: recipient@example.com
+Subject: BOM Test Email
+Date: Mon, 1 Jan 2024 12:00:00 +0000
+Message-ID: <bom-test@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="boundary456"
+
+--boundary456
+Content-Type: text/plain; charset="utf-8"
+
+This is the body of a BOM-prefixed email.
+
+--boundary456
+Content-Type: application/pdf; name="document.pdf"
+Content-Disposition: attachment; filename="document.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRv
+YmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAw
+IG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3hbMCAwIDYxMiA3OTJdL1BhcmVudCAyIDAgUj4+CmVu
+ZG9iagp4cmVmCjAgNAowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAw
+MDAwMDA2NiAwMDAwMCBuIAowMDAwMDAwMTIzIDAwMDAwIG4gCnRyYWlsZXIKPDwvU2l6ZSA0L1Jv
+b3QgMSAwIFI+PgpzdGFydHhyZWYKMjAwCiUlRU9GCg==
+
+--boundary456--
+"""
+
+
+@pytest.fixture
+def bom_prefixed_eml_file(temp_dir, bom_prefixed_eml_content):
+    """Create a BOM-prefixed EML file for testing."""
+    eml_path = temp_dir / "bom_email.eml"
+    eml_path.write_bytes(bom_prefixed_eml_content)
+    return eml_path
+
+
+@pytest.fixture
 def simple_eml_file(temp_dir, simple_eml_content):
     """Create a simple EML file without attachments."""
     eml_path = temp_dir / "simple_email.eml"

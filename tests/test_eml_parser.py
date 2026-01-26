@@ -105,6 +105,79 @@ class TestEMLParser:
             assert result.metadata.initiator is not None
 
 
+class TestUTF8BOMHandling:
+    """Tests for UTF-8 BOM handling in EML files.
+
+    Some email clients add a UTF-8 BOM (\\xef\\xbb\\xbf) at the start of EML files.
+    This corrupts the first header line and causes the email library to mis-parse
+    multipart emails as text/plain, resulting in garbage content.
+    """
+
+    def test_parse_bom_prefixed_email_detects_multipart(
+        self, bom_prefixed_eml_file, temp_dir, mock_settings
+    ):
+        """Test that BOM-prefixed emails are correctly identified as multipart."""
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
+            parser = EMLParser(attachments_dir=temp_dir / "attachments")
+            result = parser.parse_file(bom_prefixed_eml_file)
+
+            # Should have the correct subject (not corrupted by BOM)
+            assert result.metadata.subject == "BOM Test Email"
+
+    def test_parse_bom_prefixed_email_extracts_body_correctly(
+        self, bom_prefixed_eml_file, temp_dir, mock_settings
+    ):
+        """Test that BOM-prefixed email body is the actual text content, not raw headers."""
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
+            parser = EMLParser(attachments_dir=temp_dir / "attachments")
+            result = parser.parse_file(bom_prefixed_eml_file)
+
+            # Body should contain actual email text
+            assert "body of a BOM-prefixed email" in result.full_text
+
+            # Body should NOT contain raw headers or base64 (indicates broken parsing)
+            assert "Content-Transfer-Encoding" not in result.full_text
+            assert "JVBERi0" not in result.full_text  # base64 PDF header
+
+    def test_parse_bom_prefixed_email_extracts_attachments(
+        self, bom_prefixed_eml_file, temp_dir, mock_settings
+    ):
+        """Test that BOM-prefixed multipart email correctly extracts attachments."""
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
+            parser = EMLParser(attachments_dir=temp_dir / "attachments")
+            result = parser.parse_file(bom_prefixed_eml_file)
+
+            # Should extract the PDF attachment
+            assert len(result.attachments) == 1
+            assert result.attachments[0].filename == "document.pdf"
+            assert result.attachments[0].content_type == "application/pdf"
+
+    def test_peek_attachments_with_bom(
+        self, bom_prefixed_eml_file, temp_dir, mock_settings
+    ):
+        """Test that peek_attachments works correctly with BOM-prefixed files."""
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
+            parser = EMLParser(attachments_dir=temp_dir / "attachments")
+            attachments = parser.peek_attachments(bom_prefixed_eml_file)
+
+            # Should find the PDF attachment
+            assert len(attachments) == 1
+            assert attachments[0][0] == "document.pdf"
+            assert "pdf" in attachments[0][1].lower()
+
+    def test_parse_normal_email_unaffected(
+        self, sample_eml_file, temp_dir, mock_settings
+    ):
+        """Test that normal emails (without BOM) still work correctly."""
+        with patch("mtss.parsers.eml_parser.get_settings", return_value=mock_settings):
+            parser = EMLParser(attachments_dir=temp_dir / "attachments")
+            result = parser.parse_file(sample_eml_file)
+
+            # Normal email should parse correctly
+            assert result.metadata.subject == "Test Email"
+            assert len(result.attachments) == 1
+
+
 class TestRealEmailParsing:
     """Tests using the real test email with multiple attachment types."""
 

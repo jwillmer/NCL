@@ -43,6 +43,9 @@ class EMLParser:
         self.attachments_dir = attachments_dir or settings.attachments_dir
         self.attachments_dir.mkdir(parents=True, exist_ok=True)
 
+    # UTF-8 BOM bytes - some email clients add this at the start of EML files
+    UTF8_BOM = b"\xef\xbb\xbf"
+
     def parse_file(self, eml_path: Path) -> ParsedEmail:
         """Parse an EML file and extract all content.
 
@@ -53,8 +56,15 @@ class EMLParser:
             ParsedEmail containing metadata, messages, and attachments.
         """
         with open(eml_path, "rb") as f:
-            msg = email.message_from_binary_file(f, policy=policy.default)
+            content = f.read()
 
+        # Strip UTF-8 BOM if present (some email clients add it)
+        # The BOM corrupts the first header line and causes the email library
+        # to mis-parse multipart emails as text/plain
+        if content.startswith(self.UTF8_BOM):
+            content = content[3:]
+
+        msg = email.message_from_bytes(content, policy=policy.default)
         return self._parse_message(msg, eml_path)
 
     def peek_attachments(self, eml_path: Path) -> List[Tuple[str, str]]:
@@ -70,7 +80,13 @@ class EMLParser:
             List of (filename, content_type) tuples for each attachment.
         """
         with open(eml_path, "rb") as f:
-            msg = email.message_from_binary_file(f, policy=policy.default)
+            content = f.read()
+
+        # Strip UTF-8 BOM if present (some email clients add it)
+        if content.startswith(self.UTF8_BOM):
+            content = content[3:]
+
+        msg = email.message_from_bytes(content, policy=policy.default)
 
         attachments = []
         if msg.is_multipart():
