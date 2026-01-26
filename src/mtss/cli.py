@@ -2379,11 +2379,13 @@ async def _check_document_issues(
         # Check if any chunks are missing topic_ids
         doc_chunks = cached_chunks.get(doc.id, [])
         if doc_chunks:
-            has_topics = any(
-                c.metadata and c.metadata.get("topic_ids")
+            # Check if topics exist OR topics were checked (but none found)
+            has_topics_or_checked = any(
+                (c.metadata and c.metadata.get("topic_ids")) or
+                (c.metadata and c.metadata.get("topics_checked"))
                 for c in doc_chunks
             )
-            if not has_topics:
+            if not has_topics_or_checked:
                 issues.append("missing_topics")
 
     return issues, cached_chunks
@@ -2852,6 +2854,8 @@ Summary:
         extracted = await components.topic_extractor.extract_topics(structured_input)
         if not extracted:
             vprint("No topics extracted", record.eml_path.name)
+            # Mark as checked so we don't retry (e.g., marketing emails with no problems)
+            await components.db.update_chunks_topics_checked(record.doc.id)
             return
 
         # Get or create topic IDs

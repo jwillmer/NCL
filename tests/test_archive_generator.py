@@ -268,12 +268,31 @@ class TestSanitizeStorageKey:
 
     @pytest.mark.unit
     def test_preserves_safe_characters(self):
-        """Should preserve safe characters like hyphen, underscore, tilde."""
+        """Should preserve safe characters like hyphen, underscore."""
         from mtss.processing.archive_generator import _sanitize_storage_key
 
         result = _sanitize_storage_key("file-name_v1.pdf")
         assert "-" in result
         assert "_" in result
+
+    @pytest.mark.unit
+    def test_replaces_leading_tilde(self):
+        """Should replace leading tilde with underscore (Word temp files)."""
+        from mtss.processing.archive_generator import _sanitize_storage_key
+
+        # ~WRD0001.jpg -> _WRD0001.jpg
+        result = _sanitize_storage_key("~WRD0001.jpg")
+        assert result.startswith("_")
+        assert not result.startswith("~")
+        assert "WRD0001.jpg" in result
+
+    @pytest.mark.unit
+    def test_preserves_non_leading_tilde(self):
+        """Should preserve tilde that's not at the start."""
+        from mtss.processing.archive_generator import _sanitize_storage_key
+
+        result = _sanitize_storage_key("file~backup.txt")
+        assert "~" in result
 
 
 class TestContentFileResult:

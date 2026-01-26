@@ -43,6 +43,11 @@ def _sanitize_storage_key(filename: str) -> str:
     # Replace brackets with parentheses (Supabase rejects [] even when encoded)
     result = filename.replace("[", "(").replace("]", ")")
 
+    # Replace leading tilde (Word temp files like ~WRD0001.jpg)
+    # Supabase Storage rejects keys starting with ~
+    if result.startswith("~"):
+        result = "_" + result[1:]
+
     # Transliterate non-ASCII to ASCII (Greek Δ -> D, Α -> A, etc.)
     # NFKD decomposes characters, then we filter to ASCII
     normalized = unicodedata.normalize("NFKD", result)

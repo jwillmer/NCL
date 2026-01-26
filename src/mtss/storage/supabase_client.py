@@ -1523,6 +1523,39 @@ class SupabaseClient:
             count_str = result.split()[-1] if result else "0"
             return int(count_str)
 
+    async def update_chunks_topics_checked(self, document_id: UUID) -> int:
+        """Mark chunks as having topics checked (even if none found).
+
+        Sets topics_checked: true in metadata to prevent re-processing
+        documents that legitimately have no extractable topics (e.g.,
+        marketing emails with no technical problems).
+
+        Args:
+            document_id: Root document UUID.
+
+        Returns:
+            Number of chunks updated.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE chunks
+                SET metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    '{topics_checked}',
+                    'true'::jsonb
+                )
+                WHERE document_id IN (
+                    SELECT id FROM documents
+                    WHERE id = $1 OR root_id = $1
+                )
+                """,
+                document_id,
+            )
+            count_str = result.split()[-1] if result else "0"
+            return int(count_str)
+
     async def delete_all_topics(self) -> int:
         """Delete all topics from the database.
 
