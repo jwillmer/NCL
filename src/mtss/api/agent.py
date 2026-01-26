@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, cast
 
 from langchain_core.callbacks.manager import adispatch_custom_event
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -108,6 +108,52 @@ def _build_incident_summary(
         lines.append("")
 
     return "\n".join(lines)
+
+def _sanitize_messages_for_llm(messages: List[BaseMessage]) -> List[BaseMessage]:
+    """Remove orphaned tool calls that don't have matching tool responses.
+
+    When a conversation checkpoint is restored after a tool call was made but
+    before the tool response was added, the message history will have an
+    AIMessage with tool_calls but no corresponding ToolMessage. This causes
+    OpenAI to reject the request with a 400 error.
+
+    This function detects and removes such orphaned tool call messages.
+
+    Args:
+        messages: List of messages from conversation history.
+
+    Returns:
+        Sanitized list of messages with orphaned tool calls removed.
+    """
+    if not messages:
+        return messages
+
+    # Build a set of tool_call_ids that have responses
+    responded_tool_call_ids: set[str] = set()
+    for msg in messages:
+        if isinstance(msg, ToolMessage) and msg.tool_call_id:
+            responded_tool_call_ids.add(msg.tool_call_id)
+
+    # Filter out AIMessages with tool_calls that don't have responses
+    sanitized: List[BaseMessage] = []
+    for msg in messages:
+        if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+            # Check if all tool calls have corresponding responses
+            orphaned_calls = [
+                tc for tc in msg.tool_calls
+                if tc.get("id") not in responded_tool_call_ids
+            ]
+            if orphaned_calls:
+                # Log and skip this orphaned tool call message
+                logger.warning(
+                    "Removing orphaned AIMessage with tool_calls: %s",
+                    [tc.get("id") for tc in orphaned_calls],
+                )
+                continue
+        sanitized.append(msg)
+
+    return sanitized
+
 
 # Cache for vessel lookups to avoid repeated DB queries
 _vessel_cache: Dict[str, Optional[Vessel]] = {}
@@ -234,7 +280,11 @@ SEARCH_TOOL = {
                 "question": {
                     "type": "string",
                     "description": "The search query to find relevant documents",
-                }
+                },
+                "skip_topic_filter": {
+                    "type": "boolean",
+                    "description": "Set to true to search across all categories, ignoring topic filtering. Use when user confirms they want a broader search.",
+                },
             },
             "required": ["question"],
         },
@@ -265,8 +315,12 @@ async def chat_node(
         state["search_progress"] = "Generating answer"
         await emit_state(config, state)
 
+    # Sanitize messages to remove orphaned tool calls (can happen if conversation
+    # was restored from checkpoint after a tool call but before the response)
+    sanitized_messages = _sanitize_messages_for_llm(state["messages"])
+
     response = await model_with_tools.ainvoke(
-        [system_message, *state["messages"]],
+        [system_message, *sanitized_messages],
         config,
     )
 
@@ -364,14 +418,21 @@ async def search_node(
             state["search_progress"] = message
             await emit_state(config, state)
 
-        # Topic pre-filtering for early return
-        await on_progress("Analyzing query")
-        topic_filter = TopicFilter(
-            topic_extractor=TopicExtractor(),
-            topic_matcher=TopicMatcher(engine.db, engine.embeddings),
-            db=engine.db,
-        )
-        filter_result = await topic_filter.analyze_query(question, vessel_filter)
+        # Check if user requested broad search (skip topic filtering)
+        skip_filter = tool_call["args"].get("skip_topic_filter", False)
+
+        if skip_filter:
+            # User requested broad search - skip topic filtering entirely
+            filter_result = TopicFilterResult()
+        else:
+            # Topic pre-filtering for early return
+            await on_progress("Analyzing query")
+            topic_filter = TopicFilter(
+                topic_extractor=TopicExtractor(),
+                topic_matcher=TopicMatcher(engine.db, engine.embeddings),
+                db=engine.db,
+            )
+            filter_result = await topic_filter.analyze_query(question, vessel_filter)
 
         # EARLY RETURN: Skip RAG if no results possible
         if filter_result.should_skip_rag:

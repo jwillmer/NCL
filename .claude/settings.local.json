@@ -81,7 +81,11 @@
       "Bash(\"C:/Projects/GitHub/NCL/.venv/Scripts/python.exe\" -m pytest:*)",
       "Bash(cmd /c \"uv run pytest tests/ -q --tb=short\")",
       "Bash(powershell.exe -Command \"cd C:\\\\Projects\\\\GitHub\\\\NCL; uv run pytest tests/ -q --tb=short\")",
-      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest:*)"
+      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest:*)",
+      "Bash(git log:*)",
+      "Bash(pytest:*)",
+      "WebSearch",
+      "Bash(__NEW_LINE_470aec6006a24f64__ python -c \"\nfrom mtss.storage.supabase_client import SupabaseClient\n\nclient = SupabaseClient\\(\\)\n\n# Get raw embedding length from a chunk\nresult = client.client.from_\\(''chunks''\\).select\\(''chunk_id''\\).limit\\(1\\).execute\\(\\)\nprint\\(f''First chunk: {result.data}''\\)\n\")"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\MTSS\\web\\src\\app\\chat\\[threadId]"

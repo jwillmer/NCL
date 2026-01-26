@@ -451,7 +451,7 @@ Please provide a comprehensive answer based on the above context. If you referen
         self,
         question: str,
         top_k: int = 20,
-        similarity_threshold: float = 0.5,
+        similarity_threshold: float = 0.3,
         rerank_top_n: Optional[int] = None,
         use_rerank: bool = True,
         vessel_id: Optional[str] = None,

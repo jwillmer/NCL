@@ -190,6 +190,15 @@ If the search returns a message about no documents in a category, respond helpfu
 >
 > Would you like me to do a broader search?
 
+### Requesting Broader Search
+
+When a user confirms they want a broader search (after seeing a message about limited data), call:
+```
+search_documents(question="...", skip_topic_filter=true)
+```
+
+This bypasses topic filtering and searches across all categories.
+
 ### When Results Limited by Vessel Filter
 
 If the search shows results exist but none match the vessel filter:

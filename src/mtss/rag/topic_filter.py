@@ -53,9 +53,9 @@ class TopicMessages:
         category_text = "these categories aren't" if plural else "this category isn't"
         return (
             f"I detected you're asking about {topics_str}, but "
-            f"{category_text} "
-            f"in our records yet. Searching across all available documents.\n\n"
-            f"**Note:** Our knowledge base grows as new incidents are reported."
+            f"{category_text} in our records yet.\n\n"
+            f"Our knowledge base is continuously expanding as new incidents are reported.\n\n"
+            f"Would you like me to search across all available categories instead?"
         )
 
     @staticmethod
@@ -251,9 +251,10 @@ class TopicFilter:
             else:
                 unmatched_names.append(original_name)
 
-        # No matches at all → broad search
+        # No matches at all → early return, ask user
         if not matched_topics:
             return TopicFilterResult(
+                should_skip_rag=True,
                 detected_topics=detected_names,
                 unmatched_topics=unmatched_names,
                 message=TopicMessages.no_topic_match(detected_names),

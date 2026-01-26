@@ -88,6 +88,7 @@ Content:
     QUERY_PROMPT = """Extract the main topic(s) from this user question.
 
 If the question covers multiple distinct issue types, extract up to 3 topics.
+If the question uses "OR" between similar terms, treat them as synonyms for ONE topic.
 If the question is too general or doesn't have a clear topic, return empty array.
 
 Examples:
@@ -95,6 +96,8 @@ Examples:
 - "Engine problems on VLCC?" → [{{"name": "Engine Issues"}}]
 - "Cargo damage and engine failures?" → [{{"name": "Cargo Damage"}}, {{"name": "Engine Issues"}}]
 - "Hull damage, ballast issues, and engine problems" → [{{"name": "Hull Damage"}}, {{"name": "Ballast Systems"}}, {{"name": "Engine Issues"}}]
+- "lubrication supply orders OR lube oil orders OR lubricant procurement" → [{{"name": "Lubricants Supply"}}]
+- "engine failure OR motor breakdown OR propulsion issues" → [{{"name": "Engine Issues"}}]
 - "Tell me about the Maran" → [] (too general, just a vessel name)
 - "Hello" → [] (not a search query)
 
@@ -291,9 +294,13 @@ class TopicMatcher:
     Deduplication threshold: 0.85
     - >= 0.85: Auto-merge with existing topic
     - < 0.85: Create new topic
+
+    Query matching threshold: 0.70
+    - More lenient to match synonyms like "lubrication" -> "lubricants"
     """
 
-    SIMILARITY_THRESHOLD = 0.85
+    SIMILARITY_THRESHOLD = 0.85  # For ingest deduplication (strict)
+    QUERY_SIMILARITY_THRESHOLD = 0.70  # For query-time matching (lenient)
 
     def __init__(self, db: "SupabaseClient", embeddings: "EmbeddingGenerator"):
         """Initialize the topic matcher.
@@ -377,10 +384,10 @@ class TopicMatcher:
         if existing:
             return existing
 
-        # Try embedding similarity
+        # Try embedding similarity (use lenient threshold for query matching)
         embedding = await self.embeddings.generate_embedding(name)
         similar = await self.db.find_similar_topics(
-            embedding, threshold=self.SIMILARITY_THRESHOLD, limit=1
+            embedding, threshold=self.QUERY_SIMILARITY_THRESHOLD, limit=1
         )
 
         if similar:
