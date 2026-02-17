@@ -179,19 +179,18 @@ class HierarchyManager:
             # Use archive path as the file reference (files are in Supabase Storage)
             actual_file_path = archive_file_result.download_uri or str(attachment_path)
             if archive_file_result.browse_uri:
-                # URL-encode paths to handle filenames with spaces
-                browse_uri_encoded = quote(archive_file_result.browse_uri, safe="/")
+                # URIs from ContentFileResult are already storage-key-safe
+                # (sanitized by _sanitize_storage_key), don't re-encode
                 if self.archive_base_url:
-                    archive_browse_uri = f"{self.archive_base_url}/{browse_uri_encoded}"
+                    archive_browse_uri = f"{self.archive_base_url}/{archive_file_result.browse_uri}"
                 else:
-                    archive_browse_uri = f"/archive/{browse_uri_encoded}"
+                    archive_browse_uri = f"/archive/{archive_file_result.browse_uri}"
             if archive_file_result.download_uri:
-                # URL-encode paths to handle filenames with spaces
-                download_uri_encoded = quote(archive_file_result.download_uri, safe="/")
+                # URIs from ContentFileResult are already storage-key-safe
                 if self.archive_base_url:
-                    archive_download_uri = f"{self.archive_base_url}/{download_uri_encoded}"
+                    archive_download_uri = f"{self.archive_base_url}/{archive_file_result.download_uri}"
                 else:
-                    archive_download_uri = f"/archive/{download_uri_encoded}"
+                    archive_download_uri = f"/archive/{archive_file_result.download_uri}"
 
         doc = Document(
             parent_id=parent_doc.id,

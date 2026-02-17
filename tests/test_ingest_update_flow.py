@@ -447,7 +447,7 @@ class TestFixMissingArchives:
 
         # Archive exists in bucket
         mock_fix_components.archive_storage.file_exists = MagicMock(return_value=True)
-        mock_fix_components.db.update_document_archive_browse_uri = AsyncMock()
+        mock_fix_components.db.update_document_archive_uris = AsyncMock()
 
         parsed_email = MagicMock()
 
@@ -457,7 +457,7 @@ class TestFixMissingArchives:
             await _fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should update DB without regenerating
-        mock_fix_components.db.update_document_archive_browse_uri.assert_called_once()
+        mock_fix_components.db.update_document_archive_uris.assert_called_once()
         mock_fix_components.archive_generator.generate_archive.assert_not_called()
 
     @pytest.mark.asyncio
@@ -477,7 +477,7 @@ class TestFixMissingArchives:
 
         # Archive doesn't exist
         mock_fix_components.archive_storage.file_exists = MagicMock(return_value=False)
-        mock_fix_components.db.update_document_archive_browse_uri = AsyncMock()
+        mock_fix_components.db.update_document_archive_uris = AsyncMock()
 
         # Mock archive generation result
         archive_result = MagicMock()
@@ -495,7 +495,7 @@ class TestFixMissingArchives:
 
         # Should regenerate and update DB
         mock_fix_components.archive_generator.generate_archive.assert_called_once()
-        mock_fix_components.db.update_document_archive_browse_uri.assert_called_once()
+        mock_fix_components.db.update_document_archive_uris.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_fixes_root_document_archive(
@@ -513,7 +513,7 @@ class TestFixMissingArchives:
         )
 
         mock_fix_components.archive_storage.file_exists = MagicMock(return_value=True)
-        mock_fix_components.db.update_document_archive_browse_uri = AsyncMock()
+        mock_fix_components.db.update_document_archive_uris = AsyncMock()
 
         parsed_email = MagicMock()
 
@@ -523,7 +523,7 @@ class TestFixMissingArchives:
             await _fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should update root document
-        call_args = mock_fix_components.db.update_document_archive_browse_uri.call_args
+        call_args = mock_fix_components.db.update_document_archive_uris.call_args
         assert call_args[0][0] == sample_document.id
 
     @pytest.mark.asyncio
@@ -543,7 +543,7 @@ class TestFixMissingArchives:
         )
 
         mock_fix_components.archive_storage.file_exists = MagicMock(return_value=True)
-        mock_fix_components.db.update_document_archive_browse_uri = AsyncMock()
+        mock_fix_components.db.update_document_archive_uris = AsyncMock()
 
         parsed_email = MagicMock()
 
@@ -553,7 +553,7 @@ class TestFixMissingArchives:
             await _fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should update child document
-        mock_fix_components.db.update_document_archive_browse_uri.assert_called_once()
+        mock_fix_components.db.update_document_archive_uris.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_skips_image_attachments(
@@ -572,7 +572,7 @@ class TestFixMissingArchives:
         )
 
         mock_fix_components.archive_storage.file_exists = MagicMock(return_value=True)
-        mock_fix_components.db.update_document_archive_browse_uri = AsyncMock()
+        mock_fix_components.db.update_document_archive_uris = AsyncMock()
 
         parsed_email = MagicMock()
 
@@ -582,7 +582,7 @@ class TestFixMissingArchives:
             await _fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should not update image document
-        mock_fix_components.db.update_document_archive_browse_uri.assert_not_called()
+        mock_fix_components.db.update_document_archive_uris.assert_not_called()
 
 
 class TestFixMissingLines:

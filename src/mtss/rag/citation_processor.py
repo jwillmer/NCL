@@ -353,7 +353,8 @@ Example response:
                 attrs.append(f'lines="{c.lines[0]}-{c.lines[1]}"')
 
             if c.archive_download_uri:
-                attrs.append(f'download="{c.archive_download_uri}"')
+                dl = c.archive_download_uri.removeprefix("/archive/")
+                attrs.append(f'download="{dl}"')
 
             new_marker = f'<cite {" ".join(attrs)}>{c.index}</cite>'
             result = result.replace(old_marker, new_marker)

@@ -113,16 +113,18 @@ class LocalStorageClient:
         }
         self._append_jsonl("status_updates.jsonl", event)
 
-    async def update_document_archive_browse_uri(
+    async def update_document_archive_uris(
         self,
         doc_id: UUID,
         archive_browse_uri: str,
+        archive_download_uri: str | None = None,
     ) -> None:
-        """Update document archive URI."""
+        """Update document archive URIs."""
         event = {
             "type": "archive_uri_update",
             "doc_id": str(doc_id),
             "archive_browse_uri": archive_browse_uri,
+            "archive_download_uri": archive_download_uri,
             "timestamp": datetime.utcnow().isoformat(),
         }
         self._append_jsonl("archive_updates.jsonl", event)

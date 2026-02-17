@@ -176,20 +176,32 @@ class SupabaseClient:
 
         self.client.table("documents").update(data).eq("id", str(doc_id)).execute()
 
-    async def update_document_archive_browse_uri(
+    async def update_document_archive_uris(
         self,
         doc_id: UUID,
         archive_browse_uri: str,
+        archive_download_uri: str | None = None,
     ):
-        """Update document's archive_browse_uri after markdown file is created.
+        """Update document's archive URIs and propagate to chunks.
+
+        Updates browse (and optionally download) URI on the document,
+        then syncs the same values to all chunks for that document.
 
         Args:
             doc_id: Document UUID.
             archive_browse_uri: URI to the browsable markdown file.
+            archive_download_uri: Optional URI to the original file for download.
         """
-        self.client.table("documents").update(
-            {"archive_browse_uri": archive_browse_uri, "updated_at": "now()"}
-        ).eq("id", str(doc_id)).execute()
+        data: Dict[str, Any] = {"archive_browse_uri": archive_browse_uri, "updated_at": "now()"}
+        if archive_download_uri:
+            data["archive_download_uri"] = archive_download_uri
+        self.client.table("documents").update(data).eq("id", str(doc_id)).execute()
+
+        # Propagate to chunks (prevents denormalization drift)
+        chunk_data: Dict[str, Any] = {"archive_browse_uri": archive_browse_uri}
+        if archive_download_uri:
+            chunk_data["archive_download_uri"] = archive_download_uri
+        self.client.table("chunks").update(chunk_data).eq("document_id", str(doc_id)).execute()
 
     async def get_document_by_hash(self, file_hash: str) -> Optional[Document]:
         """Check if document with hash already exists.

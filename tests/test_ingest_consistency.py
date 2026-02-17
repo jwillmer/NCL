@@ -103,7 +103,7 @@ class TestIngestUpdateConsistency:
         db = MagicMock()
         db.insert_document = AsyncMock()
         db.update_document_status = AsyncMock()
-        db.update_document_archive_browse_uri = AsyncMock()
+        db.update_document_archive_uris = AsyncMock()
         db.insert_chunks = AsyncMock()
         db.replace_chunks_atomic = AsyncMock()
         db.get_chunks_by_document = AsyncMock(return_value=[])

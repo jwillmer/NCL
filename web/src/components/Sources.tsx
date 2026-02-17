@@ -43,6 +43,14 @@ import type { Citation, CiteProps } from "@/types/rag";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/conversations";
 
+/**
+ * Strip leading /archive/ prefix from a URI so it can be appended to
+ * `getApiBaseUrl()/archive/` without doubling the prefix.
+ */
+function stripArchivePrefix(uri: string): string {
+  return uri.replace(/^\/archive\//, "");
+}
+
 // =============================================================================
 // Citation Context - Collects citations as they render
 // =============================================================================
@@ -516,7 +524,7 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
         </Button>
         {citation.chunks[0]?.download && (
           <a
-            href={`${getApiBaseUrl()}/archive/${citation.chunks[0].download}`}
+            href={`${getApiBaseUrl()}/archive/${stripArchivePrefix(citation.chunks[0].download)}`}
             download
             className="inline-flex items-center justify-center h-8 px-2 rounded-md text-sm font-medium hover:bg-MTSS-gray-light/20 transition-colors"
             title="Download original"
@@ -660,7 +668,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
             </div>
             {citation?.archive_download_uri && (
               <a
-                href={`${getApiBaseUrl()}/archive/${citation.archive_download_uri}`}
+                href={`${getApiBaseUrl()}/archive/${stripArchivePrefix(citation.archive_download_uri)}`}
                 download
                 className="inline-flex items-center justify-center h-9 px-3 rounded-md border border-MTSS-gray-light bg-white text-sm font-medium hover:bg-MTSS-gray-light/20 transition-colors"
               >

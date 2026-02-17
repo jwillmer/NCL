@@ -333,7 +333,7 @@ def mock_supabase_client():
     client.get_all_root_source_ids = AsyncMock(return_value={})
     client.get_document_by_source_id = AsyncMock(return_value=None)
     client.delete_orphaned_documents = AsyncMock(return_value=0)
-    client.update_document_archive_browse_uri = AsyncMock()
+    client.update_document_archive_uris = AsyncMock()
     client.update_chunk_context = AsyncMock()
     # Sync methods
     client.log_ingest_event = MagicMock()

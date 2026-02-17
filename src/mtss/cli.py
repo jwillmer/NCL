@@ -21,8 +21,6 @@ litellm.success_callback = [cb for cb in litellm.success_callback if "langfuse" 
 litellm.failure_callback = [cb for cb in litellm.failure_callback if "langfuse" not in cb]
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
-
 import typer
 from rich.console import Console
 from rich.progress import (
@@ -717,10 +715,14 @@ async def _process_single_email(
         # Get archive file result for this attachment if available
         archive_file_result = None
         if archive_result and archive_result.attachment_files:
-            # Look for matching attachment in archive result by filename
+            # Look for matching attachment in archive result by sanitized filename
+            # Storage keys are sanitized (spaces→%20, brackets→parens), so match accordingly
+            from .processing.archive_generator import _sanitize_storage_key
+
+            safe_name = _sanitize_storage_key(attachment.filename)
             for file_result in archive_result.attachment_files:
-                # original_path is like "abc123/attachments/file.pdf"
-                if file_result.original_path.endswith(f"/{attachment.filename}"):
+                # original_path is like "abc123/attachments/sanitized_file.pdf"
+                if file_result.original_path.endswith(f"/{safe_name}"):
                     archive_file_result = file_result
                     break
 
@@ -1026,10 +1028,16 @@ async def _process_attachment(
             )
             if md_path:
                 vprint(f"  -> Archive updated: {md_path}", file_ctx)
-                # Update document and chunks with the new archive_browse_uri
-                browse_uri = f"/archive/{quote(md_path, safe='/')}"
+                # Update document and chunks with archive URIs
+                # md_path is already sanitized by _sanitize_storage_key, don't quote again
+                browse_uri = f"/archive/{md_path}"
+                download_path = md_path.removesuffix('.md')
+                download_uri = f"/archive/{download_path}"
                 attach_doc.archive_browse_uri = browse_uri
-                await db.update_document_archive_browse_uri(attach_doc.id, browse_uri)
+                attach_doc.archive_download_uri = download_uri
+                await db.update_document_archive_uris(
+                    attach_doc.id, browse_uri, download_uri
+                )
             else:
                 vprint("  -> update_attachment_markdown returned None", file_ctx)
         else:
@@ -2448,8 +2456,6 @@ async def _fix_missing_archives(
         components: Shared ingest components.
         parsed_email: Parsed email object.
     """
-    from urllib.parse import quote
-
     from .models.document import DocumentType
 
     if not parsed_email:
@@ -2464,8 +2470,8 @@ async def _fix_missing_archives(
         # Check if archive exists in bucket first
         bucket_path = f"{folder_id}/email.eml.md"
         if folder_id and components.archive_storage.file_exists(bucket_path):
-            browse_uri = f"/archive/{quote(bucket_path, safe='/')}"
-            await components.db.update_document_archive_browse_uri(record.doc.id, browse_uri)
+            browse_uri = f"/archive/{bucket_path}"
+            await components.db.update_document_archive_uris(record.doc.id, browse_uri)
             record.doc.archive_browse_uri = browse_uri
             vprint(f"Archive found in bucket, DB updated: {browse_uri}", record.eml_path.name)
         else:
@@ -2476,8 +2482,8 @@ async def _fix_missing_archives(
                 source_eml_path=record.eml_path,
             )
             # Use same format as hierarchy_manager: /archive/{path}
-            browse_uri = f"/archive/{quote(archive_result.markdown_path, safe='/')}"
-            await components.db.update_document_archive_browse_uri(
+            browse_uri = f"/archive/{archive_result.markdown_path}"
+            await components.db.update_document_archive_uris(
                 record.doc.id,
                 browse_uri,
             )
@@ -2500,8 +2506,8 @@ async def _fix_missing_archives(
         expected_path = f"{folder_id}/attachments/{child.file_name}.md"
         if components.archive_storage.file_exists(expected_path):
             # File exists in bucket - just update DB
-            browse_uri = f"/archive/{quote(expected_path, safe='/')}"
-            await components.db.update_document_archive_browse_uri(child.id, browse_uri)
+            browse_uri = f"/archive/{expected_path}"
+            await components.db.update_document_archive_uris(child.id, browse_uri)
             child.archive_browse_uri = browse_uri
             vprint(f"Archive found in bucket for {child.file_name}, DB updated", record.eml_path.name)
         else:
@@ -2564,12 +2570,13 @@ async def _fix_missing_archives(
             if md_path:
                 # md_path is already URL-encoded from _sanitize_storage_key, don't quote again
                 browse_uri = f"/archive/{md_path}"
-                await components.db.update_document_archive_browse_uri(child.id, browse_uri)
+                download_path = md_path.removesuffix('.md')
+                download_uri = f"/archive/{download_path}"
+                await components.db.update_document_archive_uris(
+                    child.id, browse_uri, download_uri
+                )
                 child.archive_browse_uri = browse_uri
-                # Also update chunks with the new archive URI (sync call, no await)
-                components.db.client.table('chunks').update({
-                    'archive_browse_uri': browse_uri
-                }).eq('document_id', str(child.id)).execute()
+                child.archive_download_uri = download_uri
                 vprint(f"Archive regenerated for {child.file_name}", record.eml_path.name)
             else:
                 vprint(f"Failed to regenerate archive for {child.file_name}", record.eml_path.name)
