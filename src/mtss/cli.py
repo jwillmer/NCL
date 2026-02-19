@@ -3271,5 +3271,283 @@ async def _topics_list():
         await db.close()
 
 
+@app.command()
+def estimate(
+    source_dir: Optional[Path] = typer.Option(
+        None,
+        "--source",
+        "-s",
+        help="Directory containing EML files",
+    ),
+    page_cost: float = typer.Option(
+        0.00625,
+        "--page-cost",
+        help="LlamaParse cost per page USD (default: 5 avg credits × $0.00125/credit)",
+    ),
+    vision_cost: float = typer.Option(
+        0.01,
+        "--vision-cost",
+        help="Vision API cost per image USD",
+    ),
+    text_cost: float = typer.Option(
+        0.001,
+        "--text-cost",
+        help="LLM text processing cost per file USD",
+    ),
+    embedding_cost: float = typer.Option(
+        0.00002,
+        "--embedding-cost",
+        help="Embedding cost per chunk USD (text-embedding-3-small)",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show per-file details, errors, and files with issues",
+    ),
+):
+    """Estimate ingest cost by extracting attachments and counting pages.
+
+    Extracts all EML attachments (including ZIP contents) into a persistent
+    folder, counts actual pages, and produces a cost breakdown.
+    Subsequent runs use cached results and are instant.
+    """
+    from .ingest.estimator import (
+        IngestEstimator,
+        LLAMAPARSE_CATEGORIES,
+        PAGE_COUNT_CATEGORIES,
+        TEXT_CATEGORIES,
+        VISION_CATEGORIES,
+    )
+
+    settings = get_settings()
+    source = source_dir or settings.eml_source_dir
+
+    if not source.exists():
+        console.print(f"[red]Source directory not found: {source}[/red]")
+        raise typer.Exit(1)
+
+    with console.status("Scanning EML files and counting pages..."):
+        estimator = IngestEstimator(source_dir=source)
+        result = estimator.scan()
+
+    if result.eml_count == 0:
+        console.print("[dim]No EML files found in source directory.[/dim]")
+        raise typer.Exit(0)
+
+    _show_estimate(result, page_cost, vision_cost, text_cost, embedding_cost, verbose)
+
+
+def _show_estimate(
+    result,
+    page_cost: float,
+    vision_cost: float,
+    text_cost: float,
+    embedding_cost: float,
+    verbose: bool,
+):
+    """Display estimate results as Rich tables."""
+    from .ingest.estimator import (
+        LLAMAPARSE_CATEGORIES,
+        PAGE_COUNT_CATEGORIES,
+        TEXT_CATEGORIES,
+        VISION_CATEGORIES,
+    )
+
+    # ── Table 1: File Inventory ────────────────────────────────────────
+    inv_table = Table(title="Ingest File Inventory")
+    inv_table.add_column("Category", style="cyan")
+    inv_table.add_column("Files", justify="right", style="green")
+    inv_table.add_column("Pages", justify="right")
+    inv_table.add_column("Unknown", justify="right", style="yellow")
+
+    # Display order
+    display_order = [
+        "PDF", "DOCX", "PPTX", "XLSX", "DOC", "PPT", "XLS",
+        "Other Docs", "Images", "Text/Markdown", "Other",
+    ]
+
+    total_files = 0
+    total_pages = 0
+    total_unknown = 0
+
+    for cat_name in display_order:
+        stats = result.categories.get(cat_name)
+        if not stats or stats.file_count == 0:
+            continue
+
+        total_files += stats.file_count
+        has_pages = cat_name in PAGE_COUNT_CATEGORIES
+
+        if has_pages:
+            total_pages += stats.page_count
+            total_unknown += stats.pages_unknown
+            pages_str = str(stats.page_count)
+            if stats.pages_unknown > 0:
+                pct = round(100 * stats.pages_unknown / stats.file_count)
+                unknown_str = f"{stats.pages_unknown} ({pct}%)"
+            else:
+                unknown_str = "0"
+        elif cat_name in VISION_CATEGORIES and stats.images_meaningful > 0:
+            # Show meaningful/skipped split for images
+            pages_str = f"~{stats.images_meaningful} meaningful"
+            skipped = stats.images_skipped
+            unknown_str = f"{skipped} skipped" if skipped else "0"
+        else:
+            pages_str = "—"
+            unknown_str = "—"
+
+        inv_table.add_row(cat_name, str(stats.file_count), pages_str, unknown_str)
+
+    # Total row
+    inv_table.add_section()
+    if total_unknown > 0 and total_files > 0:
+        pct = round(100 * total_unknown / total_files)
+        total_unknown_str = f"{total_unknown} ({pct}%)"
+    else:
+        total_unknown_str = "0"
+    inv_table.add_row(
+        "[bold]TOTAL[/bold]",
+        f"[bold]{total_files}[/bold]",
+        f"[bold]{total_pages}[/bold]",
+        f"[bold]{total_unknown_str}[/bold]",
+    )
+
+    console.print(inv_table)
+    console.print()
+
+    # ── Table 2: Cost Estimate ─────────────────────────────────────────
+    cost_table = Table(title="Estimated Ingest Cost")
+    cost_table.add_column("Service", style="cyan")
+    cost_table.add_column("Units", justify="right")
+    cost_table.add_column("Unit Cost", justify="right")
+    cost_table.add_column("Cost", justify="right", style="green")
+
+    # LlamaParse (documents) — uses total_pages from page-counted categories
+    llama_pages = total_pages
+    llama_total = llama_pages * page_cost
+    cost_table.add_row(
+        "LlamaParse (documents)",
+        f"{llama_pages} pages",
+        f"${page_cost:.5f}",
+        f"${llama_total:.2f}",
+    )
+
+    # Vision API (images) — only meaningful images get described
+    image_meaningful = 0
+    image_skipped = 0
+    for cat_name in VISION_CATEGORIES:
+        stats = result.categories.get(cat_name)
+        if stats:
+            image_meaningful += stats.images_meaningful
+            image_skipped += stats.images_skipped
+    # Fall back to total file_count if heuristic data not available (old cache)
+    if image_meaningful == 0 and image_skipped == 0:
+        for cat_name in VISION_CATEGORIES:
+            stats = result.categories.get(cat_name)
+            if stats:
+                image_meaningful = stats.file_count
+    vision_total = image_meaningful * vision_cost
+    image_label = f"~{image_meaningful} images"
+    if image_skipped > 0:
+        image_label += f" ({image_skipped} skipped)"
+    cost_table.add_row(
+        "Vision API (images)",
+        image_label,
+        f"${vision_cost:.5f}",
+        f"${vision_total:.2f}",
+    )
+
+    # LLM text (text files)
+    text_count = 0
+    for cat_name in TEXT_CATEGORIES:
+        stats = result.categories.get(cat_name)
+        if stats:
+            text_count += stats.file_count
+    text_total = text_count * text_cost
+    cost_table.add_row(
+        "LLM text (text files)",
+        f"{text_count} files",
+        f"${text_cost:.5f}",
+        f"${text_total:.2f}",
+    )
+
+    # Embeddings (~1.5x pages)
+    estimated_chunks = round(total_pages * 1.5)
+    embed_total = estimated_chunks * embedding_cost
+    cost_table.add_row(
+        "Embeddings (~1.5x pages)",
+        f"~{estimated_chunks} chunks",
+        f"${embedding_cost:.5f}",
+        f"${embed_total:.2f}",
+    )
+
+    # Total row
+    grand_total = llama_total + vision_total + text_total + embed_total
+    cost_table.add_section()
+    cost_table.add_row(
+        "[bold]TOTAL ESTIMATED[/bold]",
+        "",
+        "",
+        f"[bold]${grand_total:.2f}[/bold]",
+    )
+
+    console.print(cost_table)
+
+    # ── Footnotes ──────────────────────────────────────────────────────
+    console.print()
+    console.print(
+        f"  [dim]LlamaParse: 5 avg credits/page × $0.00125/credit ($50 / 40k credits)[/dim]"
+    )
+    console.print(
+        f"  [dim]Embeddings: ~1.5 chunks/page × text-embedding-3-small ($0.02/M tokens)[/dim]"
+    )
+    if image_skipped > 0:
+        console.print(
+            f"  [dim]Images: {image_skipped} likely non-content (logos, icons, banners) "
+            f"excluded by size/dimension heuristic[/dim]"
+        )
+
+    if total_unknown > 0:
+        console.print(
+            f"  [dim]{total_unknown} files had unknown page counts (counted as 1 page) "
+            f"— use --verbose to see details[/dim]"
+        )
+
+    if result.scan_errors:
+        console.print(
+            f"  [yellow]{len(result.scan_errors)} EML files failed to process[/yellow]"
+        )
+
+    # ── Footer ─────────────────────────────────────────────────────────
+    console.print()
+    console.print(
+        f"[dim]Scanned {result.eml_count} EML files "
+        f"({result.cached_count} cached, {result.extracted_count} newly extracted) "
+        f"in {result.elapsed_seconds:.1f}s[/dim]"
+    )
+
+    # ── Verbose output ─────────────────────────────────────────────────
+    if verbose and (result.all_issues or result.scan_errors):
+        console.print()
+
+        if result.all_issues:
+            issue_table = Table(title="Files with Issues")
+            issue_table.add_column("File", style="cyan")
+            issue_table.add_column("Issue", style="yellow")
+            issue_table.add_column("Detail", style="dim")
+
+            for issue in result.all_issues:
+                issue_table.add_row(issue.file, issue.issue, issue.detail)
+
+            console.print(issue_table)
+
+        if result.scan_errors:
+            console.print()
+            console.print("[bold yellow]Scan Errors:[/bold yellow]")
+            for err in result.scan_errors:
+                console.print(f"  [red]• {err}[/red]")
+
+
 if __name__ == "__main__":
     app()
