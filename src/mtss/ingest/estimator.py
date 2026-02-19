@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import email
+import hashlib
 import io
 import json
 import logging
@@ -25,13 +26,7 @@ from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree
 
 from ..config import get_settings
-from ..processing.lane_classifier import (
-    DOCUMENT_EXTENSIONS,
-    IMAGE_EXTENSIONS,
-    IMAGE_MIMETYPES,
-    LLAMAPARSE_MIMETYPES,
-    ZIP_MIMETYPES,
-)
+from ..processing.lane_classifier import IMAGE_EXTENSIONS
 from ..utils import sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -303,12 +298,8 @@ class IngestEstimator:
         # Build summary
         total_files = sum(c["file_count"] for c in categories.values())
         total_pages = sum(
-            c["page_count"] for c in categories.values()
-            if any(
-                cat in PAGE_COUNT_CATEGORIES
-                for cat in categories
-                if categories[cat] is c
-            )
+            c["page_count"] for cat, c in categories.items()
+            if cat in PAGE_COUNT_CATEGORIES
         )
 
         summary = {
@@ -484,7 +475,7 @@ class IngestEstimator:
             count = len(reader.pages)
             if count > 0:
                 return count, None
-        except (PdfReadError, Exception):
+        except Exception:
             pass
 
         # Strategy 2: linearized PDF /N value (fast, reliable when present)
@@ -607,39 +598,35 @@ class IngestEstimator:
 
         try:
             ole = olefile.OleFileIO(str(path))
-            meta = ole.get_metadata()
+            try:
+                meta = ole.get_metadata()
 
-            if fmt == "doc":
-                ole.close()
-                if meta.num_pages and meta.num_pages > 0:
-                    return meta.num_pages, None
-            elif fmt == "ppt":
-                ole.close()
-                # OLE metadata stores slide count in num_pages for PPT
-                if meta.num_pages and meta.num_pages > 0:
-                    return meta.num_pages, None
-            elif fmt == "xls":
-                # OLE summary metadata doesn't have sheet count.
-                # Parse the Workbook stream for BoundSheet8 records (type 0x0085).
-                for stream_name in ["Workbook", "Book"]:
-                    if ole.exists(stream_name):
-                        data = ole.openstream(stream_name).read()
-                        sheet_count = 0
-                        pos = 0
-                        while pos + 4 <= len(data):
-                            rec_type = int.from_bytes(data[pos:pos+2], "little")
-                            rec_len = int.from_bytes(data[pos+2:pos+4], "little")
-                            if rec_type == 0x0085:  # BoundSheet8
-                                sheet_count += 1
-                            pos += 4 + rec_len
-                            if rec_type == 0x000A:  # EOF record
-                                break
-                        if sheet_count > 0:
-                            ole.close()
-                            return sheet_count, None
-                        break
-                ole.close()
-            else:
+                if fmt == "doc":
+                    if meta.num_pages and meta.num_pages > 0:
+                        return meta.num_pages, None
+                elif fmt == "ppt":
+                    if meta.num_pages and meta.num_pages > 0:
+                        return meta.num_pages, None
+                elif fmt == "xls":
+                    # OLE summary metadata doesn't have sheet count.
+                    # Parse the Workbook stream for BoundSheet8 records (0x0085).
+                    for stream_name in ["Workbook", "Book"]:
+                        if ole.exists(stream_name):
+                            data = ole.openstream(stream_name).read()
+                            sheet_count = 0
+                            pos = 0
+                            while pos + 4 <= len(data):
+                                rec_type = int.from_bytes(data[pos:pos+2], "little")
+                                rec_len = int.from_bytes(data[pos+2:pos+4], "little")
+                                if rec_type == 0x0085:  # BoundSheet8
+                                    sheet_count += 1
+                                pos += 4 + rec_len
+                                if rec_type == 0x000A:  # EOF record
+                                    break
+                            if sheet_count > 0:
+                                return sheet_count, None
+                            break
+            finally:
                 ole.close()
 
             return 1, FileIssue(
@@ -720,8 +707,6 @@ class IngestEstimator:
 
         Uses the stem + first 8 chars of a hash for uniqueness.
         """
-        import hashlib
-
         name = sanitize_filename(eml_path.stem)
         # Truncate long names
         if len(name) > 60:

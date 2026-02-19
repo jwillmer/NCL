@@ -3314,7 +3314,6 @@ def estimate(
     """
     from .ingest.estimator import (
         IngestEstimator,
-        LLAMAPARSE_CATEGORIES,
         PAGE_COUNT_CATEGORIES,
         TEXT_CATEGORIES,
         VISION_CATEGORIES,
@@ -3348,7 +3347,6 @@ def _show_estimate(
 ):
     """Display estimate results as Rich tables."""
     from .ingest.estimator import (
-        LLAMAPARSE_CATEGORIES,
         PAGE_COUNT_CATEGORIES,
         TEXT_CATEGORIES,
         VISION_CATEGORIES,
