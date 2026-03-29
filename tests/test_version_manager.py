@@ -27,10 +27,10 @@ class TestVersionManager:
     def version_manager(self, mock_db, comprehensive_mock_settings):
         """Create a VersionManager with mocked dependencies."""
         with patch(
-            "mtss.processing.version_manager.get_settings",
+            "mtss.ingest.version_manager.get_settings",
             return_value=comprehensive_mock_settings,
         ):
-            from mtss.processing.version_manager import VersionManager
+            from mtss.ingest.version_manager import VersionManager
 
             return VersionManager(db=mock_db)
 
@@ -176,7 +176,7 @@ class TestIngestDecision:
     @pytest.mark.unit
     def test_ingest_decision_insert(self):
         """Insert decision should have correct fields."""
-        from mtss.processing.version_manager import IngestDecision
+        from mtss.ingest.version_manager import IngestDecision
 
         decision = IngestDecision(
             action="insert",
@@ -190,7 +190,7 @@ class TestIngestDecision:
     @pytest.mark.unit
     def test_ingest_decision_with_existing_doc(self):
         """Decision with existing doc should store the ID."""
-        from mtss.processing.version_manager import IngestDecision
+        from mtss.ingest.version_manager import IngestDecision
 
         doc_id = uuid4()
         decision = IngestDecision(
@@ -205,7 +205,7 @@ class TestIngestDecision:
     @pytest.mark.unit
     def test_ingest_decision_valid_actions(self):
         """All valid action values should be accepted."""
-        from mtss.processing.version_manager import IngestDecision
+        from mtss.ingest.version_manager import IngestDecision
 
         for action in ["insert", "update", "skip", "reprocess"]:
             decision = IngestDecision(action=action, reason="test")

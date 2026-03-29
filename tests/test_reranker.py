@@ -1,71 +1,91 @@
-﻿"""Tests for the Reranker class."""
+"""Tests for the Reranker class."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mtss.models.chunk import SourceReference
+from mtss.models.chunk import RetrievalResult
 from mtss.processing.reranker import Reranker
 
 
 @pytest.fixture
-def sample_sources():
-    """Create sample source references for testing."""
+def sample_results():
+    """Create sample retrieval results for testing."""
     return [
-        SourceReference(
+        RetrievalResult(
+            text="The project deadline has been moved to next Friday.",
+            score=0.85,
+            chunk_id="aaa111bbb222",
+            doc_id="doc001",
+            source_id="email1.eml",
+            source_title="Project Update",
+            section_path=["Email Body"],
             file_path="/path/to/email1.eml",
             document_type="email",
             email_subject="Project Update",
             email_initiator="alice@example.com",
             email_participants=["alice@example.com", "bob@example.com"],
             email_date="2024-01-15",
-            chunk_content="The project deadline has been moved to next Friday.",
-            similarity_score=0.85,
-            heading_path=["Email Body"],
         ),
-        SourceReference(
+        RetrievalResult(
+            text="We discussed the budget allocation for Q2.",
+            score=0.82,
+            chunk_id="bbb222ccc333",
+            doc_id="doc002",
+            source_id="email2.eml",
+            source_title="Meeting Notes",
+            section_path=["Email Body"],
             file_path="/path/to/email2.eml",
             document_type="email",
             email_subject="Meeting Notes",
             email_initiator="bob@example.com",
             email_participants=["bob@example.com", "carol@example.com"],
             email_date="2024-01-14",
-            chunk_content="We discussed the budget allocation for Q2.",
-            similarity_score=0.82,
-            heading_path=["Email Body"],
         ),
-        SourceReference(
+        RetrievalResult(
+            text="Budget breakdown: Marketing $50k, Engineering $100k.",
+            score=0.78,
+            chunk_id="ccc333ddd444",
+            doc_id="doc003",
+            source_id="attachment.pdf",
+            source_title="Budget Report",
+            section_path=["Budget Overview"],
             file_path="/path/to/attachment.pdf",
             document_type="attachment_pdf",
             email_subject="Project Update",
             email_initiator="alice@example.com",
             email_participants=["alice@example.com", "bob@example.com"],
             email_date="2024-01-15",
-            chunk_content="Budget breakdown: Marketing $50k, Engineering $100k.",
-            similarity_score=0.78,
-            heading_path=["Budget Overview"],
         ),
-        SourceReference(
+        RetrievalResult(
+            text="Action items from last week have been completed.",
+            score=0.75,
+            chunk_id="ddd444eee555",
+            doc_id="doc004",
+            source_id="email3.eml",
+            source_title="Weekly Standup",
+            section_path=["Email Body"],
             file_path="/path/to/email3.eml",
             document_type="email",
             email_subject="Weekly Standup",
             email_initiator="carol@example.com",
             email_participants=["carol@example.com", "dave@example.com"],
             email_date="2024-01-13",
-            chunk_content="Action items from last week have been completed.",
-            similarity_score=0.75,
-            heading_path=["Email Body"],
         ),
-        SourceReference(
+        RetrievalResult(
+            text="Please submit your timesheets by EOD.",
+            score=0.70,
+            chunk_id="eee555fff666",
+            doc_id="doc005",
+            source_id="email4.eml",
+            source_title="Reminder",
+            section_path=["Email Body"],
             file_path="/path/to/email4.eml",
             document_type="email",
             email_subject="Reminder",
             email_initiator="dave@example.com",
             email_participants=["dave@example.com"],
             email_date="2024-01-12",
-            chunk_content="Please submit your timesheets by EOD.",
-            similarity_score=0.70,
-            heading_path=["Email Body"],
         ),
     ]
 
@@ -149,7 +169,7 @@ class TestRerankerRerankResults:
     """Tests for Reranker.rerank_results method."""
 
     def test_rerank_results_success(
-        self, mock_settings, sample_sources, mock_rerank_response
+        self, mock_settings, sample_results, mock_rerank_response
     ):
         """Test successful reranking of results."""
         with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
@@ -159,7 +179,7 @@ class TestRerankerRerankResults:
                 reranker = Reranker()
                 results = reranker.rerank_results(
                     query="What is the project budget?",
-                    sources=sample_sources,
+                    results=sample_results,
                 )
 
                 # Should return top_n results (3)
@@ -176,7 +196,7 @@ class TestRerankerRerankResults:
                 assert results[2].rerank_score == 0.72
 
     def test_rerank_results_with_custom_top_n(
-        self, mock_settings, sample_sources, mock_rerank_response
+        self, mock_settings, sample_results, mock_rerank_response
     ):
         """Test reranking with custom top_n parameter."""
         # Modify mock response to return 2 results
@@ -189,13 +209,13 @@ class TestRerankerRerankResults:
                 reranker = Reranker()
                 results = reranker.rerank_results(
                     query="What is the project budget?",
-                    sources=sample_sources,
+                    results=sample_results,
                     top_n=2,
                 )
 
                 assert len(results) == 2
 
-    def test_rerank_results_disabled(self, mock_settings, sample_sources):
+    def test_rerank_results_disabled(self, mock_settings, sample_results):
         """Test that disabled reranker returns truncated original results."""
         mock_settings.rerank_enabled = False
 
@@ -203,7 +223,7 @@ class TestRerankerRerankResults:
             reranker = Reranker()
             results = reranker.rerank_results(
                 query="What is the project budget?",
-                sources=sample_sources,
+                results=sample_results,
             )
 
             # Should return first top_n results without reranking
@@ -221,12 +241,12 @@ class TestRerankerRerankResults:
             reranker = Reranker()
             results = reranker.rerank_results(
                 query="What is the project budget?",
-                sources=[],
+                results=[],
             )
 
             assert results == []
 
-    def test_rerank_results_fewer_than_top_n(self, mock_settings, sample_sources):
+    def test_rerank_results_fewer_than_top_n(self, mock_settings, sample_results):
         """Test reranking when sources fewer than top_n."""
         mock_settings.rerank_top_n = 10  # More than available sources
 
@@ -234,17 +254,17 @@ class TestRerankerRerankResults:
             reranker = Reranker()
             results = reranker.rerank_results(
                 query="What is the project budget?",
-                sources=sample_sources[:2],  # Only 2 sources
+                results=sample_results[:2],  # Only 2 results
             )
 
-            # Should return all sources without calling rerank API
+            # Should return all results without calling rerank API
             assert len(results) == 2
             assert results[0].rerank_score is None
 
-    def test_rerank_results_extracts_chunk_content(
-        self, mock_settings, sample_sources, mock_rerank_response
+    def test_rerank_results_extracts_text(
+        self, mock_settings, sample_results, mock_rerank_response
     ):
-        """Test that reranker extracts chunk_content for documents."""
+        """Test that reranker extracts text for documents."""
         with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch(
                 "mtss.processing.reranker.rerank", return_value=mock_rerank_response
@@ -252,7 +272,7 @@ class TestRerankerRerankResults:
                 reranker = Reranker()
                 reranker.rerank_results(
                     query="What is the project budget?",
-                    sources=sample_sources,
+                    results=sample_results,
                 )
 
                 # Verify rerank was called with correct documents
@@ -268,10 +288,10 @@ class TestRerankerRerankResults:
 class TestRerankerIntegration:
     """Integration-style tests for Reranker."""
 
-    def test_rerank_preserves_source_metadata(
-        self, mock_settings, sample_sources, mock_rerank_response
+    def test_rerank_preserves_metadata(
+        self, mock_settings, sample_results, mock_rerank_response
     ):
-        """Test that reranking preserves all source metadata."""
+        """Test that reranking preserves all result metadata."""
         with patch("mtss.processing.reranker.get_settings", return_value=mock_settings):
             with patch(
                 "mtss.processing.reranker.rerank", return_value=mock_rerank_response
@@ -279,7 +299,7 @@ class TestRerankerIntegration:
                 reranker = Reranker()
                 results = reranker.rerank_results(
                     query="What is the project budget?",
-                    sources=sample_sources,
+                    results=sample_results,
                 )
 
                 # Check that the top result (attachment.pdf) has all metadata
@@ -289,6 +309,6 @@ class TestRerankerIntegration:
                 assert top_result.email_initiator == "alice@example.com"
                 assert "alice@example.com" in top_result.email_participants
                 assert top_result.email_date == "2024-01-15"
-                assert top_result.heading_path == ["Budget Overview"]
-                assert top_result.similarity_score == 0.78  # Original score preserved
+                assert top_result.section_path == ["Budget Overview"]
+                assert top_result.score == 0.78  # Original score preserved
                 assert top_result.rerank_score == 0.95  # New rerank score added

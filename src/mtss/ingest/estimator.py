@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree
 
 from ..config import get_settings
-from ..processing.lane_classifier import IMAGE_EXTENSIONS
+from .lane_classifier import IMAGE_EXTENSIONS
 from ..utils import sanitize_filename
 
 logger = logging.getLogger(__name__)

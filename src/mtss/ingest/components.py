@@ -14,13 +14,13 @@ if TYPE_CHECKING:
     from ..parsers.attachment_processor import AttachmentProcessor
     from ..parsers.chunker import ContextGenerator, DocumentChunker
     from ..parsers.eml_parser import EMLParser
-    from ..processing.archive_generator import ArchiveGenerator
     from ..processing.embeddings import EmbeddingGenerator
-    from ..processing.hierarchy_manager import HierarchyManager
     from ..processing.topics import TopicExtractor, TopicMatcher
     from ..processing.vessel_matcher import VesselMatcher
     from ..storage.archive_storage import ArchiveStorage
     from ..storage.supabase_client import SupabaseClient
+    from .archive_generator import ArchiveGenerator
+    from .hierarchy_manager import HierarchyManager
 
 
 @dataclass
@@ -69,9 +69,9 @@ def create_ingest_components(
     from ..parsers.attachment_processor import AttachmentProcessor
     from ..parsers.chunker import ContextGenerator, DocumentChunker
     from ..parsers.eml_parser import EMLParser
-    from ..processing.archive_generator import ArchiveGenerator
     from ..processing.embeddings import EmbeddingGenerator
-    from ..processing.hierarchy_manager import HierarchyManager
+    from .archive_generator import ArchiveGenerator
+    from .hierarchy_manager import HierarchyManager
     from ..processing.topics import TopicExtractor, TopicMatcher
     from ..processing.vessel_matcher import VesselMatcher
     from ..storage.archive_storage import ArchiveStorage

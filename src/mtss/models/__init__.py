@@ -1,6 +1,6 @@
 ﻿"""Data models for mtss."""
 
-from .chunk import Chunk, ChunkWithContext, SourceReference
+from .chunk import Chunk, ChunkWithContext, RetrievalResult
 from .document import (
     AttachmentMetadata,
     Document,
@@ -24,7 +24,7 @@ __all__ = [
     "ParsedAttachment",
     "Chunk",
     "ChunkWithContext",
-    "SourceReference",
+    "RetrievalResult",
     "Vessel",
     "VesselSummary",
 ]

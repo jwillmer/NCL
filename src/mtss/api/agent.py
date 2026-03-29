@@ -242,26 +242,12 @@ All search results are filtered to this vessel. When responding:
 
 def _serialize_retrieval_result(result: RetrievalResult) -> Dict[str, Any]:
     """Serialize RetrievalResult for state storage."""
-    return {
-        "text": result.text,
-        "score": result.score,
-        "chunk_id": result.chunk_id,
-        "doc_id": result.doc_id,
-        "source_id": result.source_id,
-        "source_title": result.source_title,
-        "section_path": result.section_path,
-        "page_number": result.page_number,
-        "line_from": result.line_from,
-        "line_to": result.line_to,
-        "archive_browse_uri": result.archive_browse_uri,
-        "archive_download_uri": result.archive_download_uri,
-        "image_uri": result.image_uri,
-    }
+    return result.to_dict()
 
 
 def _deserialize_retrieval_result(data: Dict[str, Any]) -> RetrievalResult:
     """Deserialize RetrievalResult from state storage."""
-    return RetrievalResult(**data)
+    return RetrievalResult.from_dict(data)
 
 
 # Tool definition for the LLM - now returns raw context, not answers

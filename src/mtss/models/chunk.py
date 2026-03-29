@@ -83,37 +83,6 @@ class ChunkWithContext(BaseModel):
 
 
 @dataclass
-class SourceReference:
-    """Reference to source document for a RAG response."""
-
-    file_path: str
-    document_type: str
-    email_subject: Optional[str]
-    email_initiator: Optional[str]  # Conversation starter
-    email_participants: Optional[List[str]]  # All participants
-    email_date: Optional[str]
-    chunk_content: str
-    similarity_score: float
-    heading_path: List[str]
-    root_file_path: Optional[str] = None
-    rerank_score: Optional[float] = None  # Cross-encoder relevance score
-
-
-@dataclass
-class RAGResponse:
-    """Response from RAG query with sources."""
-
-    answer: str
-    sources: List[SourceReference]
-    query: str
-
-
-# ============================================
-# Citation System Models
-# ============================================
-
-
-@dataclass
 class RetrievalResult:
     """Single retrieval result with full citation metadata."""
 
@@ -140,6 +109,37 @@ class RetrievalResult:
     root_file_path: Optional[str] = None
     file_path: Optional[str] = None
     rerank_score: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary for state storage."""
+        return {
+            "text": self.text,
+            "score": self.score,
+            "chunk_id": self.chunk_id,
+            "doc_id": self.doc_id,
+            "source_id": self.source_id,
+            "source_title": self.source_title,
+            "section_path": self.section_path,
+            "page_number": self.page_number,
+            "line_from": self.line_from,
+            "line_to": self.line_to,
+            "archive_browse_uri": self.archive_browse_uri,
+            "archive_download_uri": self.archive_download_uri,
+            "image_uri": self.image_uri,
+            "document_type": self.document_type,
+            "email_subject": self.email_subject,
+            "email_initiator": self.email_initiator,
+            "email_participants": self.email_participants,
+            "email_date": self.email_date,
+            "root_file_path": self.root_file_path,
+            "file_path": self.file_path,
+            "rerank_score": self.rerank_score,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RetrievalResult":
+        """Deserialize from dictionary."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass

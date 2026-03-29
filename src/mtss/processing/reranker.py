@@ -1,4 +1,4 @@
-﻿"""Reranker for two-stage retrieval.
+"""Reranker for two-stage retrieval.
 
 Improves RAG accuracy by 20-35% using cross-encoder models that examine
 query+document pairs together for deeper semantic understanding.
@@ -13,7 +13,7 @@ from litellm import rerank
 from ..config import get_settings
 
 if TYPE_CHECKING:
-    from ..models.chunk import SourceReference
+    from ..models.chunk import RetrievalResult
 
 
 class Reranker:
@@ -38,30 +38,30 @@ class Reranker:
     def rerank_results(
         self,
         query: str,
-        sources: List[SourceReference],
+        results: List[RetrievalResult],
         top_n: Optional[int] = None,
-    ) -> List[SourceReference]:
-        """Rerank sources by relevance to query.
+    ) -> List[RetrievalResult]:
+        """Rerank results by relevance to query.
 
         Args:
             query: User's question.
-            sources: Initial search results from vector search.
+            results: Initial search results from vector search.
             top_n: Number of results to return (default: self.top_n).
 
         Returns:
-            Reranked and filtered sources with rerank_score populated.
+            Reranked and filtered results with rerank_score populated.
         """
-        if not self.enabled or not sources:
-            return sources[: top_n or self.top_n]
+        if not self.enabled or not results:
+            return results[: top_n or self.top_n]
 
         top_n = top_n or self.top_n
 
-        # Don't rerank if we have fewer sources than requested
-        if len(sources) <= top_n:
-            return sources
+        # Don't rerank if we have fewer results than requested
+        if len(results) <= top_n:
+            return results
 
         # Extract document texts for reranking
-        documents = [s.chunk_content for s in sources]
+        documents = [r.text for r in results]
 
         # Call LiteLLM rerank
         response = rerank(
@@ -71,12 +71,11 @@ class Reranker:
             top_n=top_n,
         )
 
-        # Reorder sources by rerank scores
-        reranked_sources = []
-        for result in response.results:
-            source = sources[result.index]
-            # Store the rerank score
-            source.rerank_score = result.relevance_score
-            reranked_sources.append(source)
+        # Reorder results by rerank scores
+        reranked = []
+        for item in response.results:
+            result = results[item.index]
+            result.rerank_score = item.relevance_score
+            reranked.append(result)
 
-        return reranked_sources
+        return reranked

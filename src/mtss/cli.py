@@ -48,14 +48,14 @@ from .parsers.email_cleaner import (
     split_into_messages,
 )
 from .parsers.eml_parser import EMLParser
-from .processing.archive_generator import ArchiveGenerator, _sanitize_storage_key
+from .ingest.archive_generator import ArchiveGenerator, _sanitize_storage_key
+from .ingest.hierarchy_manager import HierarchyManager
+from .ingest.lane_classifier import LaneClassifier
+from .ingest.version_manager import VersionManager
 from .processing.embeddings import EmbeddingGenerator
-from .processing.hierarchy_manager import HierarchyManager
-from .processing.lane_classifier import LaneClassifier
-from .processing.version_manager import VersionManager
 from .processing.topics import TopicExtractor, TopicMatcher
 from .processing.vessel_matcher import VesselMatcher
-from .rag.query_engine import RAGQueryEngine, format_response_with_sources
+from .rag.query_engine import RAGQueryEngine
 from .storage.archive_storage import ArchiveStorage
 from .storage.progress_tracker import ProgressTracker
 from .storage.supabase_client import SupabaseClient
@@ -717,7 +717,7 @@ async def _process_single_email(
         if archive_result and archive_result.attachment_files:
             # Look for matching attachment in archive result by sanitized filename
             # Storage keys are sanitized (spaces→%20, brackets→parens), so match accordingly
-            from .processing.archive_generator import _sanitize_storage_key
+            from .ingest.archive_generator import _sanitize_storage_key
 
             safe_name = _sanitize_storage_key(attachment.filename)
             for file_result in archive_result.attachment_files:
@@ -1241,8 +1241,7 @@ async def _query(
                 use_rerank=use_rerank,
             )
 
-        formatted = format_response_with_sources(response)
-        console.print(formatted)
+        console.print(response.answer)
 
     finally:
         await engine.close()
@@ -2514,7 +2513,7 @@ async def _fix_missing_archives(
             # File doesn't exist - upload original from email and regenerate .md from chunks
             from pathlib import Path
 
-            from .processing.archive_generator import _sanitize_storage_key
+            from .ingest.archive_generator import _sanitize_storage_key
 
             # Find matching attachment in parsed email and upload original
             matching_att = None
