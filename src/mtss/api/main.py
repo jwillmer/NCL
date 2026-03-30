@@ -1,7 +1,7 @@
 ﻿"""FastAPI application with LangGraph Agent integration.
 
-This server exposes the LangGraph agent endpoint via AG-UI protocol with defense-in-depth
-authentication. JWT tokens are validated both at the Next.js API route and here.
+Exposes the LangGraph agent via Vercel AI SDK streaming protocol with
+defense-in-depth JWT authentication.
 
 Conversation history is persisted via LangGraph's AsyncPostgresSaver checkpointer.
 """
@@ -16,7 +16,6 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from ag_ui_langgraph import LangGraphAgent, add_langgraph_fastapi_endpoint
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -36,7 +35,7 @@ from .agent import create_graph
 from .conversations import router as conversations_router
 from .feedback import router as feedback_router
 from .middleware.auth import SupabaseJWTBearer
-from .patches import apply_agui_thread_patch
+from .streaming import router as streaming_router
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +49,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
     # Paths that don't require authentication
     PUBLIC_PATHS = {"/health", "/docs", "/redoc", "/openapi.json", "/config.js"}
 
-    # Path prefixes for static frontend files (served from web/out)
-    # Note: /conversations is both a frontend page AND an API route prefix
-    # Frontend pages: /conversations, /conversations/[id]
-    # API routes: /conversations (GET/POST), /conversations/{uuid} (GET/PATCH/DELETE)
-    # We differentiate by checking if the path looks like a static file request
-    STATIC_PREFIXES = ("/_next/", "/icons/", "/images/", "/fonts/")
+    # Path prefixes for static frontend files (served from web/dist)
+    # /assets/ is Vite's default output directory for bundled files
+    STATIC_PREFIXES = ("/assets/", "/icons/", "/images/", "/fonts/")
 
     # Static file extensions that don't require auth
     STATIC_EXTENSIONS = (".js", ".css", ".ico", ".png", ".svg", ".jpg", ".jpeg", ".woff", ".woff2", ".ttf", ".txt", ".json", ".map")
@@ -68,7 +64,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path in self.PUBLIC_PATHS:
             return await call_next(request)
 
-        # Skip auth for static frontend files (Next.js static export)
+        # Skip auth for static frontend files (Vite static build)
         # Allow root, .html files, and frontend page routes (chat, conversations)
         if path == "/" or path.endswith(".html"):
             return await call_next(request)
@@ -194,32 +190,11 @@ async def lifespan(app: FastAPI):
         # Create agent graph with checkpointer
         app.state.agent_graph = create_graph(checkpointer)
 
-        # Apply patch for ag-ui-langgraph thread continuation bug
-        # See: https://github.com/ag-ui-protocol/ag-ui/issues/2402
-        apply_agui_thread_patch()
-
-        # Add LangGraph agent endpoint via AG-UI protocol
-        add_langgraph_fastapi_endpoint(
-            app=app,
-            agent=LangGraphAgent(
-                name="default",
-                description="MTSS Email RAG Agent for document Q&A",
-                graph=app.state.agent_graph,
-            ),
-            path="/api/agent",
-        )
         logger.info("LangGraph agent endpoint registered at /api/agent")
-
-        # CORS preflight handler for /api/agent endpoint (must be registered AFTER POST)
-        # The ag-ui-langgraph library only registers POST, causing 405 on OPTIONS preflight
-        @app.options("/api/agent")
-        def agent_options():
-            """Handle CORS preflight for /api/agent (needed for cross-origin local development)."""
-            return Response(status_code=200)
 
         # Mount static frontend AFTER all API routes are registered
         # This ensures /api/* routes take priority over the catch-all static mount
-        static_dir = Path(__file__).parent.parent.parent.parent / "web" / "out"
+        static_dir = Path(__file__).parent.parent.parent.parent / "web" / "dist"
         if static_dir.exists():
             from fastapi.staticfiles import StaticFiles
 
@@ -251,8 +226,8 @@ def create_app() -> FastAPI:
     # CORS middleware - allow requests from frontend and runtime
     # In production, this should be restricted appropriately
     origins = settings.cors_origins.split(",") if settings.cors_origins else []
-    # Allow frontend (Next.js on 3000, legacy Vite on 5173)
-    for origin in ["http://localhost:3000", "http://localhost:5173"]:
+    # Allow frontend (Vite dev server on 5173)
+    for origin in ["http://localhost:5173"]:
         if origin not in origins:
             origins.append(origin)
     app.add_middleware(
@@ -286,29 +261,27 @@ def create_app() -> FastAPI:
         }
 
     # Frontend runtime configuration endpoint
-    # Serves env vars as JavaScript for static Next.js export
+    # Serves env vars as JavaScript for static Vite build
     @app.get("/config.js")
     @limiter.limit("60/minute")
     async def frontend_config(request: Request):
         """Serve frontend runtime configuration as JavaScript.
 
-        This endpoint allows runtime configuration of the static Next.js frontend
+        This endpoint allows runtime configuration of the static Vite frontend
         in Docker deployments. The frontend loads this script which sets
         window.__MTSS_CONFIG__ with the actual environment values.
 
-        Environment variables (set in Docker):
-        - NEXT_PUBLIC_SUPABASE_URL: Supabase project URL
-        - NEXT_PUBLIC_SUPABASE_ANON_KEY: Supabase anonymous key
-        - NEXT_PUBLIC_API_URL: Backend API URL (optional, defaults to same origin)
-        - NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY: Langfuse public key (optional)
-        - NEXT_PUBLIC_LANGFUSE_BASE_URL: Langfuse base URL (optional)
+        Reads VITE_* env vars first, falls back to NEXT_PUBLIC_* for backwards compatibility.
         """
+        def env(vite_key: str, next_key: str) -> str:
+            return os.environ.get(vite_key, "") or os.environ.get(next_key, "")
+
         config = {
-            "SUPABASE_URL": os.environ.get("NEXT_PUBLIC_SUPABASE_URL", ""),
-            "SUPABASE_ANON_KEY": os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY", ""),
-            "API_URL": os.environ.get("NEXT_PUBLIC_API_URL", ""),
-            "LANGFUSE_PUBLIC_KEY": os.environ.get("NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY", ""),
-            "LANGFUSE_BASE_URL": os.environ.get("NEXT_PUBLIC_LANGFUSE_BASE_URL", ""),
+            "SUPABASE_URL": env("VITE_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"),
+            "SUPABASE_ANON_KEY": env("VITE_SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+            "API_URL": env("VITE_API_URL", "NEXT_PUBLIC_API_URL"),
+            "LANGFUSE_PUBLIC_KEY": env("VITE_LANGFUSE_PUBLIC_KEY", "NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY"),
+            "LANGFUSE_BASE_URL": env("VITE_LANGFUSE_BASE_URL", "NEXT_PUBLIC_LANGFUSE_BASE_URL"),
         }
 
         # Generate JavaScript that sets window.__MTSS_CONFIG__
@@ -524,6 +497,7 @@ def create_app() -> FastAPI:
     # Include routers under /api prefix to avoid collision with frontend routes
     app.include_router(conversations_router, prefix="/api")
     app.include_router(feedback_router, prefix="/api/feedback")
+    app.include_router(streaming_router, prefix="/api")
 
     # NOTE: Static frontend is mounted in lifespan() AFTER the agent endpoint
     # is registered to ensure proper route priority

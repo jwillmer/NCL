@@ -1,6 +1,4 @@
-﻿"use client";
-
-/**
+﻿/**
  * Layout components - Header and MainLayout.
  */
 
@@ -8,8 +6,8 @@ import { ReactNode } from "react";
 import { Ship } from "lucide-react";
 import { UserMenu } from "./auth";
 
-// Git SHA injected at build time via NEXT_PUBLIC_GIT_SHA environment variable
-const gitSha = process.env.NEXT_PUBLIC_GIT_SHA || "dev";
+// Git SHA injected at build time via VITE_GIT_SHA environment variable
+const gitSha = import.meta.env.VITE_GIT_SHA || "dev";
 const gitShaShort = gitSha.length >= 8 ? gitSha.substring(0, 8) : gitSha;
 
 // =============================================================================

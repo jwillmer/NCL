@@ -1,10 +1,10 @@
 # =============================================================================
 # MTSS Dockerfile
-# Multi-stage build: Frontend (Next.js) + Backend (FastAPI) in single image
+# Multi-stage build: Frontend (Vite) + Backend (FastAPI) in single image
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: Build frontend (Next.js static export)
+# Stage 1: Build frontend (Vite static build)
 # -----------------------------------------------------------------------------
 FROM node:20-alpine AS frontend-builder
 
@@ -21,10 +21,10 @@ COPY web/ ./
 
 # Build argument for Git SHA (injected into frontend at build time)
 ARG GIT_SHA=development
-ENV NEXT_PUBLIC_GIT_SHA=${GIT_SHA}
+ENV VITE_GIT_SHA=${GIT_SHA}
 
-# Build static export
-# Note: NEXT_PUBLIC_* env vars are loaded at runtime via /config.js endpoint
+# Build static output to dist/
+# Note: VITE_* env vars are loaded at runtime via /config.js endpoint
 RUN npm run build
 
 # -----------------------------------------------------------------------------
@@ -77,7 +77,7 @@ COPY pyproject.toml ./
 ENV PYTHONPATH="/app/src:$PYTHONPATH"
 
 # Copy frontend static build
-COPY --from=frontend-builder /app/web/out ./web/out
+COPY --from=frontend-builder /app/web/dist ./web/dist
 
 # Set ownership and switch to non-root user
 RUN chown -R appuser:appuser /app

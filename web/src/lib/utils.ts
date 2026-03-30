@@ -80,6 +80,39 @@ export function groupByDate<T extends { last_message_at: string | null; created_
 }
 
 /**
+ * Extract text content from a message content field.
+ * Handles string, array of content parts, or record types.
+ */
+export function getMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("");
+  }
+  if (content && typeof content === "object") {
+    const textContent = (content as Record<string, unknown>)["text"];
+    if (typeof textContent === "string") return textContent;
+  }
+  return "";
+}
+
+/**
+ * Transform raw [C:chunk_id] citation markers to <cite> tags.
+ */
+export function transformRawCitations(content: string): string {
+  const citationPattern = /\[C:([a-f0-9]+)\]/gi;
+  let index = 1;
+  const indexMap = new Map<string, number>();
+  return content.replace(citationPattern, (_, chunkId) => {
+    const lower = chunkId.toLowerCase();
+    if (!indexMap.has(lower)) indexMap.set(lower, index++);
+    return `<cite id="${lower}">${indexMap.get(lower)}</cite>`;
+  });
+}
+
+/**
  * Truncate text to a maximum length.
  */
 export function truncate(text: string, maxLength: number): string {
@@ -87,31 +120,3 @@ export function truncate(text: string, maxLength: number): string {
   return text.slice(0, maxLength - 3) + "...";
 }
 
-/**
- * Get a human-readable label for document types.
- */
-export function getDocumentTypeLabel(type: string): string {
-  const labels: Record<string, string> = {
-    email: "Email",
-    attachment_pdf: "PDF",
-    attachment_image: "Image",
-    attachment_docx: "Word Document",
-    attachment_pptx: "PowerPoint",
-    attachment_xlsx: "Excel Spreadsheet",
-    attachment_other: "Attachment",
-  };
-  return labels[type] || type;
-}
-
-/**
- * Get confidence level description from score.
- */
-export function getConfidenceLevel(score: number): {
-  label: string;
-  color: string;
-} {
-  if (score >= 0.8) return { label: "High confidence", color: "text-green-600 bg-green-100" };
-  if (score >= 0.6) return { label: "Good match", color: "text-MTSS-blue bg-MTSS-blue/10" };
-  if (score >= 0.4) return { label: "Moderate match", color: "text-yellow-600 bg-yellow-100" };
-  return { label: "Possible match", color: "text-MTSS-gray bg-MTSS-gray-light" };
-}

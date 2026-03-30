@@ -1,12 +1,10 @@
-﻿"use client";
-
-/**
+﻿/**
  * Sources components for displaying citations in the chat UI.
  *
  * - CiteRenderer: Renders <cite> tags as interactive inline badges
  * - SourcesAccordion: Collapsible list of all sources in the current message
  * - SourceViewDialog: Full-screen dialog to view source content
- * - CitationProvider: Context to collect citations as they render
+ * - CitationProvider / MessageCitationProvider: Context to collect citations
  */
 
 import {
@@ -21,6 +19,7 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, ChevronRight, FileText, Download, ExternalLink } from "lucide-react";
@@ -43,12 +42,30 @@ import type { Citation, CiteProps } from "@/types/rag";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/conversations";
 
-/**
- * Strip leading /archive/ prefix from a URI so it can be appended to
- * `getApiBaseUrl()/archive/` without doubling the prefix.
- */
+// Allow <mark> tags through sanitizer (used for line highlighting)
+const sourceSanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames || []), "mark"],
+  attributes: { ...defaultSchema.attributes, mark: ["className", "class"] },
+};
+
+/** Strip leading /archive/ prefix to avoid doubling. */
 function stripArchivePrefix(uri: string): string {
   return uri.replace(/^\/archive\//, "");
+}
+
+/** Resolve a relative or absolute archive URL to a full API path. */
+function resolveArchiveUrl(href: string, browseUri?: string | null): string {
+  // Check if it's already an absolute archive path (starts with folder_id pattern)
+  const isAbsoluteArchivePath = /^[a-f0-9]{16}\//.test(href);
+  if (isAbsoluteArchivePath) {
+    return `${getApiBaseUrl()}/archive/${href}`;
+  }
+  // Relative path — resolve from document's directory
+  const basePath = browseUri
+    ? browseUri.replace(/^\/archive/, "").replace(/\/[^/]+$/, "")
+    : "";
+  return `${getApiBaseUrl()}/archive${basePath}/${href}`;
 }
 
 // =============================================================================
@@ -93,103 +110,27 @@ interface CitationProviderProps {
   onViewCitation: (id: string, linesToHighlight?: [number, number][]) => void;
 }
 
-export function CitationProvider({ children, onViewCitation }: CitationProviderProps) {
-  const [citations, setCitations] = useState<Map<string, CitationEntry>>(new Map());
-
-  const addCitation = useCallback((entry: CitationEntry) => {
-    setCitations((prev) => {
-      const next = new Map(prev);
-
-      // Find existing entry with same title to merge chunks
-      const existingEntry = Array.from(next.values()).find(
-        (e) => e.title === entry.title && e.title !== "Source"
-      );
-
-      if (existingEntry) {
-        // Merge chunks if not already present
-        const newChunk = entry.chunks[0];
-        if (newChunk && !existingEntry.chunks.some((c) => c.chunkId === newChunk.chunkId)) {
-          existingEntry.chunks.push(newChunk);
-        }
-        // Keep existing entry (already in map by its id)
-      } else {
-        // New document - add to map
-        next.set(entry.id, entry);
-      }
-
-      return next;
-    });
-  }, []);
-
-  const updateCitationTitle = useCallback((id: string, title: string) => {
-    setCitations((prev) => {
-      const existing = prev.get(id);
-      if (!existing) return prev;
-      const next = new Map(prev);
-      next.set(id, { ...existing, title, titleLoading: false });
-      return next;
-    });
-  }, []);
-
-  const clearCitations = useCallback(() => {
-    setCitations(new Map());
-  }, []);
-
-  return (
-    <CitationContext.Provider value={{ citations, addCitation, updateCitationTitle, clearCitations, onViewCitation }}>
-      {children}
-    </CitationContext.Provider>
-  );
-}
-
-function useCitationContext() {
-  const context = useContext(CitationContext);
-  if (!context) {
-    throw new Error("useCitationContext must be used within CitationProvider");
-  }
-  return context;
-}
-
-// Export the hook for use in custom AssistantMessage
-export { useCitationContext };
-
-// =============================================================================
-// MessageCitationProvider - Per-message citation context
-// =============================================================================
-
-interface MessageCitationProviderProps {
-  children: ReactNode;
-  onViewCitation: (id: string, linesToHighlight?: [number, number][]) => void;
-}
-
 /**
- * Per-message citation context that collects citations only for a single message.
- * Each assistant message gets its own instance, isolating citations per response.
+ * Shared citation provider implementation — used by both CitationProvider (global)
+ * and MessageCitationProvider (per-message, isolates citations per response).
  */
-export function MessageCitationProvider({ children, onViewCitation }: MessageCitationProviderProps) {
+function CitationProviderImpl({ children, onViewCitation }: CitationProviderProps) {
   const [citations, setCitations] = useState<Map<string, CitationEntry>>(new Map());
 
   const addCitation = useCallback((entry: CitationEntry) => {
     setCitations((prev) => {
       const next = new Map(prev);
-
-      // Find existing entry with same title to merge chunks
       const existingEntry = Array.from(next.values()).find(
         (e) => e.title === entry.title && e.title !== "Source"
       );
-
       if (existingEntry) {
-        // Merge chunks if not already present
         const newChunk = entry.chunks[0];
         if (newChunk && !existingEntry.chunks.some((c) => c.chunkId === newChunk.chunkId)) {
           existingEntry.chunks.push(newChunk);
         }
-        // Keep existing entry (already in map by its id)
       } else {
-        // New document - add to map
         next.set(entry.id, entry);
       }
-
       return next;
     });
   }, []);
@@ -204,15 +145,29 @@ export function MessageCitationProvider({ children, onViewCitation }: MessageCit
     });
   }, []);
 
-  const clearCitations = useCallback(() => {
-    setCitations(new Map());
-  }, []);
+  const clearCitations = useCallback(() => setCitations(new Map()), []);
 
   return (
     <CitationContext.Provider value={{ citations, addCitation, updateCitationTitle, clearCitations, onViewCitation }}>
       {children}
     </CitationContext.Provider>
   );
+}
+
+/** Global citation provider (wraps the whole chat). */
+export function CitationProvider(props: CitationProviderProps) {
+  return <CitationProviderImpl {...props} />;
+}
+
+/** Per-message citation provider (isolates citations per assistant response). */
+export function MessageCitationProvider(props: CitationProviderProps) {
+  return <CitationProviderImpl {...props} />;
+}
+
+export function useCitationContext() {
+  const context = useContext(CitationContext);
+  if (!context) throw new Error("useCitationContext must be used within CitationProvider");
+  return context;
 }
 
 // =============================================================================
@@ -699,67 +654,25 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkBreaks]}
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  rehypePlugins={[rehypeRaw as any]}
+                  rehypePlugins={[rehypeRaw as any, [rehypeSanitize, sourceSanitizeSchema]]}
                   components={{
-                    // Rewrite relative URLs to use archive API path
                     a: ({ href, children, ...props }) => {
-                      let resolvedHref = href || "";
-
-                      // Fix malformed mailto links (e.g., "foo@bar.commailto:foo@bar.com")
-                      if (resolvedHref.includes("mailto:") && !resolvedHref.startsWith("mailto:")) {
-                        const mailtoIndex = resolvedHref.indexOf("mailto:");
-                        resolvedHref = resolvedHref.slice(mailtoIndex);
+                      let resolved = href || "";
+                      // Fix malformed mailto links
+                      if (resolved.includes("mailto:") && !resolved.startsWith("mailto:")) {
+                        resolved = resolved.slice(resolved.indexOf("mailto:"));
                       }
-
-                      // Skip mailto: and absolute URLs
-                      if (!resolvedHref.startsWith("mailto:") && !resolvedHref.startsWith("http")) {
-                        // Check if href is already an absolute archive path (starts with folder_id pattern)
-                        // folder_id is 16 hex chars like "9c6aae7aa8c0b9a9"
-                        const isAbsoluteArchivePath = /^[a-f0-9]{16}\//.test(resolvedHref);
-
-                        if (isAbsoluteArchivePath) {
-                          // Already absolute from archive root - just prepend API path
-                          resolvedHref = `${getApiBaseUrl()}/archive/${resolvedHref}`;
-                        } else {
-                          // Relative path - resolve from current document's directory
-                          const basePath = citation?.archive_browse_uri
-                            ? citation.archive_browse_uri
-                                .replace(/^\/archive/, "")  // Strip leading /archive
-                                .replace(/\/[^/]+$/, "")     // Get directory path
-                            : "";
-                          resolvedHref = `${getApiBaseUrl()}/archive${basePath}/${resolvedHref}`;
-                        }
+                      if (!resolved.startsWith("mailto:") && !resolved.startsWith("http")) {
+                        resolved = resolveArchiveUrl(resolved, citation?.archive_browse_uri);
                       }
-
-                      return (
-                        <a href={resolvedHref} target="_blank" rel="noopener noreferrer" {...props}>
-                          {children}
-                        </a>
-                      );
+                      return <a href={resolved} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
                     },
-                    // Rewrite relative image URLs
                     img: ({ src, alt, ...props }) => {
-                      let resolvedSrc = src || "";
-
-                      if (!resolvedSrc.startsWith("http")) {
-                        // Check if src is already an absolute archive path (starts with folder_id pattern)
-                        const isAbsoluteArchivePath = /^[a-f0-9]{16}\//.test(resolvedSrc);
-
-                        if (isAbsoluteArchivePath) {
-                          // Already absolute from archive root - just prepend API path
-                          resolvedSrc = `${getApiBaseUrl()}/archive/${resolvedSrc}`;
-                        } else {
-                          // Relative path - resolve from current document's directory
-                          const basePath = citation?.archive_browse_uri
-                            ? citation.archive_browse_uri
-                                .replace(/^\/archive/, "")  // Strip leading /archive
-                                .replace(/\/[^/]+$/, "")     // Get directory path
-                            : "";
-                          resolvedSrc = `${getApiBaseUrl()}/archive${basePath}/${resolvedSrc}`;
-                        }
+                      let resolved = src || "";
+                      if (!resolved.startsWith("http")) {
+                        resolved = resolveArchiveUrl(resolved, citation?.archive_browse_uri);
                       }
-
-                      return <img src={resolvedSrc} alt={alt || ""} {...props} />;
+                      return <img src={resolved} alt={alt || ""} {...props} />;
                     },
                   }}
                 >

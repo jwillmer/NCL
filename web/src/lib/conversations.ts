@@ -14,10 +14,9 @@ export interface Conversation {
   thread_id: string;
   user_id: string;
   title: string | null;
-  // Filter fields (mutually exclusive - only one can be active)
-  vessel_id: string | null;  // UUID of selected vessel (null = all vessels)
-  vessel_type: string | null;  // Vessel type filter e.g. VLCC
-  vessel_class: string | null;  // Vessel class filter e.g. Canopus Class
+  vessel_id: string | null;
+  vessel_type: string | null;
+  vessel_class: string | null;
   is_archived: boolean;
   created_at: string;
   updated_at: string;
@@ -33,18 +32,16 @@ export interface ConversationListResponse {
 export interface CreateConversationParams {
   thread_id?: string;
   title?: string;
-  // Filter fields (mutually exclusive - only one should be set)
-  vessel_id?: string;  // UUID of vessel (null = all vessels)
-  vessel_type?: string;  // Vessel type filter e.g. VLCC
-  vessel_class?: string;  // Vessel class filter e.g. Canopus Class
+  vessel_id?: string;
+  vessel_type?: string;
+  vessel_class?: string;
 }
 
 export interface UpdateConversationParams {
   title?: string;
-  // Filter fields (mutually exclusive - only one should be set)
-  vessel_id?: string | null;  // UUID of vessel, or null to clear filter
-  vessel_type?: string | null;  // Vessel type, or null to clear filter
-  vessel_class?: string | null;  // Vessel class, or null to clear filter
+  vessel_id?: string | null;
+  vessel_type?: string | null;
+  vessel_class?: string | null;
   is_archived?: boolean;
 }
 
@@ -52,7 +49,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  vessel_id?: string | null;  // Vessel filter active when message was sent
+  vessel_id?: string | null;
 }
 
 export interface Vessel {
@@ -63,7 +60,7 @@ export interface Vessel {
 }
 
 // ============================================
-// API Error Handling
+// API Helpers
 // ============================================
 
 export class ConversationApiError extends Error {
@@ -77,7 +74,17 @@ export class ConversationApiError extends Error {
   }
 }
 
-async function getAuthHeaders(): Promise<HeadersInit> {
+export function getApiBaseUrl(): string {
+  const config = getConfig();
+  const baseUrl = config.API_URL || "";
+  return baseUrl.endsWith("/api") ? baseUrl : `${baseUrl}/api`;
+}
+
+/**
+ * Get auth headers from Supabase session.
+ * Exported for use by useChat transport.
+ */
+export async function getAuthHeaders(): Promise<Record<string, string>> {
   const {
     data: { session },
   } = await getSupabase().auth.getSession();
@@ -90,19 +97,26 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   };
 }
 
-export function getApiBaseUrl(): string {
-  const config = getConfig();
-  // Use configured API URL, or default to same origin (for Docker deployments)
-  // All API routes are under /api prefix to avoid collision with frontend routes
-  const baseUrl = config.API_URL || "";
-  return baseUrl.endsWith("/api") ? baseUrl : `${baseUrl}/api`;
-}
+/**
+ * Typed fetch helper — handles auth, JSON, and error wrapping.
+ */
+async function typedFetch<T>(
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<T> {
+  const headers = await getAuthHeaders();
+  const url = `${getApiBaseUrl()}${path}`;
 
-async function handleResponse<T>(response: Response): Promise<T> {
+  const response = await fetch(url, {
+    method,
+    headers,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+
   if (!response.ok) {
     let message = "An error occurred";
     let code: string | undefined;
-
     try {
       const error = await response.json();
       message = error.detail || error.message || message;
@@ -110,15 +124,10 @@ async function handleResponse<T>(response: Response): Promise<T> {
     } catch {
       message = response.statusText || message;
     }
-
     throw new ConversationApiError(message, response.status, code);
   }
 
-  // Handle 204 No Content
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
+  if (response.status === 204) return undefined as T;
   return response.json();
 }
 
@@ -126,219 +135,66 @@ async function handleResponse<T>(response: Response): Promise<T> {
 // API Functions
 // ============================================
 
-/**
- * List user's conversations with optional search and pagination.
- */
 export async function listConversations(params?: {
   q?: string;
   archived?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<ConversationListResponse> {
-  const headers = await getAuthHeaders();
   const searchParams = new URLSearchParams();
-
   if (params?.q) searchParams.set("q", params.q);
-  if (params?.archived !== undefined)
-    searchParams.set("archived", String(params.archived));
-  if (params?.limit !== undefined)
-    searchParams.set("limit", String(params.limit));
-  if (params?.offset !== undefined)
-    searchParams.set("offset", String(params.offset));
-
-  const queryString = searchParams.toString();
-  const url = `${getApiBaseUrl()}/conversations${queryString ? `?${queryString}` : ""}`;
-
-  const response = await fetch(url, { headers });
-  return handleResponse<ConversationListResponse>(response);
+  if (params?.archived !== undefined) searchParams.set("archived", String(params.archived));
+  if (params?.limit !== undefined) searchParams.set("limit", String(params.limit));
+  if (params?.offset !== undefined) searchParams.set("offset", String(params.offset));
+  const qs = searchParams.toString();
+  return typedFetch("GET", `/conversations${qs ? `?${qs}` : ""}`);
 }
 
-/**
- * Create a new conversation.
- */
-export async function createConversation(
-  params?: CreateConversationParams
-): Promise<Conversation> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(`${getApiBaseUrl()}/conversations`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(params || {}),
-  });
-
-  return handleResponse<Conversation>(response);
+export async function createConversation(params?: CreateConversationParams): Promise<Conversation> {
+  return typedFetch("POST", "/conversations", params || {});
 }
 
-/**
- * Get a conversation by thread_id.
- */
-export async function getConversation(
-  threadId: string
-): Promise<Conversation> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(
-    `${getApiBaseUrl()}/conversations/${threadId}`,
-    { headers }
-  );
-
-  return handleResponse<Conversation>(response);
+export async function getConversation(threadId: string): Promise<Conversation> {
+  return typedFetch("GET", `/conversations/${threadId}`);
 }
 
-/**
- * Update a conversation's metadata.
- */
-export async function updateConversation(
-  threadId: string,
-  params: UpdateConversationParams
-): Promise<Conversation> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(
-    `${getApiBaseUrl()}/conversations/${threadId}`,
-    {
-      method: "PATCH",
-      headers,
-      body: JSON.stringify(params),
-    }
-  );
-
-  return handleResponse<Conversation>(response);
+export async function updateConversation(threadId: string, params: UpdateConversationParams): Promise<Conversation> {
+  return typedFetch("PATCH", `/conversations/${threadId}`, params);
 }
 
-/**
- * Delete a conversation.
- */
 export async function deleteConversation(threadId: string): Promise<void> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(
-    `${getApiBaseUrl()}/conversations/${threadId}`,
-    {
-      method: "DELETE",
-      headers,
-    }
-  );
-
-  return handleResponse<void>(response);
+  return typedFetch("DELETE", `/conversations/${threadId}`);
 }
 
-/**
- * Update last_message_at timestamp (called when a new message is sent).
- */
-export async function touchConversation(
-  threadId: string
-): Promise<Conversation> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(
-    `${getApiBaseUrl()}/conversations/${threadId}/touch`,
-    {
-      method: "POST",
-      headers,
-    }
-  );
-
-  return handleResponse<Conversation>(response);
+export async function touchConversation(threadId: string): Promise<Conversation> {
+  return typedFetch("POST", `/conversations/${threadId}/touch`);
 }
 
-/**
- * Generate and set conversation title from first message content.
- * @param force - Force regeneration even if title exists
- */
-export async function generateTitle(
-  threadId: string,
-  content: string,
-  force?: boolean
-): Promise<Conversation> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(
-    `${getApiBaseUrl()}/conversations/${threadId}/generate-title`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ content, force: force ?? false }),
-    }
-  );
-
-  return handleResponse<Conversation>(response);
+export async function generateTitle(threadId: string, content: string, force?: boolean): Promise<Conversation> {
+  return typedFetch("POST", `/conversations/${threadId}/generate-title`, { content, force: force ?? false });
 }
 
-/**
- * Get all messages for a conversation from LangGraph checkpoints.
- * Used by frontend to load conversation history on page mount.
- */
 export async function getMessages(threadId: string): Promise<ChatMessage[]> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(
-    `${getApiBaseUrl()}/conversations/${threadId}/messages`,
-    { headers }
-  );
-
-  const data = await handleResponse<{ messages: ChatMessage[] }>(response);
+  const data = await typedFetch<{ messages: ChatMessage[] }>("GET", `/conversations/${threadId}/messages`);
   return data.messages;
 }
 
-/**
- * Get all vessels from the registry for dropdown selection.
- */
 export async function listVessels(): Promise<Vessel[]> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(`${getApiBaseUrl()}/vessels`, { headers });
-
-  return handleResponse<Vessel[]>(response);
+  return typedFetch("GET", "/vessels");
 }
 
-/**
- * Get distinct vessel types for filter dropdown.
- */
 export async function listVesselTypes(): Promise<string[]> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(`${getApiBaseUrl()}/vessel-types`, { headers });
-
-  return handleResponse<string[]>(response);
+  return typedFetch("GET", "/vessel-types");
 }
 
-/**
- * Get distinct vessel classes for filter dropdown.
- */
 export async function listVesselClasses(): Promise<string[]> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(`${getApiBaseUrl()}/vessel-classes`, { headers });
-
-  return handleResponse<string[]>(response);
+  return typedFetch("GET", "/vessel-classes");
 }
 
-/**
- * Submit user feedback for a chat message.
- * Feedback is stored in Langfuse linked to the conversation trace.
- *
- * @param threadId - The conversation thread ID
- * @param messageId - The message ID that received feedback
- * @param value - 1 for positive (thumbs up), 0 for negative (thumbs down)
- */
-export async function submitFeedback(
-  threadId: string,
-  messageId: string,
-  value: 0 | 1
-): Promise<void> {
-  const headers = await getAuthHeaders();
-
-  const response = await fetch(`${getApiBaseUrl()}/feedback`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      thread_id: threadId,
-      message_id: messageId,
-      value,
-    }),
+export async function submitFeedback(threadId: string, messageId: string, value: 0 | 1): Promise<void> {
+  await typedFetch<{ status: string }>("POST", "/feedback", {
+    thread_id: threadId,
+    message_id: messageId,
+    value,
   });
-
-  await handleResponse<{ status: string }>(response);
 }

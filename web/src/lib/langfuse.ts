@@ -21,7 +21,7 @@ export function initLangfuse(): void {
   const baseUrl = config.LANGFUSE_BASE_URL;
 
   if (!publicKey) {
-    console.debug("Langfuse not configured for browser (missing NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY)");
+    console.debug("Langfuse not configured for browser (missing VITE_LANGFUSE_PUBLIC_KEY)");
     return;
   }
 

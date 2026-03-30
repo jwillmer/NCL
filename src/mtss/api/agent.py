@@ -176,14 +176,14 @@ class AgentState(MessagesState):
 
 
 async def emit_state(config: RunnableConfig, state: Dict[str, Any]) -> None:
-    """Emit state to frontend via AG-UI protocol.
+    """Emit state update to frontend via LangGraph custom event.
 
-    Dispatches a custom event named 'manually_emit_state' which ag-ui-langgraph
-    converts to a STATE_SNAPSHOT event for the frontend.
+    Dispatches a custom event named 'manually_emit_state' which streaming.py
+    converts to a Vercel AI SDK data annotation for progress display.
 
     Args:
         config: LangGraph runnable config with callbacks
-        state: State dictionary to emit to frontend
+        state: State dictionary containing search_progress etc.
     """
     await adispatch_custom_event(
         name="manually_emit_state",

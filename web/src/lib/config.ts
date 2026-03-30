@@ -34,10 +34,10 @@ export function getConfig(): RuntimeConfig {
 
   // Fallback to build-time env vars (development)
   return {
-    SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-    SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
-    API_URL: process.env.NEXT_PUBLIC_API_URL || "",
-    LANGFUSE_PUBLIC_KEY: process.env.NEXT_PUBLIC_LANGFUSE_PUBLIC_KEY,
-    LANGFUSE_BASE_URL: process.env.NEXT_PUBLIC_LANGFUSE_BASE_URL,
+    SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL || "",
+    SUPABASE_ANON_KEY: import.meta.env.VITE_SUPABASE_ANON_KEY || "",
+    API_URL: import.meta.env.VITE_API_URL || "",
+    LANGFUSE_PUBLIC_KEY: import.meta.env.VITE_LANGFUSE_PUBLIC_KEY,
+    LANGFUSE_BASE_URL: import.meta.env.VITE_LANGFUSE_BASE_URL,
   };
 }

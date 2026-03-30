@@ -1,6 +1,4 @@
-﻿"use client";
-
-/**
+﻿/**
  * Authentication components - AuthProvider, LoginForm, UserMenu.
  * Consolidated into a single file for simplicity (KISS principle).
  */
