@@ -1,0 +1,627 @@
+"""Ingest and estimate CLI commands."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+)
+
+from . import _common
+from ._common import (
+    STALE_PROCESSING_THRESHOLD_MINUTES,
+    _issue_tracker,
+    _show_stats,
+    console,
+    vprint,
+)
+
+
+def register(app: typer.Typer):
+    """Register ingest and estimate commands on the app."""
+
+    @app.command()
+    def ingest(
+        source_dir: Optional[Path] = typer.Option(
+            None,
+            "--source",
+            "-s",
+            help="Directory containing EML files",
+        ),
+        batch_size: int = typer.Option(
+            10,
+            "--batch-size",
+            "-b",
+            help="Number of files to process in each batch",
+        ),
+        resume: bool = typer.Option(
+            True,
+            "--resume/--no-resume",
+            help="Resume from previous progress",
+        ),
+        retry_failed: bool = typer.Option(
+            False,
+            "--retry-failed",
+            help="Retry previously failed files",
+        ),
+        reprocess_outdated: bool = typer.Option(
+            False,
+            "--reprocess-outdated",
+            help="Reprocess files that were ingested with an older version",
+        ),
+        lenient: bool = typer.Option(
+            False,
+            "--lenient",
+            help="Continue processing on errors instead of failing (logs to ingest_events)",
+        ),
+        verbose: bool = typer.Option(
+            False,
+            "--verbose",
+            "-v",
+            help="Enable verbose output with detailed processing info",
+        ),
+    ):
+        """Ingest EML files and their attachments into the RAG system."""
+        _common._verbose = verbose
+        _common._shutdown_requested = False
+
+        # Set up signal handler for Ctrl+C
+        from ._common import _handle_interrupt
+        original_handler = signal.signal(signal.SIGINT, _handle_interrupt)
+
+        try:
+            asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed, reprocess_outdated, lenient))
+        finally:
+            # Restore original signal handler
+            signal.signal(signal.SIGINT, original_handler)
+            # Force exit to clean up any lingering async resources (e.g., httpx clients from Agents SDK)
+            os._exit(0)
+
+    @app.command()
+    def estimate(
+        source_dir: Optional[Path] = typer.Option(
+            None,
+            "--source",
+            "-s",
+            help="Directory containing EML files",
+        ),
+        page_cost: float = typer.Option(
+            0.00625,
+            "--page-cost",
+            help="LlamaParse cost per page USD (default: 5 avg credits * $0.00125/credit)",
+        ),
+        vision_cost: float = typer.Option(
+            0.01,
+            "--vision-cost",
+            help="Vision API cost per image USD",
+        ),
+        text_cost: float = typer.Option(
+            0.001,
+            "--text-cost",
+            help="LLM text processing cost per file USD",
+        ),
+        embedding_cost: float = typer.Option(
+            0.00002,
+            "--embedding-cost",
+            help="Embedding cost per chunk USD (text-embedding-3-small)",
+        ),
+        verbose: bool = typer.Option(
+            False,
+            "--verbose",
+            "-v",
+            help="Show per-file details, errors, and files with issues",
+        ),
+    ):
+        """Estimate ingest cost by extracting attachments and counting pages.
+
+        Extracts all EML attachments (including ZIP contents) into a persistent
+        folder, counts actual pages, and produces a cost breakdown.
+        Subsequent runs use cached results and are instant.
+        """
+        from ..ingest.estimator import IngestEstimator
+        from ..config import get_settings
+
+        settings = get_settings()
+        source = source_dir or settings.eml_source_dir
+
+        if not source.exists():
+            console.print(f"[red]Source directory not found: {source}[/red]")
+            raise typer.Exit(1)
+
+        with console.status("Scanning EML files and counting pages..."):
+            estimator = IngestEstimator(source_dir=source)
+            result = estimator.scan()
+
+        if result.eml_count == 0:
+            console.print("[dim]No EML files found in source directory.[/dim]")
+            raise typer.Exit(0)
+
+        _show_estimate(result, page_cost, vision_cost, text_cost, embedding_cost, verbose)
+
+
+async def _ingest(
+    source_dir: Optional[Path],
+    batch_size: int,
+    resume: bool,
+    retry_failed: bool,
+    reprocess_outdated: bool = False,
+    lenient: bool = False,
+):
+    """Async implementation of ingest command."""
+    from ..config import get_settings
+    from ..ingest.components import create_ingest_components
+    from ..ingest.lane_classifier import LaneClassifier
+    from ..ingest.pipeline import process_email
+    from ..ingest.version_manager import VersionManager
+    from ..storage.failure_report import IngestReportWriter
+    from ..storage.progress_tracker import ProgressTracker
+    from ..storage.supabase_client import SupabaseClient
+    from ..storage.unsupported_file_logger import UnsupportedFileLogger
+
+    settings = get_settings()
+    source_dir = source_dir or settings.eml_source_dir
+
+    if not source_dir.exists():
+        console.print(f"[red]Source directory not found: {source_dir}[/red]")
+        raise typer.Exit(1)
+
+    # Initialize components
+    db = SupabaseClient()
+    tracker = ProgressTracker(db)
+    unsupported_logger = UnsupportedFileLogger(db)
+    version_manager = VersionManager(db)
+
+    # Load vessel registry for matching
+    vessels = await db.get_all_vessels()
+
+    # Create shared ingest components
+    components = create_ingest_components(
+        db=db,
+        source_dir=source_dir,
+        vessels=vessels,
+        enable_topics=True,
+    )
+
+    if components.vessel_matcher:
+        vprint(f"Loaded {components.vessel_matcher.vessel_count} vessels ({components.vessel_matcher.name_count} names)")
+    else:
+        vprint("No vessels in registry - vessel tagging disabled")
+    vprint("Topic extraction enabled")
+
+    # Keep reference for lane classifier (needs eml_parser)
+    eml_parser = components.eml_parser
+
+    # Initialize continuous report writer
+    report_writer = IngestReportWriter(source_dir=str(source_dir))
+    console.print(f"[dim]Report: {report_writer.get_path()}[/dim]")
+
+    try:
+        # Get files to process
+        if reprocess_outdated:
+            files = await tracker.get_outdated_files(source_dir, settings.current_ingest_version)
+            console.print(f"[yellow]Reprocessing {len(files)} outdated files (ingest_version < {settings.current_ingest_version})[/yellow]")
+        elif retry_failed:
+            # Reset stale files stuck in "processing" state before getting failed files
+            stale_count = await tracker.reset_stale_processing(
+                max_age_minutes=STALE_PROCESSING_THRESHOLD_MINUTES
+            )
+            if stale_count:
+                console.print(f"[yellow]Reset {stale_count} stale processing files[/yellow]")
+            files = await tracker.get_failed_files()
+            console.print(f"[yellow]Retrying {len(files)} failed files[/yellow]")
+        elif resume:
+            files = await tracker.get_pending_files(source_dir)
+            console.print(f"[green]Found {len(files)} pending files[/green]")
+        else:
+            files = list(source_dir.glob("**/*.eml"))
+            console.print(f"[green]Found {len(files)} total EML files[/green]")
+
+        vprint(f"Source directory: {source_dir}")
+
+        if not files:
+            console.print("[green]No files to process![/green]")
+            return
+
+        processed_count = 0
+
+        # Reset issues list for this run
+        _issue_tracker.clear()
+
+        # Classify files into fast/slow queues
+        # Fast: no attachments or only images (no LlamaParse needed)
+        # Slow: documents requiring LlamaParse (PDFs, Office files, ZIPs)
+        lane_classifier = LaneClassifier(eml_parser)
+        fast_queue: asyncio.Queue[Path] = asyncio.Queue()
+        slow_queue: asyncio.Queue[Path] = asyncio.Queue()
+
+        for f in files:
+            lane = lane_classifier.classify(f)
+            if lane == "fast":
+                fast_queue.put_nowait(f)
+            else:
+                slow_queue.put_nowait(f)
+
+        fast_count = fast_queue.qsize()
+        slow_count = slow_queue.qsize()
+        vprint(f"Lane assignment: {fast_count} fast, {slow_count} slow")
+
+        # Split workers: 60% fast, 40% slow (minimum 1 each if both queues have items)
+        total_workers = settings.max_concurrent_files
+        if fast_count > 0 and slow_count > 0:
+            fast_worker_count = max(1, round(total_workers * 0.6))
+            slow_worker_count = max(1, total_workers - fast_worker_count)
+        elif fast_count > 0:
+            fast_worker_count = total_workers
+            slow_worker_count = 0
+        else:
+            fast_worker_count = 0
+            slow_worker_count = total_workers
+
+        vprint(f"Worker split: {fast_worker_count} fast workers, {slow_worker_count} slow workers")
+
+        # Process files with progress tracking
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}", justify="left"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            console=console,
+        ) as progress:
+            # Create worker slot tasks (one progress bar per concurrent worker)
+            worker_tasks: list[TaskID] = []
+            for i in range(settings.max_concurrent_files):
+                task_id = progress.add_task(
+                    f"[dim][{i + 1}] (idle)[/dim]", total=1, completed=0
+                )
+                worker_tasks.append(task_id)
+
+            # Slot queue for dynamic worker assignment
+            slot_queue: asyncio.Queue[int] = asyncio.Queue()
+            for i in range(settings.max_concurrent_files):
+                slot_queue.put_nowait(i)
+
+            # Total progress bar
+            total_task = progress.add_task("[bold]Total[/bold]", total=len(files))
+
+            async def process_one(file_path: Path) -> None:
+                """Process a single file, acquiring a display slot."""
+                nonlocal processed_count
+
+                if _common._shutdown_requested:
+                    return
+
+                slot_idx = await slot_queue.get()
+                worker_task = worker_tasks[slot_idx]
+
+                def _on_progress(current: int, total: int, desc: str) -> None:
+                    """Callback for progress bar updates from pipeline."""
+                    progress.update(
+                        worker_task,
+                        description=f"[{slot_idx + 1}] {desc}",
+                        total=total,
+                        completed=current,
+                    )
+
+                try:
+                    progress.update(
+                        worker_task,
+                        description=f"[{slot_idx + 1}] {file_path.name}",
+                        total=1,
+                        completed=0,
+                    )
+
+                    email_result = await process_email(
+                        eml_path=file_path,
+                        components=components,
+                        tracker=tracker,
+                        unsupported_logger=unsupported_logger,
+                        version_manager=version_manager,
+                        force_reparse=reprocess_outdated,
+                        lenient=lenient,
+                        on_verbose=vprint,
+                        issue_tracker=_issue_tracker,
+                        on_progress=_on_progress,
+                    )
+                    if not email_result.skipped:
+                        processed_count += 1
+                except Exception as e:
+                    await tracker.mark_failed(file_path, str(e))
+                    report_writer.add_eml_failure(str(file_path), str(e))
+                    console.print(f"[red]Error processing {file_path.name}: {e}[/red]")
+                finally:
+                    progress.update(total_task, advance=1)
+                    progress.update(
+                        worker_task,
+                        description=f"[dim][{slot_idx + 1}] (idle)[/dim]",
+                        total=1,
+                        completed=0,
+                    )
+                    slot_queue.put_nowait(slot_idx)
+
+            async def fast_worker() -> None:
+                """Worker for fast queue. Helps slow queue when fast is empty."""
+                while True:
+                    if _common._shutdown_requested:
+                        return
+                    try:
+                        file_path = fast_queue.get_nowait()
+                        await process_one(file_path)
+                    except asyncio.QueueEmpty:
+                        # Fast queue empty - help with slow queue
+                        try:
+                            file_path = slow_queue.get_nowait()
+                            await process_one(file_path)
+                        except asyncio.QueueEmpty:
+                            return  # Both queues empty
+
+            async def slow_worker() -> None:
+                """Worker dedicated to slow queue."""
+                while True:
+                    if _common._shutdown_requested:
+                        return
+                    try:
+                        file_path = slow_queue.get_nowait()
+                        await process_one(file_path)
+                    except asyncio.QueueEmpty:
+                        return  # Slow queue empty
+
+            # Start both worker pools in parallel
+            all_workers = (
+                [fast_worker() for _ in range(fast_worker_count)] +
+                [slow_worker() for _ in range(slow_worker_count)]
+            )
+            await asyncio.gather(*all_workers)
+
+            if _common._shutdown_requested:
+                # Mark remaining queued files as failed so they can be retried
+                remaining_files: list[Path] = []
+                while True:
+                    try:
+                        remaining_files.append(fast_queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                while True:
+                    try:
+                        remaining_files.append(slow_queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+
+                for file_path in remaining_files:
+                    await tracker.mark_failed(file_path, "interrupted_during_shutdown")
+
+                console.print(f"[yellow]Stopped after {processed_count} files ({len(remaining_files)} marked for retry)[/yellow]")
+
+        # Show final stats and issue summary
+        stats = await tracker.get_processing_stats()
+        _show_stats(stats)
+        _issue_tracker.show_summary()
+
+        # Finalize report with stats and cleanup old reports
+        report_writer.update_stats(len(files), processed_count)
+        report_writer.cleanup_old_reports()
+        console.print(f"\nReport: {report_writer.get_path()}")
+
+    finally:
+        await db.close()
+
+
+def _show_estimate(
+    result,
+    page_cost: float,
+    vision_cost: float,
+    text_cost: float,
+    embedding_cost: float,
+    verbose: bool,
+):
+    """Display estimate results as Rich tables."""
+    from rich.table import Table
+
+    from ..ingest.estimator import (
+        PAGE_COUNT_CATEGORIES,
+        TEXT_CATEGORIES,
+        VISION_CATEGORIES,
+    )
+
+    # -- Table 1: File Inventory --
+    inv_table = Table(title="Ingest File Inventory")
+    inv_table.add_column("Category", style="cyan")
+    inv_table.add_column("Files", justify="right", style="green")
+    inv_table.add_column("Pages", justify="right")
+    inv_table.add_column("Unknown", justify="right", style="yellow")
+
+    # Display order
+    display_order = [
+        "PDF", "DOCX", "PPTX", "XLSX", "DOC", "PPT", "XLS",
+        "Other Docs", "Images", "Text/Markdown", "Other",
+    ]
+
+    total_files = 0
+    total_pages = 0
+    total_unknown = 0
+
+    for cat_name in display_order:
+        stats = result.categories.get(cat_name)
+        if not stats or stats.file_count == 0:
+            continue
+
+        total_files += stats.file_count
+        has_pages = cat_name in PAGE_COUNT_CATEGORIES
+
+        if has_pages:
+            total_pages += stats.page_count
+            total_unknown += stats.pages_unknown
+            pages_str = str(stats.page_count)
+            if stats.pages_unknown > 0:
+                pct = round(100 * stats.pages_unknown / stats.file_count)
+                unknown_str = f"{stats.pages_unknown} ({pct}%)"
+            else:
+                unknown_str = "0"
+        elif cat_name in VISION_CATEGORIES and stats.images_meaningful > 0:
+            # Show meaningful/skipped split for images
+            pages_str = f"~{stats.images_meaningful} meaningful"
+            skipped = stats.images_skipped
+            unknown_str = f"{skipped} skipped" if skipped else "0"
+        else:
+            pages_str = "\u2014"
+            unknown_str = "\u2014"
+
+        inv_table.add_row(cat_name, str(stats.file_count), pages_str, unknown_str)
+
+    # Total row
+    inv_table.add_section()
+    if total_unknown > 0 and total_files > 0:
+        pct = round(100 * total_unknown / total_files)
+        total_unknown_str = f"{total_unknown} ({pct}%)"
+    else:
+        total_unknown_str = "0"
+    inv_table.add_row(
+        "[bold]TOTAL[/bold]",
+        f"[bold]{total_files}[/bold]",
+        f"[bold]{total_pages}[/bold]",
+        f"[bold]{total_unknown_str}[/bold]",
+    )
+
+    console.print(inv_table)
+    console.print()
+
+    # -- Table 2: Cost Estimate --
+    cost_table = Table(title="Estimated Ingest Cost")
+    cost_table.add_column("Service", style="cyan")
+    cost_table.add_column("Units", justify="right")
+    cost_table.add_column("Unit Cost", justify="right")
+    cost_table.add_column("Cost", justify="right", style="green")
+
+    # LlamaParse (documents)
+    llama_pages = total_pages
+    llama_total = llama_pages * page_cost
+    cost_table.add_row(
+        "LlamaParse (documents)",
+        f"{llama_pages} pages",
+        f"${page_cost:.5f}",
+        f"${llama_total:.2f}",
+    )
+
+    # Vision API (images) -- only meaningful images get described
+    image_meaningful = 0
+    image_skipped = 0
+    for cat_name in VISION_CATEGORIES:
+        stats = result.categories.get(cat_name)
+        if stats:
+            image_meaningful += stats.images_meaningful
+            image_skipped += stats.images_skipped
+    # Fall back to total file_count if heuristic data not available (old cache)
+    if image_meaningful == 0 and image_skipped == 0:
+        for cat_name in VISION_CATEGORIES:
+            stats = result.categories.get(cat_name)
+            if stats:
+                image_meaningful = stats.file_count
+    vision_total = image_meaningful * vision_cost
+    image_label = f"~{image_meaningful} images"
+    if image_skipped > 0:
+        image_label += f" ({image_skipped} skipped)"
+    cost_table.add_row(
+        "Vision API (images)",
+        image_label,
+        f"${vision_cost:.5f}",
+        f"${vision_total:.2f}",
+    )
+
+    # LLM text (text files)
+    text_count = 0
+    for cat_name in TEXT_CATEGORIES:
+        stats = result.categories.get(cat_name)
+        if stats:
+            text_count += stats.file_count
+    text_total = text_count * text_cost
+    cost_table.add_row(
+        "LLM text (text files)",
+        f"{text_count} files",
+        f"${text_cost:.5f}",
+        f"${text_total:.2f}",
+    )
+
+    # Embeddings (~1.5x pages)
+    estimated_chunks = round(total_pages * 1.5)
+    embed_total = estimated_chunks * embedding_cost
+    cost_table.add_row(
+        "Embeddings (~1.5x pages)",
+        f"~{estimated_chunks} chunks",
+        f"${embedding_cost:.5f}",
+        f"${embed_total:.2f}",
+    )
+
+    # Total row
+    grand_total = llama_total + vision_total + text_total + embed_total
+    cost_table.add_section()
+    cost_table.add_row(
+        "[bold]TOTAL ESTIMATED[/bold]",
+        "",
+        "",
+        f"[bold]${grand_total:.2f}[/bold]",
+    )
+
+    console.print(cost_table)
+
+    # -- Footnotes --
+    console.print()
+    console.print(
+        "  [dim]LlamaParse: 5 avg credits/page \u00d7 $0.00125/credit ($50 / 40k credits)[/dim]"
+    )
+    console.print(
+        "  [dim]Embeddings: ~1.5 chunks/page \u00d7 text-embedding-3-small ($0.02/M tokens)[/dim]"
+    )
+    if image_skipped > 0:
+        console.print(
+            f"  [dim]Images: {image_skipped} likely non-content (logos, icons, banners) "
+            f"excluded by size/dimension heuristic[/dim]"
+        )
+
+    if total_unknown > 0:
+        console.print(
+            f"  [dim]{total_unknown} files had unknown page counts (counted as 1 page) "
+            f"\u2014 use --verbose to see details[/dim]"
+        )
+
+    if result.scan_errors:
+        console.print(
+            f"  [yellow]{len(result.scan_errors)} EML files failed to process[/yellow]"
+        )
+
+    # -- Footer --
+    console.print()
+    console.print(
+        f"[dim]Scanned {result.eml_count} EML files "
+        f"({result.cached_count} cached, {result.extracted_count} newly extracted) "
+        f"in {result.elapsed_seconds:.1f}s[/dim]"
+    )
+
+    # -- Verbose output --
+    if verbose and (result.all_issues or result.scan_errors):
+        console.print()
+
+        if result.all_issues:
+            issue_table = Table(title="Files with Issues")
+            issue_table.add_column("File", style="cyan")
+            issue_table.add_column("Issue", style="yellow")
+            issue_table.add_column("Detail", style="dim")
+
+            for issue in result.all_issues:
+                issue_table.add_row(issue.file, issue.issue, issue.detail)
+
+            console.print(issue_table)
+
+        if result.scan_errors:
+            console.print()
+            console.print("[bold yellow]Scan Errors:[/bold yellow]")
+            for err in result.scan_errors:
+                console.print(f"  [red]\u2022 {err}[/red]")

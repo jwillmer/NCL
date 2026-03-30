@@ -32,10 +32,10 @@ class TestArchiveGenerator:
             return_value=comprehensive_mock_settings,
         ):
             with patch(
-                "mtss.processing.archive_generator.ArchiveStorage",
+                "mtss.ingest.archive_generator.ArchiveStorage",
                 return_value=mock_storage,
             ):
-                from mtss.processing.archive_generator import ArchiveGenerator
+                from mtss.ingest.archive_generator import ArchiveGenerator
 
                 generator = ArchiveGenerator(ingest_root=temp_dir)
                 generator.storage = mock_storage
@@ -250,7 +250,7 @@ class TestSanitizeStorageKey:
     @pytest.mark.unit
     def test_replaces_brackets(self):
         """Should replace square brackets with parentheses."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         result = _sanitize_storage_key("file[1].pdf")
         assert "[" not in result
@@ -260,7 +260,7 @@ class TestSanitizeStorageKey:
     @pytest.mark.unit
     def test_handles_non_ascii_characters(self):
         """Should transliterate non-ASCII to ASCII."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         # Greek characters should be transliterated
         result = _sanitize_storage_key("report_Δελτα.pdf")
@@ -269,7 +269,7 @@ class TestSanitizeStorageKey:
     @pytest.mark.unit
     def test_preserves_safe_characters(self):
         """Should preserve safe characters like hyphen, underscore."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         result = _sanitize_storage_key("file-name_v1.pdf")
         assert "-" in result
@@ -278,7 +278,7 @@ class TestSanitizeStorageKey:
     @pytest.mark.unit
     def test_replaces_leading_tilde(self):
         """Should replace leading tilde with underscore (Word temp files)."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         # ~WRD0001.jpg -> _WRD0001.jpg
         result = _sanitize_storage_key("~WRD0001.jpg")
@@ -289,7 +289,7 @@ class TestSanitizeStorageKey:
     @pytest.mark.unit
     def test_preserves_non_leading_tilde(self):
         """Should preserve tilde that's not at the start."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         result = _sanitize_storage_key("file~backup.txt")
         assert "~" in result
@@ -301,7 +301,7 @@ class TestContentFileResult:
     @pytest.mark.unit
     def test_content_file_result_fields(self):
         """Should have all required fields."""
-        from mtss.processing.archive_generator import ContentFileResult
+        from mtss.ingest.archive_generator import ContentFileResult
 
         result = ContentFileResult(
             original_path="abc123/attachments/file.pdf",
@@ -318,7 +318,7 @@ class TestContentFileResult:
     @pytest.mark.unit
     def test_content_file_result_skipped(self):
         """Should support skipped flag for markdown files."""
-        from mtss.processing.archive_generator import ContentFileResult
+        from mtss.ingest.archive_generator import ContentFileResult
 
         result = ContentFileResult(
             original_path="abc123/readme.md",
@@ -339,7 +339,7 @@ class TestArchiveResult:
     @pytest.mark.unit
     def test_archive_result_fields(self):
         """Should have all required fields."""
-        from mtss.processing.archive_generator import ArchiveResult
+        from mtss.ingest.archive_generator import ArchiveResult
 
         result = ArchiveResult(
             archive_path="abc123def456",

@@ -610,6 +610,9 @@ See [docs/ingest-flow-tests.md](docs/ingest-flow-tests.md) for detailed document
 | `tests/test_archive_generator.py` | Archive generation tests |
 | `tests/test_vessel_matcher.py` | Vessel name matching tests |
 | `tests/test_ingest_consistency.py` | Ingest/update consistency validation |
+| `tests/test_query_engine.py` | RAG query engine tests |
+| `tests/test_citation_processor.py` | Citation processing tests |
+| `tests/test_reranker.py` | Cross-encoder reranking tests |
 
 Test fixtures are located in `tests/fixtures/` including a sample email with PDF, ZIP, and PNG attachments.
 

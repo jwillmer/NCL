@@ -29,22 +29,16 @@ dependencies = [
     "anyio>=4.0.0",
     "hf-xet>=1.2.0",
     "openai-agents>=0.6.4",
+    # PDF page counting (for estimate command)
+    "pypdf>=4.0.0",
+    # Legacy Office metadata reading (for estimate command)
+    "olefile>=0.47",
     # Nested async support (required for LlamaParse in async context)
     "nest-asyncio>=1.6.0",
     "langgraph-checkpoint-postgres>=3.0.2",
     "psycopg[binary]>=3.3.2",
     "opentelemetry-exporter-otlp-proto-http>=1.39.1",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0.0",
-]
-api = [
+    # API server
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "langgraph>=0.3.25,<1.0.0",
@@ -55,7 +49,15 @@ api = [
     "slowapi>=0.1.9",
     "langfuse>=3.0.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.0.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
 ]
 
 [project.scripts]

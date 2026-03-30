@@ -31,7 +31,7 @@ class TestArchiveUriConstruction:
     @pytest.mark.unit
     def test_archive_uri_no_double_encoding(self):
         """URIs should not double-encode %20 to %2520."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         safe = _sanitize_storage_key("GE FO SER SYS.pdf")
         md_path = f"abc123def45678/attachments/{safe}.md"
@@ -42,7 +42,7 @@ class TestArchiveUriConstruction:
     @pytest.mark.unit
     def test_sanitize_storage_key_spaces(self):
         """Filenames with spaces should be encoded once."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         result = _sanitize_storage_key("MARAN ASPASIA - report.pdf")
         assert " " not in result  # spaces encoded
@@ -61,7 +61,7 @@ class TestArchiveFileResultMatching:
     @pytest.mark.unit
     def test_match_sanitized_filename_with_spaces(self):
         """archive_file_result matching must handle sanitized filenames."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         original_filename = "GE FO SER SYS.pdf"
         safe_name = _sanitize_storage_key(original_filename)
@@ -73,7 +73,7 @@ class TestArchiveFileResultMatching:
     @pytest.mark.unit
     def test_match_sanitized_filename_with_brackets(self):
         """Should match files with brackets replaced by parens."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         original_filename = "report[1].pdf"
         safe_name = _sanitize_storage_key(original_filename)
@@ -85,7 +85,7 @@ class TestArchiveFileResultMatching:
     @pytest.mark.unit
     def test_unsanitized_name_does_not_match_sanitized_path(self):
         """Original filename with spaces should NOT match sanitized path directly."""
-        from mtss.processing.archive_generator import _sanitize_storage_key
+        from mtss.ingest.archive_generator import _sanitize_storage_key
 
         original_filename = "test file.pdf"
         safe_name = _sanitize_storage_key(original_filename)
@@ -254,10 +254,10 @@ class TestHierarchyManagerUris:
         # Override archive_base_url to empty so we get /archive/ prefix paths
         comprehensive_mock_settings.archive_base_url = ""
         with patch(
-            "mtss.processing.hierarchy_manager.get_settings",
+            "mtss.ingest.hierarchy_manager.get_settings",
             return_value=comprehensive_mock_settings,
         ):
-            from mtss.processing.hierarchy_manager import HierarchyManager
+            from mtss.ingest.hierarchy_manager import HierarchyManager
 
             return HierarchyManager(mock_supabase_client)
 
@@ -267,7 +267,7 @@ class TestHierarchyManagerUris:
     ):
         """Attachment URIs must not contain %25 (double-encoded %)."""
         from mtss.models.document import DocumentType
-        from mtss.processing.archive_generator import ContentFileResult
+        from mtss.ingest.archive_generator import ContentFileResult
 
         attachment_file = temp_dir / "test_file.pdf"
         attachment_file.write_bytes(b"%PDF-1.4 mock")
@@ -308,7 +308,7 @@ class TestHierarchyManagerUris:
     ):
         """Attachment URIs should have /archive/ prefix when no base_url."""
         from mtss.models.document import DocumentType
-        from mtss.processing.archive_generator import ContentFileResult
+        from mtss.ingest.archive_generator import ContentFileResult
 
         attachment_file = temp_dir / "report.pdf"
         attachment_file.write_bytes(b"%PDF-1.4 mock")

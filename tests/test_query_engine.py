@@ -11,6 +11,7 @@ from mtss.models.chunk import (
     ValidatedCitation,
 )
 from mtss.rag.query_engine import RAGQueryEngine
+from mtss.rag.retriever import _convert_to_retrieval_results
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -361,8 +362,6 @@ async def test_generate_answer_prompt_structure(patches):
 
 async def test_convert_to_retrieval_results(patches):
     """_convert_to_retrieval_results() maps DB dicts to RetrievalResult objects."""
-    engine = RAGQueryEngine()
-
     rows = [
         _make_db_row(
             content="Image description",
@@ -378,7 +377,7 @@ async def test_convert_to_retrieval_results(patches):
         ),
     ]
 
-    results = engine._convert_to_retrieval_results(rows)
+    results = _convert_to_retrieval_results(rows)
 
     assert len(results) == 2
 

@@ -16,7 +16,7 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           INGEST COMMAND ENTRY                               │
-│                         (cli.py:118 - ingest())                             │
+│                         (cli/ingest_cmd.py:118 - ingest())                             │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
@@ -60,7 +60,7 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    _process_single_email() - cli.py:418                     │
+│                    process_email() - ingest/pipeline.py:418                     │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
@@ -210,7 +210,7 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      INGEST-UPDATE COMMAND ENTRY                            │
-│                     (cli.py:1893 - ingest_update())                         │
+│                     (cli/ingest_cmd.py:1893 - ingest_update())                         │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼

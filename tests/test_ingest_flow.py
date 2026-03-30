@@ -220,8 +220,8 @@ class TestIngestFlowIntegration:
         sample_parsed_email,
     ):
         """Test creating document hierarchy."""
-        with patch("mtss.processing.hierarchy_manager.get_settings", return_value=comprehensive_mock_settings):
-            from mtss.processing.hierarchy_manager import HierarchyManager
+        with patch("mtss.ingest.hierarchy_manager.get_settings", return_value=comprehensive_mock_settings):
+            from mtss.ingest.hierarchy_manager import HierarchyManager
 
             manager = HierarchyManager(mock_supabase_client, temp_dir)
 

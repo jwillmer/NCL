@@ -17,9 +17,10 @@ from ..models.chunk import (
 )
 from ..observability import get_langfuse_metadata
 from ..processing.embeddings import EmbeddingGenerator
-from ..processing.reranker import Reranker
 from ..storage.supabase_client import SupabaseClient
 from .citation_processor import CitationProcessor
+from .reranker import Reranker
+from .retriever import Retriever
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +42,10 @@ class RAGQueryEngine:
     def __init__(self):
         """Initialize the RAG query engine."""
         settings = get_settings()
-        self.db = SupabaseClient()
-        self.embeddings = EmbeddingGenerator()
-        self.reranker = Reranker()
+        db = SupabaseClient()
+        embeddings = EmbeddingGenerator()
+        reranker = Reranker()
+        self.retriever = Retriever(db=db, embeddings=embeddings, reranker=reranker)
         self.citation_processor = CitationProcessor()
         self.llm_model = settings.get_model(settings.rag_llm_model)
         self.chunk_display_max_chars = settings.chunk_display_max_chars
@@ -70,33 +72,20 @@ class RAGQueryEngine:
         Returns:
             EnhancedRAGResponse with answer and validated citations.
         """
-        if on_progress:
-            await on_progress("Searching documents")
-
-        query_embedding = await self.embeddings.generate_embedding(question)
-
-        results = await self.db.search_similar_chunks(
-            query_embedding=query_embedding,
-            match_threshold=similarity_threshold,
-            match_count=top_k,
+        retrieval_results = await self.retriever.retrieve(
+            query=question,
+            top_k=top_k,
+            similarity_threshold=similarity_threshold,
+            rerank_top_n=rerank_top_n,
+            use_rerank=use_rerank,
+            on_progress=on_progress,
         )
 
-        if not results:
+        if not retrieval_results:
             return EnhancedRAGResponse(
                 answer="I couldn't find any relevant information to answer your question.",
                 citations=[],
                 query=question,
-            )
-
-        retrieval_results = self._convert_to_retrieval_results(results)
-
-        # Stage 2: Rerank if enabled (skip if too few results)
-        effective_top_n = rerank_top_n or self.reranker.top_n
-        if use_rerank and self.reranker.enabled and len(retrieval_results) > effective_top_n:
-            if on_progress:
-                await on_progress("Reranking results...")
-            retrieval_results = self.reranker.rerank_results(
-                query=question, results=retrieval_results, top_n=rerank_top_n
             )
 
         if on_progress:
@@ -124,28 +113,19 @@ class RAGQueryEngine:
         Returns:
             EnhancedRAGResponse with validated citations and archive links.
         """
-        query_embedding = await self.embeddings.generate_embedding(question)
-
-        results = await self.db.search_similar_chunks(
-            query_embedding=query_embedding,
-            match_threshold=similarity_threshold,
-            match_count=top_k,
+        retrieval_results = await self.retriever.retrieve(
+            query=question,
+            top_k=top_k,
+            similarity_threshold=similarity_threshold,
+            rerank_top_n=rerank_top_n,
+            use_rerank=use_rerank,
         )
 
-        if not results:
+        if not retrieval_results:
             return EnhancedRAGResponse(
                 answer="I couldn't find any relevant information to answer your question.",
                 citations=[],
                 query=question,
-            )
-
-        retrieval_results = self._convert_to_retrieval_results(results)
-
-        # Stage 2: Rerank if enabled (skip if too few results)
-        effective_top_n = rerank_top_n or self.reranker.top_n
-        if use_rerank and self.reranker.enabled and len(retrieval_results) > effective_top_n:
-            retrieval_results = self.reranker.rerank_results(
-                query=question, results=retrieval_results, top_n=rerank_top_n
             )
 
         return await self._generate_with_citations(question, retrieval_results)
@@ -207,50 +187,6 @@ class RAGQueryEngine:
             had_invalid_citations=len(validation.invalid_citations) > 0,
             retry_count=retry_count,
         )
-
-    def _convert_to_retrieval_results(
-        self, results: List[Dict[str, Any]]
-    ) -> List[RetrievalResult]:
-        """Convert database results to RetrievalResult objects."""
-        retrieval_results = []
-
-        for result in results:
-            # For image attachments, use archive_download_uri as the displayable image
-            image_uri = None
-            doc_type = result.get("document_type")
-            if doc_type == "attachment_image" and result.get("archive_download_uri"):
-                image_uri = result.get("archive_download_uri")
-
-            retrieval_results.append(
-                RetrievalResult(
-                    text=result["content"],
-                    score=result["similarity"],
-                    chunk_id=result.get("chunk_id", ""),
-                    doc_id=result.get("doc_id", ""),
-                    source_id=result.get("source_id", ""),
-                    source_title=result.get("source_title"),
-                    section_path=result.get("section_path") or [],
-                    page_number=result.get("page_number"),
-                    line_from=result.get("line_from"),
-                    line_to=result.get("line_to"),
-                    archive_browse_uri=result.get("archive_browse_uri"),
-                    archive_download_uri=result.get("archive_download_uri"),
-                    image_uri=image_uri,
-                    document_type=result.get("document_type"),
-                    email_subject=result.get("email_subject"),
-                    email_initiator=result.get("email_initiator"),
-                    email_participants=result.get("email_participants"),
-                    email_date=(
-                        result["email_date"].isoformat()
-                        if result.get("email_date")
-                        else None
-                    ),
-                    root_file_path=result.get("root_file_path"),
-                    file_path=result.get("file_path"),
-                )
-            )
-
-        return retrieval_results
 
     async def _generate_answer_with_citations(
         self, question: str, context: str
@@ -339,11 +275,6 @@ Please provide a comprehensive answer based on the above context. Remember to ci
         Returns:
             List of retrieval results with citation metadata.
         """
-        if on_progress:
-            await on_progress("Searching documents")
-
-        query_embedding = await self.embeddings.generate_embedding(question)
-
         if metadata_filter is None:
             if vessel_id:
                 metadata_filter = {"vessel_ids": [vessel_id]}
@@ -352,28 +283,16 @@ Please provide a comprehensive answer based on the above context. Remember to ci
             elif vessel_class:
                 metadata_filter = {"vessel_classes": [vessel_class]}
 
-        results = await self.db.search_similar_chunks(
-            query_embedding=query_embedding,
-            match_threshold=similarity_threshold,
-            match_count=top_k,
+        return await self.retriever.retrieve(
+            query=question,
+            top_k=top_k,
+            similarity_threshold=similarity_threshold,
+            rerank_top_n=rerank_top_n,
+            use_rerank=use_rerank,
             metadata_filter=metadata_filter,
+            on_progress=on_progress,
         )
-
-        if not results:
-            return []
-
-        retrieval_results = self._convert_to_retrieval_results(results)
-
-        effective_top_n = rerank_top_n or self.reranker.top_n
-        if use_rerank and self.reranker.enabled and len(retrieval_results) > effective_top_n:
-            if on_progress:
-                await on_progress("Reranking results...")
-            retrieval_results = self.reranker.rerank_results(
-                query=question, results=retrieval_results, top_n=rerank_top_n
-            )
-
-        return retrieval_results
 
     async def close(self):
         """Close database connections."""
-        await self.db.close()
+        await self.retriever.db.close()

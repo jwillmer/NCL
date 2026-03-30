@@ -225,7 +225,7 @@ class TestSupabaseClient:
             "doc_id": "doc123",
         }
 
-        result = supabase_client._row_to_document(row)
+        result = supabase_client._docs._row_to_document(row)
 
         assert result.file_name == "file.eml"
         assert result.depth == 0
@@ -243,7 +243,7 @@ class TestSupabaseClient:
             "metadata": {"key": "value"},
         }
 
-        result = supabase_client._row_to_chunk(row)
+        result = supabase_client._docs._row_to_chunk(row)
 
         assert result.content == "Test content"
         assert result.chunk_index == 0

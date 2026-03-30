@@ -20,25 +20,57 @@ MTSS is a Retrieval-Augmented Generation (RAG) system designed specifically for 
 ## Project Structure
 
 ```
-src/MTSS/
-├── __init__.py
-├── cli.py                    # Typer CLI commands
-├── config.py                 # Pydantic settings
+src/mtss/
+├── __init__.py, config.py, version.py, utils.py
+├── cli/                         # Thin CLI command modules
+│   ├── __init__.py              # App setup, sub-app registration
+│   ├── _common.py               # Console, verbose helpers, shared formatting
+│   ├── ingest_cmd.py            # ingest + estimate commands
+│   ├── maintenance_cmd.py       # ingest-update, reprocess, reindex
+│   ├── query_cmd.py             # query + search commands
+│   ├── admin_cmd.py             # stats, failures, reset-stale, clean
+│   └── entities_cmd.py          # vessels + topics commands
 ├── models/
-│   ├── document.py           # Document, EmailMetadata, ParsedEmail
-│   └── chunk.py              # Chunk, SourceReference, RAGResponse
+│   ├── document.py              # Document, EmailMetadata, ParsedEmail
+│   ├── chunk.py                 # Chunk, RetrievalResult, EnhancedRAGResponse
+│   ├── topic.py, vessel.py
 ├── parsers/
-│   ├── eml_parser.py         # EML parsing with conversation support
-│   └── attachment_processor.py # Docling + ZIP extraction
-├── processing/
-│   ├── hierarchy_manager.py  # Document tree management
-│   ├── embeddings.py         # OpenAI embeddings via LiteLLM
-│   └── reranker.py           # Two-stage retrieval reranking
-├── storage/
-│   ├── supabase_client.py    # Database operations + vector search
-│   └── progress_tracker.py   # Resumable processing state
-└── rag/
-    └── query_engine.py       # RAG query + answer generation
+│   ├── eml_parser.py            # EML parsing with conversation support
+│   ├── attachment_processor.py  # LlamaParse + ZIP extraction
+│   ├── chunker.py               # Document chunking + context generation
+│   └── ...
+├── ingest/                      # All ingest business logic
+│   ├── components.py            # Component factory
+│   ├── pipeline.py              # Single-email processing
+│   ├── attachment_handler.py    # Attachment + ZIP processing
+│   ├── repair.py                # Ingest-update/fix logic
+│   ├── archive_generator.py     # Browsable archive generation
+│   ├── hierarchy_manager.py     # Document tree management
+│   ├── version_manager.py       # Ingest versioning/dedup
+│   ├── lane_classifier.py       # Fast/slow lane classification
+│   ├── estimator.py, helpers.py
+├── processing/                  # Shared processing infrastructure
+│   ├── embeddings.py            # OpenAI embeddings via LiteLLM
+│   ├── topics.py                # Topic extraction + matching
+│   ├── vessel_matcher.py        # Vessel name matching
+│   └── image_processor.py       # Image processing
+├── rag/                         # Retrieval pipeline
+│   ├── retriever.py             # Embed + search + rerank
+│   ├── query_engine.py          # LLM generation + citation validation
+│   ├── citation_processor.py    # Citation processing
+│   ├── reranker.py              # Cross-encoder reranking
+│   └── topic_filter.py          # Topic pre-filtering
+├── storage/                     # Infrastructure
+│   ├── supabase_client.py       # Facade over repositories
+│   ├── repositories/            # Focused DB access
+│   │   ├── base.py, documents.py, search.py, domain.py
+│   ├── archive_storage.py
+│   ├── progress_tracker.py, failure_report.py
+│   └── unsupported_file_logger.py
+├── api/                         # Web layer
+│   ├── agent.py                 # LangGraph agent
+│   └── ...
+└── observability/
 ```
 
 ## Core Components
@@ -77,7 +109,7 @@ Parses email files using Python's `email` library with `policy.default`.
 
 ### 3. Attachment Processor (`parsers/attachment_processor.py`)
 
-Processes attachments using Docling for document understanding.
+Processes attachments using LlamaParse for document understanding.
 
 **Supported Formats:**
 | Format | MIME Type | Features |
@@ -102,7 +134,7 @@ Processes attachments using Docling for document understanding.
 - Preserves heading hierarchy
 - Merges undersized peer chunks
 
-### 4. Hierarchy Manager (`processing/hierarchy_manager.py`)
+### 4. Hierarchy Manager (`ingest/hierarchy_manager.py`)
 
 Manages parent-child relationships between documents.
 
@@ -134,7 +166,7 @@ Generates vector embeddings using OpenAI's API via LiteLLM.
 - Async operation for performance
 - Cost estimation (~$0.001 per email)
 
-### 6. Reranker (`processing/reranker.py`)
+### 6. Reranker (`rag/reranker.py`)
 
 Implements two-stage retrieval for improved accuracy.
 

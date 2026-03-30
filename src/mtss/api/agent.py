@@ -37,7 +37,6 @@ from langgraph.types import Command
 from ..config import get_settings
 from ..models.chunk import RetrievalResult
 from ..models.vessel import Vessel
-from ..processing.embeddings import EmbeddingGenerator
 from ..processing.topics import TopicExtractor, TopicMatcher
 from ..rag.citation_processor import CitationProcessor
 from ..rag.query_engine import RAGQueryEngine

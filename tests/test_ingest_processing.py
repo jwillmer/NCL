@@ -287,8 +287,8 @@ class TestHierarchyManager:
     @pytest.fixture
     def hierarchy_manager(self, comprehensive_mock_settings, mock_supabase_client):
         """Create a HierarchyManager with mocked dependencies."""
-        with patch("mtss.processing.hierarchy_manager.get_settings", return_value=comprehensive_mock_settings):
-            from mtss.processing.hierarchy_manager import HierarchyManager
+        with patch("mtss.ingest.hierarchy_manager.get_settings", return_value=comprehensive_mock_settings):
+            from mtss.ingest.hierarchy_manager import HierarchyManager
             return HierarchyManager(mock_supabase_client, Path("./data/emails"))
 
     def test_compute_file_hash(self, hierarchy_manager, temp_dir):
@@ -332,7 +332,7 @@ class TestHierarchyManager:
         self, hierarchy_manager, temp_dir, sample_document, mock_supabase_client
     ):
         """Attachment document creation should work."""
-        with patch("mtss.processing.hierarchy_manager.get_settings") as mock_settings_call:
+        with patch("mtss.ingest.hierarchy_manager.get_settings") as mock_settings_call:
             mock_settings_call.return_value = MagicMock(
                 eml_source_dir=Path("./data/emails"),
                 archive_base_url="https://archive.example.com",

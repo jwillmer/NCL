@@ -18,7 +18,7 @@ This document provides detailed flowcharts for the `ingest-update` command, whic
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                       INGEST-UPDATE COMMAND ENTRY                           │
-│                       (cli.py:1907 - ingest_update())                       │
+│                       (ingest/repair.py:1907 - ingest_update())                       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
@@ -27,14 +27,14 @@ This document provides detailed flowcharts for the `ingest-update` command, whic
 │                                                                             │
 │ ┌─────────────────────────────────────────────────────────────────────────┐ │
 │ │ 1a. Find orphaned documents                                             │ │
-│ │     _find_orphaned_documents() - cli.py:2084                            │ │
+│ │     _find_orphaned_documents() - ingest/repair.py:2084                            │ │
 │ │     Compare DB source_ids against existing .eml files                   │ │
 │ └─────────────────────────────────────────────────────────────────────────┘ │
 │                                     │                                       │
 │                                     ▼                                       │
 │ ┌─────────────────────────────────────────────────────────────────────────┐ │
 │ │ 1b. Scan for document issues                                            │ │
-│ │     _scan_ingest_issues() - cli.py:2114                                 │ │
+│ │     _scan_ingest_issues() - ingest/repair.py:2114                                 │ │
 │ │     Check each document for: archive, lines, context                    │ │
 │ └─────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -64,7 +64,7 @@ This document provides detailed flowcharts for the `ingest-update` command, whic
 │                                     ▼                                       │
 │ ┌─────────────────────────────────────────────────────────────────────────┐ │
 │ │ 3b. Fix document issues (for each IssueRecord)                          │ │
-│ │     _fix_document_issues() - cli.py:2258                                │ │
+│ │     _fix_document_issues() - ingest/repair.py:2258                                │ │
 │ │     Executes fixes in dependency order                                  │ │
 │ └─────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -79,7 +79,7 @@ The scan phase checks each document for four types of issues.
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    ISSUE DETECTION - _scan_ingest_issues()                  │
-│                              (cli.py:2114)                                  │
+│                              (ingest/repair.py:2114)                                  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                       For each .eml file in source_dir
@@ -160,7 +160,7 @@ Orphan detection runs before issue scanning to identify documents that should be
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                  ORPHAN DETECTION - _find_orphaned_documents()              │
-│                              (cli.py:2084)                                  │
+│                              (ingest/repair.py:2084)                                  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
@@ -209,7 +209,7 @@ Fixes execute in a specific order due to dependencies between issue types.
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    FIX PIPELINE - _fix_document_issues()                    │
-│                              (cli.py:2258)                                  │
+│                              (ingest/repair.py:2258)                                  │
 │                                                                             │
 │  CRITICAL: Fixes must run in this order due to dependencies                 │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -217,7 +217,7 @@ Fixes execute in a specific order due to dependencies between issue types.
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 1: FIX ARCHIVES (must run first)                                       │
-│         _fix_missing_archives() - cli.py:2296                               │
+│         _fix_missing_archives() - ingest/repair.py:2296                               │
 │                                                                             │
 │ WHY FIRST: Chunks depend on archive .md content for re-chunking             │
 │                                                                             │
@@ -237,7 +237,7 @@ Fixes execute in a specific order due to dependencies between issue types.
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 2: FIX LINE NUMBERS (must run second)                                  │
-│         _fix_missing_lines() - cli.py:2436                                  │
+│         _fix_missing_lines() - ingest/repair.py:2436                                  │
 │                                                                             │
 │ WHY SECOND: Context generation needs proper chunk structure                 │
 │                                                                             │
@@ -260,7 +260,7 @@ Fixes execute in a specific order due to dependencies between issue types.
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 3: FIX CONTEXT (runs last)                                             │
-│         _fix_missing_context() - cli.py:2528                                │
+│         _fix_missing_context() - ingest/repair.py:2528                                │
 │                                                                             │
 │ WHY LAST: Needs proper chunks with correct structure                        │
 │                                                                             │

@@ -456,7 +456,6 @@ class IngestEstimator:
         4. Regex: count /Type /Page objects in the raw/decoded data
         """
         from pypdf import PdfReader
-        from pypdf.errors import PdfReadError
 
         raw = path.read_bytes()
         pdf_data = raw

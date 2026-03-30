@@ -4,7 +4,6 @@ Tests validate and repair operations for ingested data.
 All tests run without external dependencies using mocks.
 """
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -12,15 +11,7 @@ from uuid import uuid4
 import pytest
 
 
-@dataclass
-class IssueRecord:
-    """Mock IssueRecord matching the CLI definition."""
-
-    eml_path: Path
-    doc: "MagicMock"
-    child_docs: list
-    issues: list
-    cached_chunks: dict = field(default_factory=dict)
+from mtss.ingest.repair import IssueRecord
 
 
 class TestFindOrphanedDocuments:
@@ -43,10 +34,9 @@ class TestFindOrphanedDocuments:
             }
         )
 
-        with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
-            from mtss.cli import _find_orphaned_documents
+        from mtss.ingest.repair import find_orphaned_documents
 
-            orphans = await _find_orphaned_documents(temp_dir, mock_supabase_client)
+        orphans = await find_orphaned_documents(temp_dir, mock_supabase_client)
 
         assert len(orphans) == 0
 
@@ -67,10 +57,9 @@ class TestFindOrphanedDocuments:
             }
         )
 
-        with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
-            from mtss.cli import _find_orphaned_documents
+        from mtss.ingest.repair import find_orphaned_documents
 
-            orphans = await _find_orphaned_documents(temp_dir, mock_supabase_client)
+        orphans = await find_orphaned_documents(temp_dir, mock_supabase_client)
 
         assert len(orphans) == 1
         assert orphans[0] == orphan_id
@@ -88,10 +77,9 @@ class TestFindOrphanedDocuments:
             }
         )
 
-        with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
-            from mtss.cli import _find_orphaned_documents
+        from mtss.ingest.repair import find_orphaned_documents
 
-            orphans = await _find_orphaned_documents(temp_dir, mock_supabase_client)
+        orphans = await find_orphaned_documents(temp_dir, mock_supabase_client)
 
         assert len(orphans) == 3
         assert set(orphans) == set(orphan_ids)
@@ -104,10 +92,9 @@ class TestFindOrphanedDocuments:
             return_value={"some_email.eml": orphan_id}
         )
 
-        with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
-            from mtss.cli import _find_orphaned_documents
+        from mtss.ingest.repair import find_orphaned_documents
 
-            orphans = await _find_orphaned_documents(temp_dir, mock_supabase_client)
+        orphans = await find_orphaned_documents(temp_dir, mock_supabase_client)
 
         assert len(orphans) == 1
         assert orphans[0] == orphan_id
@@ -118,10 +105,9 @@ class TestFindOrphanedDocuments:
         (temp_dir / "email1.eml").write_text("content")
         mock_supabase_client.get_all_root_source_ids = AsyncMock(return_value={})
 
-        with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
-            from mtss.cli import _find_orphaned_documents
+        from mtss.ingest.repair import find_orphaned_documents
 
-            orphans = await _find_orphaned_documents(temp_dir, mock_supabase_client)
+        orphans = await find_orphaned_documents(temp_dir, mock_supabase_client)
 
         assert len(orphans) == 0
 
@@ -158,15 +144,14 @@ class TestScanIngestIssues:
             return_value=[sample_chunk]
         )
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"archives", "chunks", "context"},
-                limit=0,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"archives", "chunks", "context"},
+            limit=0,
+        )
 
         assert len(issues) == 0
 
@@ -190,15 +175,14 @@ class TestScanIngestIssues:
             return_value=[sample_chunk]
         )
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"archives"},
-                limit=0,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"archives"},
+            limit=0,
+        )
 
         assert len(issues) == 1
         assert "missing_archive" in issues[0].issues
@@ -230,15 +214,14 @@ class TestScanIngestIssues:
             return_value=[sample_chunk]
         )
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"archives"},
-                limit=0,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"archives"},
+            limit=0,
+        )
 
         assert len(issues) == 1
         assert "missing_child_archive" in issues[0].issues
@@ -259,15 +242,14 @@ class TestScanIngestIssues:
             return_value=sample_chunks_missing_lines
         )
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"chunks"},
-                limit=0,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"chunks"},
+            limit=0,
+        )
 
         assert len(issues) == 1
         assert "missing_lines" in issues[0].issues
@@ -288,15 +270,14 @@ class TestScanIngestIssues:
             return_value=sample_chunks_missing_context
         )
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"context"},
-                limit=0,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"context"},
+            limit=0,
+        )
 
         assert len(issues) == 1
         assert "missing_context" in issues[0].issues
@@ -308,15 +289,14 @@ class TestScanIngestIssues:
 
         mock_components.db.get_document_by_source_id = AsyncMock(return_value=None)
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"archives", "chunks", "context"},
-                limit=0,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"archives", "chunks", "context"},
+            limit=0,
+        )
 
         assert len(issues) == 0
 
@@ -337,15 +317,14 @@ class TestScanIngestIssues:
         mock_components.db.get_document_children = AsyncMock(return_value=[])
         mock_components.db.get_chunks_by_document = AsyncMock(return_value=[])
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"archives"},
-                limit=5,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"archives"},
+            limit=5,
+        )
 
         assert len(issues) == 5
 
@@ -368,15 +347,14 @@ class TestScanIngestIssues:
         )
         mock_components.db.get_chunks_by_document = AsyncMock(return_value=[])
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"archives"},  # archives check skips images
-                limit=0,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"archives"},  # archives check skips images
+            limit=0,
+        )
 
         # No issues because images are skipped for archive check
         assert len(issues) == 0
@@ -400,15 +378,14 @@ class TestScanIngestIssues:
             return_value=[sample_chunk]
         )
 
-        with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-            from mtss.cli import _scan_ingest_issues
+        from mtss.ingest.repair import scan_ingest_issues
 
-            issues = await _scan_ingest_issues(
-                temp_dir,
-                mock_components,
-                checks={"archives", "chunks"},
-                limit=0,
-            )
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"archives", "chunks"},
+            limit=0,
+        )
 
         assert len(issues) == 1
         # Chunks should be cached for reuse in fix phase
@@ -451,10 +428,9 @@ class TestFixMissingArchives:
 
         parsed_email = MagicMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_archives
+        from mtss.ingest.repair import fix_missing_archives
 
-            await _fix_missing_archives(record, mock_fix_components, parsed_email)
+        await fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should update DB without regenerating
         mock_fix_components.db.update_document_archive_uris.assert_called_once()
@@ -488,10 +464,9 @@ class TestFixMissingArchives:
 
         parsed_email = MagicMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_archives
+        from mtss.ingest.repair import fix_missing_archives
 
-            await _fix_missing_archives(record, mock_fix_components, parsed_email)
+        await fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should regenerate and update DB
         mock_fix_components.archive_generator.generate_archive.assert_called_once()
@@ -517,10 +492,9 @@ class TestFixMissingArchives:
 
         parsed_email = MagicMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_archives
+        from mtss.ingest.repair import fix_missing_archives
 
-            await _fix_missing_archives(record, mock_fix_components, parsed_email)
+        await fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should update root document
         call_args = mock_fix_components.db.update_document_archive_uris.call_args
@@ -547,10 +521,9 @@ class TestFixMissingArchives:
 
         parsed_email = MagicMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_archives
+        from mtss.ingest.repair import fix_missing_archives
 
-            await _fix_missing_archives(record, mock_fix_components, parsed_email)
+        await fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should update child document
         mock_fix_components.db.update_document_archive_uris.assert_called_once()
@@ -576,10 +549,9 @@ class TestFixMissingArchives:
 
         parsed_email = MagicMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_archives
+        from mtss.ingest.repair import fix_missing_archives
 
-            await _fix_missing_archives(record, mock_fix_components, parsed_email)
+        await fix_missing_archives(record, mock_fix_components, parsed_email)
 
         # Should not update image document
         mock_fix_components.db.update_document_archive_uris.assert_not_called()
@@ -641,12 +613,10 @@ class TestFixMissingLines:
         mock_fix_components.chunker.chunk_text = MagicMock(return_value=new_chunks)
         mock_fix_components.db.replace_chunks_atomic = AsyncMock(return_value=1)
 
-        with patch("mtss.cli.vprint"), patch(
-            "mtss.cli.enrich_chunks_with_document_metadata"
-        ):
-            from mtss.cli import _fix_missing_lines
+        with patch("mtss.ingest.repair.enrich_chunks_with_document_metadata"):
+            from mtss.ingest.repair import fix_missing_lines
 
-            count = await _fix_missing_lines(record, mock_fix_components)
+            count = await fix_missing_lines(record, mock_fix_components)
 
         assert count == 1
         mock_fix_components.archive_storage.download_file.assert_called_once()
@@ -687,12 +657,10 @@ class TestFixMissingLines:
         mock_fix_components.chunker.chunk_text = MagicMock(return_value=new_chunks)
         mock_fix_components.db.replace_chunks_atomic = AsyncMock(return_value=1)
 
-        with patch("mtss.cli.vprint"), patch(
-            "mtss.cli.enrich_chunks_with_document_metadata"
-        ):
-            from mtss.cli import _fix_missing_lines
+        with patch("mtss.ingest.repair.enrich_chunks_with_document_metadata"):
+            from mtss.ingest.repair import fix_missing_lines
 
-            await _fix_missing_lines(record, mock_fix_components)
+            await fix_missing_lines(record, mock_fix_components)
 
         # Should NOT call get_chunks_by_document since chunks are cached
         mock_fix_components.db.get_chunks_by_document.assert_not_called()
@@ -732,12 +700,10 @@ class TestFixMissingLines:
         mock_fix_components.chunker.chunk_text = MagicMock(return_value=new_chunks)
         mock_fix_components.db.replace_chunks_atomic = AsyncMock(return_value=1)
 
-        with patch("mtss.cli.vprint"), patch(
-            "mtss.cli.enrich_chunks_with_document_metadata"
-        ):
-            from mtss.cli import _fix_missing_lines
+        with patch("mtss.ingest.repair.enrich_chunks_with_document_metadata"):
+            from mtss.ingest.repair import fix_missing_lines
 
-            await _fix_missing_lines(record, mock_fix_components)
+            await fix_missing_lines(record, mock_fix_components)
 
         mock_fix_components.embeddings.embed_chunks.assert_called_once()
 
@@ -776,12 +742,10 @@ class TestFixMissingLines:
         mock_fix_components.chunker.chunk_text = MagicMock(return_value=new_chunks)
         mock_fix_components.db.replace_chunks_atomic = AsyncMock(return_value=1)
 
-        with patch("mtss.cli.vprint"), patch(
-            "mtss.cli.enrich_chunks_with_document_metadata"
-        ):
-            from mtss.cli import _fix_missing_lines
+        with patch("mtss.ingest.repair.enrich_chunks_with_document_metadata"):
+            from mtss.ingest.repair import fix_missing_lines
 
-            await _fix_missing_lines(record, mock_fix_components)
+            await fix_missing_lines(record, mock_fix_components)
 
         mock_fix_components.db.replace_chunks_atomic.assert_called_once()
         call_args = mock_fix_components.db.replace_chunks_atomic.call_args
@@ -805,10 +769,9 @@ class TestFixMissingLines:
         # Root doc has valid chunks
         mock_fix_components.db.get_chunks_by_document = AsyncMock(return_value=[])
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_lines
+        from mtss.ingest.repair import fix_missing_lines
 
-            count = await _fix_missing_lines(record, mock_fix_components)
+        count = await fix_missing_lines(record, mock_fix_components)
 
         assert count == 0
 
@@ -827,14 +790,15 @@ class TestFixMissingLines:
             cached_chunks={sample_document.id: sample_chunks_missing_lines},
         )
 
-        with patch("mtss.cli.vprint") as mock_vprint:
-            from mtss.cli import _fix_missing_lines
+        mock_verbose = MagicMock()
 
-            count = await _fix_missing_lines(record, mock_fix_components)
+        from mtss.ingest.repair import fix_missing_lines
+
+        count = await fix_missing_lines(record, mock_fix_components, on_verbose=mock_verbose)
 
         assert count == 0
         # Should log a skip message
-        mock_vprint.assert_called()
+        mock_verbose.assert_called()
 
 
 class TestFixMissingContext:
@@ -881,10 +845,9 @@ class TestFixMissingContext:
         )
         mock_fix_components.db.update_chunk_context = AsyncMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_context
+        from mtss.ingest.repair import fix_missing_context
 
-            count = await _fix_missing_context(record, mock_fix_components)
+        count = await fix_missing_context(record, mock_fix_components)
 
         assert count == len(sample_chunks_missing_context)
         mock_fix_components.context_generator.generate_context.assert_called_once()
@@ -914,10 +877,9 @@ class TestFixMissingContext:
         )
         mock_fix_components.db.update_chunk_context = AsyncMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_context
+        from mtss.ingest.repair import fix_missing_context
 
-            count = await _fix_missing_context(record, mock_fix_components)
+        count = await fix_missing_context(record, mock_fix_components)
 
         # Should still generate context using chunk content fallback
         assert count == len(sample_chunks_missing_context)
@@ -947,10 +909,9 @@ class TestFixMissingContext:
         )
         mock_fix_components.db.update_chunk_context = AsyncMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_context
+        from mtss.ingest.repair import fix_missing_context
 
-            await _fix_missing_context(record, mock_fix_components)
+        await fix_missing_context(record, mock_fix_components)
 
         # build_embedding_text should be called for each chunk
         assert mock_fix_components.context_generator.build_embedding_text.call_count == len(
@@ -981,10 +942,9 @@ class TestFixMissingContext:
         )
         mock_fix_components.db.update_chunk_context = AsyncMock()
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_context
+        from mtss.ingest.repair import fix_missing_context
 
-            await _fix_missing_context(record, mock_fix_components)
+        await fix_missing_context(record, mock_fix_components)
 
         mock_fix_components.embeddings.embed_chunks.assert_called_once()
 
@@ -1005,10 +965,9 @@ class TestFixMissingContext:
 
         mock_fix_components.db.get_chunks_by_document = AsyncMock(return_value=[])
 
-        with patch("mtss.cli.vprint"):
-            from mtss.cli import _fix_missing_context
+        from mtss.ingest.repair import fix_missing_context
 
-            count = await _fix_missing_context(record, mock_fix_components)
+        count = await fix_missing_context(record, mock_fix_components)
 
         assert count == 0
 
@@ -1064,12 +1023,12 @@ class TestFixDocumentIssues:
             call_order.append("context")
             return 1
 
-        with patch("mtss.cli._fix_missing_archives", side_effect=mock_fix_archives):
-            with patch("mtss.cli._fix_missing_lines", side_effect=mock_fix_lines):
-                with patch("mtss.cli._fix_missing_context", side_effect=mock_fix_context):
-                    from mtss.cli import _fix_document_issues
+        with patch("mtss.ingest.repair.fix_missing_archives", side_effect=mock_fix_archives):
+            with patch("mtss.ingest.repair.fix_missing_lines", side_effect=mock_fix_lines):
+                with patch("mtss.ingest.repair.fix_missing_context", side_effect=mock_fix_context):
+                    from mtss.ingest.repair import fix_document_issues
 
-                    await _fix_document_issues(
+                    await fix_document_issues(
                         record,
                         mock_fix_components,
                         checks={"archives", "chunks", "context"},
@@ -1099,10 +1058,10 @@ class TestFixDocumentIssues:
             return_value=mock_parsed_email
         )
 
-        with patch("mtss.cli._fix_missing_archives", new_callable=AsyncMock):
-            from mtss.cli import _fix_document_issues
+        with patch("mtss.ingest.repair.fix_missing_archives", new_callable=AsyncMock):
+            from mtss.ingest.repair import fix_document_issues
 
-            await _fix_document_issues(
+            await fix_document_issues(
                 record,
                 mock_fix_components,
                 checks={"archives"},
@@ -1127,18 +1086,18 @@ class TestFixDocumentIssues:
         )
 
         with patch(
-            "mtss.cli._fix_missing_archives", new_callable=AsyncMock
+            "mtss.ingest.repair.fix_missing_archives", new_callable=AsyncMock
         ) as mock_archives:
             with patch(
-                "mtss.cli._fix_missing_lines", new_callable=AsyncMock
+                "mtss.ingest.repair.fix_missing_lines", new_callable=AsyncMock
             ) as mock_lines:
                 with patch(
-                    "mtss.cli._fix_missing_context", new_callable=AsyncMock
+                    "mtss.ingest.repair.fix_missing_context", new_callable=AsyncMock
                 ) as mock_context:
-                    from mtss.cli import _fix_document_issues
+                    from mtss.ingest.repair import fix_document_issues
 
                     # Only fix archives
-                    await _fix_document_issues(
+                    await fix_document_issues(
                         record,
                         mock_fix_components,
                         checks={"archives"},
@@ -1167,14 +1126,14 @@ class TestDryRunMode:
         mock_components = MagicMock()
         mock_components.db = mock_supabase_client
 
-        with patch("mtss.cli.get_settings", return_value=comprehensive_mock_settings):
-            with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
+        with patch("mtss.config.get_settings", return_value=comprehensive_mock_settings):
+            with patch("mtss.storage.supabase_client.SupabaseClient", return_value=mock_supabase_client):
                 with patch(
                     "mtss.ingest.components.create_ingest_components",
                     return_value=mock_components,
                 ):
-                    with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-                        from mtss.cli import _ingest_update
+                    with patch("mtss.cli.maintenance_cmd.console"), patch("mtss.cli.maintenance_cmd.Progress"):
+                        from mtss.cli.maintenance_cmd import _ingest_update
 
                         await _ingest_update(
                             source_dir=temp_dir,
@@ -1202,14 +1161,14 @@ class TestDryRunMode:
         mock_components = MagicMock()
         mock_components.db = mock_supabase_client
 
-        with patch("mtss.cli.get_settings", return_value=comprehensive_mock_settings):
-            with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
+        with patch("mtss.config.get_settings", return_value=comprehensive_mock_settings):
+            with patch("mtss.storage.supabase_client.SupabaseClient", return_value=mock_supabase_client):
                 with patch(
                     "mtss.ingest.components.create_ingest_components",
                     return_value=mock_components,
                 ):
-                    with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-                        from mtss.cli import _ingest_update
+                    with patch("mtss.cli.maintenance_cmd.console"), patch("mtss.cli.maintenance_cmd.Progress"):
+                        from mtss.cli.maintenance_cmd import _ingest_update
 
                         await _ingest_update(
                             source_dir=temp_dir,
@@ -1247,18 +1206,18 @@ class TestDryRunMode:
         mock_components.archive_storage = MagicMock()
         mock_components.archive_storage.file_exists = MagicMock(return_value=True)
 
-        with patch("mtss.cli.get_settings", return_value=comprehensive_mock_settings):
-            with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
+        with patch("mtss.config.get_settings", return_value=comprehensive_mock_settings):
+            with patch("mtss.storage.supabase_client.SupabaseClient", return_value=mock_supabase_client):
                 with patch(
                     "mtss.ingest.components.create_ingest_components",
                     return_value=mock_components,
                 ):
-                    with patch("mtss.cli.console"), patch("mtss.cli.Progress"), patch(
-                        "mtss.cli._fix_document_issues", new_callable=AsyncMock
+                    with patch("mtss.cli.maintenance_cmd.console"), patch("mtss.cli.maintenance_cmd.Progress"), patch(
+                        "mtss.ingest.repair.fix_document_issues", new_callable=AsyncMock
                     ) as mock_fix:
                         mock_fix.return_value = 0
 
-                        from mtss.cli import _ingest_update
+                        from mtss.cli.maintenance_cmd import _ingest_update
 
                         await _ingest_update(
                             source_dir=temp_dir,
@@ -1290,10 +1249,9 @@ class TestSecurityAndEdgeCases:
             }
         )
 
-        with patch("mtss.cli.SupabaseClient", return_value=mock_supabase_client):
-            from mtss.cli import _find_orphaned_documents
+        from mtss.ingest.repair import find_orphaned_documents
 
-            orphans = await _find_orphaned_documents(temp_dir, mock_supabase_client)
+        orphans = await find_orphaned_documents(temp_dir, mock_supabase_client)
 
         # The malicious path should be flagged as orphan (doesn't exist as file)
         assert malicious_id in orphans
@@ -1304,13 +1262,13 @@ class TestSecurityAndEdgeCases:
     ):
         """Graceful error on DB unavailable."""
         # Mock SupabaseClient to raise on instantiation
-        with patch("mtss.cli.get_settings", return_value=comprehensive_mock_settings):
+        with patch("mtss.config.get_settings", return_value=comprehensive_mock_settings):
             with patch(
-                "mtss.cli.SupabaseClient",
+                "mtss.storage.supabase_client.SupabaseClient",
                 side_effect=Exception("DB connection failed"),
             ):
-                with patch("mtss.cli.console"):
-                    from mtss.cli import _ingest_update
+                with patch("mtss.cli.maintenance_cmd.console"):
+                    from mtss.cli.maintenance_cmd import _ingest_update
 
                     with pytest.raises(Exception, match="DB connection failed"):
                         await _ingest_update(
@@ -1345,11 +1303,11 @@ class TestSecurityAndEdgeCases:
             side_effect=Exception("Failed to parse EML")
         )
 
-        from mtss.cli import _fix_document_issues
+        from mtss.ingest.repair import fix_document_issues
 
         # The fix function propagates parse errors
         with pytest.raises(Exception, match="Failed to parse EML"):
-            await _fix_document_issues(
+            await fix_document_issues(
                 record,
                 mock_components,
                 checks={"archives"},
@@ -1385,32 +1343,30 @@ class TestSecurityAndEdgeCases:
         mock_supabase_client.get_document_children = AsyncMock(return_value=[])
         mock_supabase_client.get_chunks_by_document = AsyncMock(return_value=[])
 
-        with patch("mtss.cli.get_settings", return_value=comprehensive_mock_settings):
-            with patch(
-                "mtss.ingest.components.create_ingest_components"
-            ) as mock_create:
-                mock_components = MagicMock()
-                mock_components.db = mock_supabase_client
-                mock_components.db.close = AsyncMock()
-                mock_create.return_value.__aenter__ = AsyncMock(
-                    return_value=mock_components
+        with patch(
+            "mtss.ingest.components.create_ingest_components"
+        ) as mock_create:
+            mock_components = MagicMock()
+            mock_components.db = mock_supabase_client
+            mock_components.db.close = AsyncMock()
+            mock_create.return_value.__aenter__ = AsyncMock(
+                return_value=mock_components
+            )
+            mock_create.return_value.__aexit__ = AsyncMock()
+
+            from mtss.ingest.repair import scan_ingest_issues
+
+            # Scan should continue after first document fails
+            # Note: the actual scan catches exceptions internally
+            try:
+                await scan_ingest_issues(
+                    temp_dir,
+                    mock_components,
+                    checks={"archives"},
+                    limit=0,
                 )
-                mock_create.return_value.__aexit__ = AsyncMock()
-
-                with patch("mtss.cli.console"), patch("mtss.cli.Progress"):
-                    from mtss.cli import _scan_ingest_issues
-
-                    # Scan should continue after first document fails
-                    # Note: the actual scan catches exceptions internally
-                    try:
-                        await _scan_ingest_issues(
-                            temp_dir,
-                            mock_components,
-                            checks={"archives"},
-                            limit=0,
-                        )
-                    except Exception:
-                        pass  # Expected to fail on email1
+            except Exception:
+                pass  # Expected to fail on email1
 
         # Should have attempted both documents
         assert call_count[0] >= 1
