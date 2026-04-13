@@ -110,6 +110,48 @@ cp data/emails/100040671_drxriffw.1u2.eml data/test-subset/  # Third-party opera
 ls data/test-subset/ | wc -l   # Should show 14 (15th is in tests/fixtures/)
 ```
 
+## Phase 2.5: Parser Validation Against Real Attachments (~10 min)
+
+Validates the new local parsers against real EML attachments before running the full ingest.
+See `parser-validation-results.md` for the initial validation results from 2026-04-13.
+
+### Step 2.5.1: Run parser validation script
+```bash
+uv run python scripts/validate_parsers.py
+```
+
+### Step 2.5.2: Verify parser results
+
+**PDF classifier** — must correctly distinguish simple (text-extractable) vs complex (scanned/images):
+- [ ] Simple text PDFs classified as SIMPLE
+- [ ] Scanned/image PDFs classified as COMPLEX
+- [ ] No crashes on corrupt or empty PDFs
+
+**LocalPDFParser (PyMuPDF4LLM)** — must extract usable markdown from simple PDFs:
+- [ ] Output is non-empty for simple PDFs
+- [ ] Output contains readable text (not garbage/binary)
+- [ ] No Windows charmap codec errors (U+FFFD handling)
+
+**LocalDocxParser (python-docx)** — must extract text and tables:
+- [ ] Paragraphs extracted
+- [ ] Tables extracted as pipe-delimited rows
+- [ ] Image-only DOCX files raise ValueError (expected, not a failure)
+
+**LocalXlsxParser (openpyxl)** — must extract sheet data:
+- [ ] Multiple sheets extracted with headers
+- [ ] Numeric and text cells rendered correctly
+- [ ] Legacy .xls files NOT parsed (expected — these route to LlamaParse)
+
+**Image filter** — must correctly identify content vs non-content images:
+- [ ] Small files (<15KB) filtered as non-meaningful
+- [ ] Logos/banners/signatures filtered by filename pattern
+- [ ] Large content images (equipment photos) pass through
+- [ ] Check: `image\d{3}` pattern does not filter large meaningful images (known edge case — 243KB image002.png was falsely filtered in initial validation)
+
+### Known issues from initial validation (2026-04-13):
+1. **PyMuPDF4LLM U+FFFD:** Some PDFs produce replacement characters that cause Windows `charmap` codec errors. Workaround: ensure all downstream file I/O uses UTF-8 encoding.
+2. **image\d{3} pattern:** The `image\d{3}` filename pattern in `src/mtss/image_filter.py` is too aggressive — it filters Outlook inline images like `image002.png` even when they're large meaningful content photos. Consider adding a size override (e.g., skip filename filter if file > 100KB).
+
 ## Phase 3: Dry Run — Estimate (~2 min)
 
 ### Step 3.1: Run estimate on subset
