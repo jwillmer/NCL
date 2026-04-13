@@ -21,6 +21,7 @@ Architecture:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -409,15 +410,20 @@ async def search_node(
         if skip_filter:
             # User requested broad search - skip topic filtering entirely
             filter_result = TopicFilterResult()
+            query_embedding = None
         else:
-            # Topic pre-filtering for early return
+            # Run topic analysis and query embedding concurrently
             await on_progress("Analyzing query")
             topic_filter = TopicFilter(
                 topic_extractor=TopicExtractor(),
                 topic_matcher=TopicMatcher(engine.db, engine.embeddings),
                 db=engine.db,
             )
-            filter_result = await topic_filter.analyze_query(question, vessel_filter)
+            filter_task = topic_filter.analyze_query(question, vessel_filter)
+            embed_task = engine.retriever.embed_query(question)
+            filter_result, query_embedding = await asyncio.gather(
+                filter_task, embed_task
+            )
 
         # EARLY RETURN: Skip RAG if no results possible
         if filter_result.should_skip_rag:
@@ -455,13 +461,14 @@ async def search_node(
             if vessel_filter:
                 metadata_filter.update(vessel_filter)
 
-        # Get raw search results (no LLM generation)
+        # Get raw search results (pass pre-computed embedding when available)
         retrieval_results = await engine.search_only(
             question=question,
-            top_k=settings.rerank_top_n if settings.rerank_enabled else 10,
+            top_k=settings.retrieval_top_k,
             use_rerank=settings.rerank_enabled,
             metadata_filter=metadata_filter,
             on_progress=on_progress,
+            query_embedding=query_embedding,
         )
 
         if not retrieval_results:
@@ -497,6 +504,9 @@ async def search_node(
             k: _serialize_retrieval_result(v) for k, v in citation_map.items()
         }
 
+        # Surface total candidate count for completeness transparency
+        candidate_count = filter_result.total_chunk_count or len(retrieval_results)
+
         # Return context to agent (agent will generate answer with citations)
         tool_response = ToolMessage(
             content=json.dumps({
@@ -504,6 +514,12 @@ async def search_node(
                 "available_chunk_ids": list(citation_map.keys()),
                 "incident_count": len(retrieval_results),
                 "unique_incidents": len(incident_groups),
+                "total_candidate_count": candidate_count,
+                "note": (
+                    f"Showing top {len(retrieval_results)} results out of "
+                    f"{candidate_count} candidates. If the answer seems incomplete, "
+                    f"the user can ask for a broader search."
+                ) if candidate_count > len(retrieval_results) else None,
             }),
             tool_call_id=tool_call["id"],
         )

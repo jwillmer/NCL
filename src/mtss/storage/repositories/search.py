@@ -33,14 +33,19 @@ class SearchRepository(BaseRepository):
         async with pool.acquire() as conn:
             # Convert metadata_filter to JSONB format for PostgreSQL
             filter_json = json.dumps(metadata_filter) if metadata_filter else None
-            rows = await conn.fetch(
-                """
-                SELECT * FROM match_chunks($1, $2, $3, $4::jsonb)
-                """,
-                query_embedding,
-                match_threshold,
-                match_count,
-                filter_json,
-            )
+            # Use explicit transaction so SET LOCAL applies to the query
+            async with conn.transaction():
+                # Increase HNSW search quality for this query
+                # Default ef_search=40; 100 improves recall by ~5-10% with ~10-20ms cost
+                await conn.execute("SET LOCAL hnsw.ef_search = 100")
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM match_chunks($1, $2, $3, $4::jsonb)
+                    """,
+                    query_embedding,
+                    match_threshold,
+                    match_count,
+                    filter_json,
+                )
 
         return [dict(row) for row in rows]

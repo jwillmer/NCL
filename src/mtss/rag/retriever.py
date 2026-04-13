@@ -39,8 +39,9 @@ class Retriever:
         use_rerank: bool = True,
         metadata_filter: dict | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        query_embedding: list[float] | None = None,
     ) -> list[RetrievalResult]:
-        """Embed query, vector search, convert rows, rerank, return results.
+        """Embed query (if needed), vector search, convert rows, rerank.
 
         Args:
             query: Search query text.
@@ -50,6 +51,7 @@ class Retriever:
             use_rerank: Whether to apply cross-encoder reranking.
             metadata_filter: Optional filter dict passed to the vector search.
             on_progress: Optional async callback for progress updates.
+            query_embedding: Pre-computed embedding to skip the embed step.
 
         Returns:
             List of retrieval results, reranked if enabled.
@@ -57,7 +59,8 @@ class Retriever:
         if on_progress:
             await on_progress("Searching documents")
 
-        query_embedding = await self.embeddings.generate_embedding(query)
+        if query_embedding is None:
+            query_embedding = await self.embeddings.generate_embedding(query)
 
         results = await self.db.search_similar_chunks(
             query_embedding=query_embedding,
@@ -81,6 +84,10 @@ class Retriever:
             )
 
         return retrieval_results
+
+    async def embed_query(self, query: str) -> list[float]:
+        """Generate query embedding for concurrent use with other async work."""
+        return await self.embeddings.generate_embedding(query)
 
 
 def _convert_to_retrieval_results(

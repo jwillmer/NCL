@@ -34,6 +34,7 @@ class Reranker:
         self.enabled = settings.rerank_enabled
         self.model = settings.rerank_model
         self.top_n = settings.rerank_top_n
+        self.score_floor = settings.rerank_score_floor
 
     def rerank_results(
         self,
@@ -60,8 +61,16 @@ class Reranker:
         if len(results) <= top_n:
             return results
 
-        # Extract document texts for reranking
-        documents = [r.text for r in results]
+        # Build enriched documents for reranking (subject + title provide context)
+        documents = []
+        for r in results:
+            prefix_parts = []
+            if r.email_subject:
+                prefix_parts.append(r.email_subject)
+            if r.source_title and r.source_title != r.email_subject:
+                prefix_parts.append(r.source_title)
+            prefix = " | ".join(prefix_parts)
+            documents.append(f"{prefix}\n{r.text}" if prefix else r.text)
 
         # Call LiteLLM rerank
         response = rerank(
@@ -78,4 +87,6 @@ class Reranker:
             result.rerank_score = item.relevance_score
             reranked.append(result)
 
-        return reranked
+        # Filter out results below score floor (but keep at least 1 result)
+        filtered = [r for r in reranked if r.rerank_score >= self.score_floor]
+        return filtered if filtered else reranked[:1]

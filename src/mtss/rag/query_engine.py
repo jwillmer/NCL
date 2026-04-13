@@ -213,7 +213,7 @@ Please provide a comprehensive answer based on the above context. Remember to ci
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_tokens=1000,
+            max_tokens=2000,
             metadata=get_langfuse_metadata(),
         )
 
@@ -257,6 +257,7 @@ Please provide a comprehensive answer based on the above context. Remember to ci
         vessel_class: Optional[str] = None,
         metadata_filter: Optional[Dict[str, Any]] = None,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
+        query_embedding: Optional[List[float]] = None,
     ) -> List[RetrievalResult]:
         """Search for relevant chunks without generating an answer.
 
@@ -271,6 +272,7 @@ Please provide a comprehensive answer based on the above context. Remember to ci
             vessel_class: Optional vessel class to filter results by.
             metadata_filter: Optional pre-built metadata filter.
             on_progress: Optional async callback for progress updates.
+            query_embedding: Optional pre-computed query embedding.
 
         Returns:
             List of retrieval results with citation metadata.
@@ -291,6 +293,7 @@ Please provide a comprehensive answer based on the above context. Remember to ci
             use_rerank=use_rerank,
             metadata_filter=metadata_filter,
             on_progress=on_progress,
+            query_embedding=query_embedding,
         )
 
     async def close(self):

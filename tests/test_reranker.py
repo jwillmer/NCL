@@ -97,6 +97,7 @@ def mock_settings():
     settings.rerank_enabled = True
     settings.rerank_model = "cohere/rerank-english-v3.0"
     settings.rerank_top_n = 3
+    settings.rerank_score_floor = 0.2
     settings.cohere_api_key = "test-api-key"
     return settings
 
@@ -264,7 +265,7 @@ class TestRerankerRerankResults:
     def test_rerank_results_extracts_text(
         self, mock_settings, sample_results, mock_rerank_response
     ):
-        """Test that reranker extracts text for documents."""
+        """Test that reranker extracts enriched text for documents."""
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
             with patch(
                 "mtss.rag.reranker.rerank", return_value=mock_rerank_response
@@ -275,14 +276,57 @@ class TestRerankerRerankResults:
                     results=sample_results,
                 )
 
-                # Verify rerank was called with correct documents
+                # Verify rerank was called with enriched documents
                 call_kwargs = mock_rerank_fn.call_args.kwargs
                 assert call_kwargs["query"] == "What is the project budget?"
                 assert len(call_kwargs["documents"]) == 5
-                assert (
-                    call_kwargs["documents"][0]
-                    == "The project deadline has been moved to next Friday."
+                # First result: email_subject="Project Update", source_title="Project Update" (same, no dup)
+                assert call_kwargs["documents"][0].startswith("Project Update\n")
+                assert "The project deadline has been moved to next Friday." in call_kwargs["documents"][0]
+                # Third result: email_subject="Project Update", source_title="Budget Report" (different)
+                assert "Project Update | Budget Report" in call_kwargs["documents"][2]
+
+
+    def test_rerank_score_floor(self, mock_settings, sample_results):
+        """Test that low-scoring results are filtered out."""
+        mock_response = MagicMock()
+        # All results score below 0.2 except one
+        results_data = [
+            MagicMock(index=0, relevance_score=0.05),
+            MagicMock(index=1, relevance_score=0.45),
+            MagicMock(index=2, relevance_score=0.10),
+        ]
+        mock_response.results = results_data
+
+        with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
+            with patch("mtss.rag.reranker.rerank", return_value=mock_response):
+                reranker = Reranker()
+                results = reranker.rerank_results(
+                    query="test", results=sample_results,
                 )
+                # Only result with score >= 0.2 should remain
+                assert len(results) == 1
+                assert results[0].rerank_score == 0.45
+
+    def test_rerank_score_floor_all_below_keeps_one(self, mock_settings, sample_results):
+        """Test that at least one result is kept even when all scores are below floor."""
+        mock_response = MagicMock()
+        results_data = [
+            MagicMock(index=0, relevance_score=0.05),
+            MagicMock(index=1, relevance_score=0.10),
+            MagicMock(index=2, relevance_score=0.15),
+        ]
+        mock_response.results = results_data
+
+        with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
+            with patch("mtss.rag.reranker.rerank", return_value=mock_response):
+                reranker = Reranker()
+                results = reranker.rerank_results(
+                    query="test", results=sample_results,
+                )
+                # All below floor, but at least 1 should remain (the first/highest)
+                assert len(results) == 1
+                assert results[0].rerank_score == 0.05
 
 
 class TestRerankerIntegration:

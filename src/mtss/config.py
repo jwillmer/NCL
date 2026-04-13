@@ -144,8 +144,12 @@ class Settings(BaseSettings):
     rerank_model: str = Field(
         default="cohere/rerank-english-v3.0", validation_alias="RERANK_MODEL"
     )
-    rerank_top_n: int = Field(default=5, validation_alias="RERANK_TOP_N")
+    rerank_top_n: int = Field(default=8, validation_alias="RERANK_TOP_N")
+    rerank_score_floor: float = Field(default=0.2, validation_alias="RERANK_SCORE_FLOOR")
     cohere_api_key: str | None = Field(default=None, validation_alias="COHERE_API_KEY")
+
+    # Retrieval Configuration
+    retrieval_top_k: int = Field(default=40, validation_alias="RETRIEVAL_TOP_K")
 
     # LlamaParse Configuration (for legacy formats like .doc, .xls, .ppt)
     llama_cloud_api_key: str | None = Field(
