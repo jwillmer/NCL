@@ -245,7 +245,7 @@ Replacing LlamaParse API calls (5-30s per document) with local parsers (< 0.1s p
 
 ## Retrieval Quality Quick Wins (from 06b review)
 
-> **Implementation:** See [implementation-plan.md](../implementation-plan.md) for code-level details.
+> **Implementation:** See [02-implementation.md](../02-implementation.md) for code-level details.
 > See [06b-review-findings.md](06b-review-findings.md) for edge case analysis (e.g., ZIP attachment handling for RQ-1).
 
 These affect embedding text and **must be implemented before the first ingest run**. Changing them later requires re-embedding all chunks (costly). All three have zero additional LLM/API cost.
@@ -370,7 +370,7 @@ The pipeline cost drops from **$230.56 to $133.15 (Phase 1)** with minimal effor
 
 ## Search/Retrieval Fixes
 
-See [00-critical-fixes-plan.md](../00-critical-fixes-plan.md) for the authoritative implementation plan covering:
+See [01-critical-fixes.md](../01-critical-fixes.md) for the authoritative implementation plan covering:
 - SR-0/Fix 0.1: Reranker bug fix (P0 CRITICAL)
 - SR-1/Fix 1.1: Enriched rerank context
 - SR-2/Fix 1.2: max_tokens increase

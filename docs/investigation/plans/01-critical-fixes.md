@@ -1,13 +1,13 @@
 ---
 purpose: Fix critical search/retrieval bugs and quick wins BEFORE any ingest work
-priority: 0 (execute first)
+priority: 1 (execute first)
 source: 07a search optimization, 07b scenario analysis (completeness transparency)
 status: ready for implementation
 date: 2026-04-13
 estimated_time: ~3-4 hours total
 ---
 
-# Plan 00: Critical Fixes & Search Quick Wins
+# Plan 01: Critical Fixes & Search Quick Wins
 
 **Execute BEFORE all other plans.**
 
@@ -40,7 +40,7 @@ estimated_time: ~3-4 hours total
 - D-12: Completeness transparency (Fix 2.5) pulled from 07b scenario analysis
 - This plan modifies `config.py` (adds `retrieval_top_k`, `rerank_score_floor`); the implementation plan also modifies `config.py` (different fields) -- changes are additive and non-conflicting
 
-**What NOT to do:** Do not change chunk size, embedding dimensions, or any ingest pipeline code. Those belong to `implementation-plan.md`.
+**What NOT to do:** Do not change chunk size, embedding dimensions, or any ingest pipeline code. Those belong to `02-implementation.md`.
 
 ---
 
@@ -63,7 +63,7 @@ These must be fixed before any ingest work because:
 - Database access for HNSW tuning verification (Phase 2)
 
 > **Note:** This plan modifies `src/mtss/config.py` (adds `retrieval_top_k` and `rerank_score_floor`).
-> `implementation-plan.md` also modifies `config.py` (changes `chunk_size_tokens`, `chunk_overlap_tokens`,
+> `02-implementation.md` also modifies `config.py` (changes `chunk_size_tokens`, `chunk_overlap_tokens`,
 > `embedding_dimensions`, `max_concurrent_files`). The changes are additive and do not conflict.
 
 ---

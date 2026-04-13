@@ -4,11 +4,11 @@ status: approved
 date: 2026-04-13
 scope: config changes, image pre-filtering, tiered parsing, local storage backend, CLI wiring, speed optimizations
 depends_on:
-  - 02-local-storage-design.md
-  - 06a-optimization-cost-reduction.md
-  - 06c-optimization-processing-speed.md
+  - 01-critical-fixes.md (must be done first)
+  - 02-local-storage-design.md (investigation)
+  - 06a-optimization-cost-reduction.md (investigation)
+  - 06c-optimization-processing-speed.md (investigation)
   - reference/local-storage-sqlite-vs-files.md
-  - local-only-ingest-plan.md
   - reference/optimization-plan.md
 decisions:
   - "D-08: chunk_size_tokens 512 -> 1024, overlap 50 -> 100"
@@ -42,7 +42,7 @@ decisions:
 **What this plan accomplishes:** Builds a local-only ingest mode that writes to JSONL files instead of Supabase, while also cutting ingest cost from $230 to ~$6 through local parsers, image pre-filtering, and config optimizations. The result is a pipeline that can run without any cloud database dependency.
 
 **Prerequisites / what came before:**
-- `00-critical-fixes-plan.md` must be executed FIRST (fixes production search bugs)
+- `01-critical-fixes.md` must be executed FIRST (fixes production search bugs)
 - Investigation documents 01-07 analyzed cost, storage, parsers, speed, and search quality
 - Key decisions (D-01 through D-12) are tracked in `decisions-and-progress.md`
 
@@ -54,7 +54,7 @@ decisions:
 - D-09: Embedding dimensions 1536 to 512 (must be set before first ingest)
 - D-07: Quality wins P6/P1-A/P8-A must be in place before first ingest (affect embedding text)
 
-**What NOT to do:** Do not modify search/retrieval code (that belongs to Plan 00). Do not run a full ingest until the test subset validation (`09-test-validation-execution.md`) passes.
+**What NOT to do:** Do not modify search/retrieval code (that belongs to Plan 00). Do not run a full ingest until the test subset validation (`03-test-validation.md`) passes.
 
 ---
 
@@ -81,7 +81,7 @@ This plan merges two workstreams into a single implementation order:
 Config-only changes that affect ALL subsequent work. Do these first so every test
 run, embedding, and chunk produced from this point forward uses the final settings.
 
-> **Note:** `src/mtss/config.py` is also modified by `00-critical-fixes-plan.md`, which adds
+> **Note:** `src/mtss/config.py` is also modified by `01-critical-fixes.md`, which adds
 > `retrieval_top_k` (default 20, later 40) and `rerank_score_floor` fields. The changes are
 > additive (different fields) and do not conflict:
 > - **This plan:** `chunk_size_tokens`, `chunk_overlap_tokens`, `embedding_dimensions`, `max_concurrent_files`

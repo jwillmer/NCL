@@ -15,7 +15,7 @@ last_updated: 2026-04-14T01:00:00
 
 **What this document is:** A tracker of every decision made during a multi-document investigation of the MTSS ingest pipeline. The investigation analyzed cost, storage, parsers, speed, and search quality across documents 01-09 in `docs/investigation/`. Each decision references its source investigation document and rationale.
 
-**How to use this document:** Read the Quick Status table for an overview, then check Implementation Order at the bottom for what to do next. All active plans are in this same `plans/` directory. Execute `00-critical-fixes-plan.md` first, then `implementation-plan.md`, then `09-test-validation-execution.md`.
+**How to use this document:** Read the Quick Status table for an overview, then check Implementation Order at the bottom for what to do next. All active plans are in this same `plans/` directory. Execute `01-critical-fixes.md` first, then `02-implementation.md`, then `03-test-validation.md`.
 
 ---
 
@@ -26,16 +26,16 @@ This document captures every decision made during the ingest pipeline investigat
 | Document | Reviewed | Decision Made | Plan Created | Implementation |
 |----------|----------|---------------|--------------|----------------|
 | 01 — Cost estimation | Yes | Use real estimate ($230.56 baseline) | Yes (`optimization-plan.md`) | Pending |
-| 02 — Local storage design | Yes | JSONL (not SQLite), implement local-only first | Yes (`implementation-plan.md`) | Pending |
+| 02 — Local storage design | Yes | JSONL (not SQLite), implement local-only first | Yes (`02-implementation.md`) | Pending |
 | 03 — Data recovery | Yes | Clean start, skip recovery | N/A | `.env` fixed |
-| 06a — Cost reduction | Yes | Proposals 1,2,4,5 approved; merged into impl plan | Yes (`implementation-plan.md`) | Pending |
+| 06a — Cost reduction | Yes | Proposals 1,2,4,5 approved; merged into impl plan | Yes (`02-implementation.md`) | Pending |
 | 06b — Retrieval quality | Yes | P6, P1-A, P8-A approved; P4-A noted; rest deferred | Updated `optimization-plan.md` | Pending |
 | 06c — Processing speed | Yes | P1, P4 approved; P7 low-priority; P2, P3, P5 deferred; P6, P9, P10 irrelevant | `06c-review-findings.md` | Pending |
 | 06d — Parser alternatives | Reviewed (during investigation) | Stay with OpenAI (LiteLLM), local parsers for simple docs | Covered in `optimization-plan.md` | Pending |
 | 06e — LLM provider comparison | Reviewed (during investigation) | GPT-4.1-mini batch for complex PDFs, no new provider | Covered in `optimization-plan.md` | Pending |
-| 07a — Search optimization | Yes | P0 bug fix + P1 quick wins approved; P2-P5 deferred post-ingest; tsvector auto-generates | Yes (`00-critical-fixes-plan.md`) | Pending |
-| 07b — Scenario analysis | Yes | Query-side completeness transparency included in Plan 00; remaining deferred | Partial (`00-critical-fixes-plan.md` Fix 2.5) | Pending |
-| 09 — Test validation plan | Yes | Plan created (`09-test-validation-execution.md`) | Yes | Execution pending |
+| 07a — Search optimization | Yes | P0 bug fix + P1 quick wins approved; P2-P5 deferred post-ingest; tsvector auto-generates | Yes (`01-critical-fixes.md`) | Pending |
+| 07b — Scenario analysis | Yes | Query-side completeness transparency included in Plan 00; remaining deferred | Partial (`01-critical-fixes.md` Fix 2.5) | Pending |
+| 09 — Test validation plan | Yes | Plan created (`03-test-validation.md`) | Yes | Execution pending |
 
 ## Decisions Log
 
@@ -108,14 +108,14 @@ This document captures every decision made during the ingest pipeline investigat
 - **Context:** 1024 may improve retrieval for narrative incident reports, halves chunk count
 - **Decision:** Switch to 1024 tokens, overlap to 100 (config-only change in `src/mtss/config.py`)
 - **Reasoning:** Maritime incident reports are narrative content where larger chunks provide more context for retrieval. Combined with 512 embedding dims (D-09), total vector storage drops ~73%. Must be set before first ingest (changing later requires re-embedding all chunks).
-- **Document:** `plans/implementation-plan.md` Phase 0.1
+- **Document:** `plans/02-implementation.md` Phase 0.1
 
 ### D-09: Embedding dimensions -- 512 (was PD-02)
 - **Date:** 2026-04-13
 - **Context:** 512 retains 98% quality per OpenAI MTEB benchmarks, saves 67% DB storage at production scale (~100GB)
 - **Decision:** Switch to 512 dimensions (config-only change in `src/mtss/config.py`)
 - **Reasoning:** 2% MTEB quality drop is unlikely to be noticeable for this maritime RAG use case. At production scale, 67% vector storage reduction is significant. `text-embedding-3-small` supports native Matryoshka reduction via the `dimensions` parameter. Must be set before first ingest.
-- **Document:** `plans/implementation-plan.md` Phase 0.2
+- **Document:** `plans/02-implementation.md` Phase 0.2
 
 ### D-10: Processing speed proposals (06c) -- batch decision
 - **Date:** 2026-04-13
@@ -179,7 +179,7 @@ This document captures every decision made during the ingest pipeline investigat
 ## Implementation Order (Planned)
 
 **Plan 00 runs FIRST** -- fixes critical search bugs and quick wins that affect production NOW.
-See `plans/implementation-plan.md` for the full merged ingest plan.
+See `plans/02-implementation.md` for the full merged ingest plan.
 
 1. **Plan 00: Critical fixes & search quick wins** -- reranker bug fix, enriched rerank, max_tokens, rerank_top_n, ef_search, parallel embed, score floor, completeness transparency (~3-4 hrs) **(DO FIRST)**
 2. **Phase 0: Config quick wins** -- chunk 512->1024, dims 1536->512 (15 min)
@@ -188,7 +188,7 @@ See `plans/implementation-plan.md` for the full merged ingest plan.
 5. **Phase 3: Local storage backend** (parallel with Phase 2) -- extend LocalStorageClient, progress tracker, loggers (5-7 hrs)
 6. **Phase 4: Pipeline wiring + speed + quality** -- component factory, CLI --local-only, manifest, P1 parallel attachments, P4 concurrent files to 8, 06b quality wins (P6/P1-A/P8-A) (5-6 hrs, quality wins MUST be before first ingest)
 7. **Phase 5: Validation** -- unit tests, integration test, cost verification (4-6 hrs)
-8. **Test subset validation** (`09-test-validation-execution.md`) -- run small ingest, validate via UI
+8. **Test subset validation** (`03-test-validation.md`) -- run small ingest, validate via UI
 9. **Remaining optimizations** -- 06c P7 batch topic embeddings; 07a P3-P5 query-time improvements; 07b remaining proposals; 06b Phase 2 items
 10. **Full ingest** -- local-only, all 6,289 emails (~$6-10 estimated cost)
 11. **Production import** -- when production system is ready
@@ -201,15 +201,15 @@ See `plans/implementation-plan.md` for the full merged ingest plan.
 
 ## Plan Documents Index
 
-> **For implementation, follow `00-critical-fixes-plan.md` first, then `implementation-plan.md`.**
+> **For implementation, follow `01-critical-fixes.md` first, then `02-implementation.md`.**
 
 ### Active Plans
 
 | Plan | Purpose | Status |
 |------|---------|--------|
-| `00-critical-fixes-plan.md` | **Priority 0**: Critical search/retrieval bug fixes + quick wins (execute FIRST) | **Ready** |
-| `implementation-plan.md` | **Merged plan**: local-only ingest + cost optimizations (Phases 0-5) | **Active** |
-| `09-test-validation-execution.md` | Test validation (execute after implementation) | **Ready** |
+| `01-critical-fixes.md` | **Priority 0**: Critical search/retrieval bug fixes + quick wins (execute FIRST) | **Ready** |
+| `02-implementation.md` | **Merged plan**: local-only ingest + cost optimizations (Phases 0-5) | **Active** |
+| `03-test-validation.md` | Test validation (execute after implementation) | **Ready** |
 | `decisions-and-progress.md` | This document | **Active** |
 
 ### Reference Documents (`reference/`)
@@ -228,4 +228,4 @@ See `plans/implementation-plan.md` for the full merged ingest plan.
 
 | Plan | Purpose | Status |
 |------|---------|--------|
-| `archive/local-only-ingest-plan.md` | Detailed local-only ingest steps | Archived (superseded by `implementation-plan.md`) |
+| `archive/local-only-ingest-plan.md` | Detailed local-only ingest steps | Archived (superseded by `02-implementation.md`) |

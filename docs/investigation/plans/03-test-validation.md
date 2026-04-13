@@ -2,11 +2,11 @@
 purpose: Step-by-step execution plan for test subset validation after all implementation plans are complete
 status: pending
 date: 2026-04-13
-depends_on: [implementation-plan.md, 00-critical-fixes-plan.md]
-execute_after: All implementation plans (Phases 0-5) and critical fixes (Plan 00) are complete
+depends_on: [02-implementation.md, 01-critical-fixes.md]
+execute_after: All phases from Plan 02 (Implementation) and all fixes from Plan 01 are complete
 ---
 
-# Plan 09: Test Validation Execution
+# Plan 03: Test Validation Execution
 
 ## Context for New Agents
 
@@ -26,7 +26,7 @@ execute_after: All implementation plans (Phases 0-5) and critical fixes (Plan 00
 **What this plan accomplishes:** Validates the entire ingest-to-search pipeline end-to-end using a curated 15-email subset before committing to the full $6-10 production ingest of 6,289 emails. Covers local-only ingest, JSONL output validation, database import, and search query verification.
 
 **Prerequisites / what came before:** This plan runs LAST, after all other plans are complete:
-- Plan 00 (critical search fixes) -- must be done
+- Plan 01 (critical search fixes) -- must be done
 - Implementation plan Phases 0-5 (local-only ingest pipeline) -- must be done
 - 06b quality wins (P6, P1-A, P8-A) -- must be done (they affect embedding text)
 - See the Prerequisites checklist below for the full list
@@ -50,7 +50,7 @@ using a 15-document subset before the production run of 6,289 emails.
 
 Before starting this plan, verify ALL of the following are done:
 
-- [ ] **Plan 00 (Critical Fixes):** Reranker bug fixed (agent.py), max_tokens increased, rerank_top_n=8
+- [ ] **Plan 01 (Critical Fixes):** Reranker bug fixed (agent.py), max_tokens increased, rerank_top_n=8
 - [ ] **Implementation Plan Phase 0:** Config updated (chunk 1024, dims 512)
 - [ ] **Implementation Plan Phase 1:** Image pre-filtering in pipeline
 - [ ] **Implementation Plan Phase 2:** Local PDF/Office parsers working
