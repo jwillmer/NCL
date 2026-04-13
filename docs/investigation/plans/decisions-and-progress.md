@@ -25,14 +25,14 @@ This document captures every decision made during the ingest pipeline investigat
 
 | Document | Reviewed | Decision Made | Plan Created | Implementation |
 |----------|----------|---------------|--------------|----------------|
-| 01 — Cost estimation | Yes | Use real estimate ($230.56 baseline) | Yes (`optimization-plan.md`) | Pending |
-| 02 — Local storage design | Yes | JSONL (not SQLite), implement local-only first | Yes (`02-implementation.md`) | Pending |
+| 01 — Cost estimation | Yes | Use real estimate ($230.56 baseline) | Yes (`optimization-plan.md`) | **Done** (informed Plan 02) |
+| 02 — Local storage design | Yes | JSONL (not SQLite), implement local-only first | Yes (`02-implementation.md`) | **Done** (302c23b) |
 | 03 — Data recovery | Yes | Clean start, skip recovery | N/A | `.env` fixed |
-| 06a — Cost reduction | Yes | Proposals 1,2,4,5 approved; merged into impl plan | Yes (`02-implementation.md`) | Pending |
-| 06b — Retrieval quality | Yes | P6, P1-A, P8-A approved; P4-A noted; rest deferred | Updated `optimization-plan.md` | Pending |
-| 06c — Processing speed | Yes | P1, P4 approved; P7 low-priority; P2, P3, P5 deferred; P6, P9, P10 irrelevant | `06c-review-findings.md` | Pending |
-| 06d — Parser alternatives | Reviewed (during investigation) | Stay with OpenAI (LiteLLM), local parsers for simple docs | Covered in `optimization-plan.md` | Pending |
-| 06e — LLM provider comparison | Reviewed (during investigation) | GPT-4.1-mini batch for complex PDFs, no new provider | Covered in `optimization-plan.md` | Pending |
+| 06a — Cost reduction | Yes | Proposals 1,2,4,5 approved; merged into impl plan | Yes (`02-implementation.md`) | **Done** (302c23b) |
+| 06b — Retrieval quality | Yes | P6, P1-A, P8-A approved; P4-A noted; rest deferred | Updated `optimization-plan.md` | **Done** (302c23b) |
+| 06c — Processing speed | Yes | P1, P4 approved; P7 low-priority; P2, P3, P5 deferred; P6, P9, P10 irrelevant | `06c-review-findings.md` | **Done** (302c23b) |
+| 06d — Parser alternatives | Reviewed (during investigation) | Stay with OpenAI (LiteLLM), local parsers for simple docs | Covered in `optimization-plan.md` | **Done** (302c23b) |
+| 06e — LLM provider comparison | Reviewed (during investigation) | GPT-4.1-mini batch for complex PDFs, no new provider | Covered in `optimization-plan.md` | **Done** (302c23b) |
 | 07a — Search optimization | Yes | P0 bug fix + P1 quick wins approved; P2-P5 deferred post-ingest; tsvector auto-generates | Yes (`01-critical-fixes.md`) | **Done** (d710f5f) |
 | 07b — Scenario analysis | Yes | Query-side completeness transparency included in Plan 01; remaining deferred | Partial (`01-critical-fixes.md` Fix 2.5) | **Done** (d710f5f) |
 | 09 — Test validation plan | Yes | Plan created (`03-test-validation.md`) | Yes | Execution pending |
@@ -182,13 +182,8 @@ This document captures every decision made during the ingest pipeline investigat
 See `plans/02-implementation.md` for the full merged ingest plan.
 
 1. ~~**Plan 01: Critical fixes & search quick wins**~~ -- **DONE** (d710f5f, 879b010). Reranker bug fixed, enriched rerank, max_tokens 2000, rerank_top_n 8, retrieval_top_k 40, ef_search 100, parallel embed+topic, score floor 0.2, completeness transparency. Also fixed pre-existing test_topic_filter assertion.
-2. **Phase 0: Config quick wins** -- chunk 512->1024, dims 1536->512 (15 min)
-3. **Phase 1: Image pre-filtering + model switch** -- port estimator heuristic + filename filter + GPT-4.1-nano (2-3 hrs)
-4. **Phase 2: Local parsers** (parallel with Phase 3) -- PDF classifier, PyMuPDF4LLM, DOCX/XLSX/CSV/HTML (4-5 days)
-5. **Phase 3: Local storage backend** (parallel with Phase 2) -- extend LocalStorageClient, progress tracker, loggers (5-7 hrs)
-6. **Phase 4: Pipeline wiring + speed + quality** -- component factory, CLI --local-only, manifest, P1 parallel attachments, P4 concurrent files to 8, 06b quality wins (P6/P1-A/P8-A) (5-6 hrs, quality wins MUST be before first ingest)
-7. **Phase 5: Validation** -- unit tests, integration test, cost verification (4-6 hrs)
-8. **Test subset validation** (`03-test-validation.md`) -- run small ingest, validate via UI
+2. ~~**Plan 02: Implementation Phases 0-5**~~ -- **DONE** (302c23b). Local-only ingest mode, tiered parsers, image pre-filtering, LocalStorageClient, parallel attachments, quality wins, config changes.
+3. **Plan 03: Test subset validation** (`03-test-validation.md`) -- run 15-doc ingest, validate via UI **(NEXT)**
 9. **Remaining optimizations** -- 06c P7 batch topic embeddings; 07a P3-P5 query-time improvements; 07b remaining proposals; 06b Phase 2 items
 10. **Full ingest** -- local-only, all 6,289 emails (~$6-10 estimated cost)
 11. **Production import** -- when production system is ready
@@ -216,7 +211,7 @@ See `plans/02-implementation.md` for the full merged ingest plan.
 | Plan | Purpose | Status |
 |------|---------|--------|
 | `01-critical-fixes.md` | Critical search/retrieval bug fixes + quick wins | **Completed** (d710f5f) |
-| `02-implementation.md` | **Merged plan**: local-only ingest + cost optimizations (Phases 0-5) | **Active** |
+| `02-implementation.md` | Local-only ingest + cost optimizations (Phases 0-5) | **Completed** (302c23b) |
 | `03-test-validation.md` | Test validation (execute after implementation) | **Ready** |
 | `decisions-and-progress.md` | This document | **Active** |
 
