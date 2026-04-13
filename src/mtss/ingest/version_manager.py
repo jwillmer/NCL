@@ -12,7 +12,6 @@ from typing import Literal, Optional
 from uuid import UUID
 
 from ..config import get_settings
-from ..storage.supabase_client import SupabaseClient
 from ..utils import compute_doc_id
 
 logger = logging.getLogger(__name__)
@@ -37,13 +36,16 @@ class VersionManager:
     - reprocess: Processed with older ingest logic version
     """
 
-    def __init__(self, db: Optional[SupabaseClient] = None):
+    def __init__(self, db=None):
         """Initialize version manager.
 
         Args:
-            db: Supabase client instance (creates new one if not provided).
+            db: Storage client instance (creates SupabaseClient if not provided).
         """
-        self.db = db or SupabaseClient()
+        if db is None:
+            from ..storage.supabase_client import SupabaseClient
+            db = SupabaseClient()
+        self.db = db
         settings = get_settings()
         self.current_version = settings.current_ingest_version
 

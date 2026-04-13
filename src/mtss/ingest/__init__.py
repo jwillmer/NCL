@@ -1,7 +1,11 @@
 """Ingest module for email processing helpers."""
 
 from .attachment_handler import process_attachment, process_zip_attachment
-from .components import IngestComponents, create_ingest_components
+from .components import (
+    IngestComponents,
+    create_ingest_components,
+    create_local_ingest_components,
+)
 from .estimator import IngestEstimator
 from .helpers import (
     MIME_FORMAT_MAP,
@@ -31,6 +35,7 @@ __all__ = [
     "MIME_FORMAT_MAP",
     "check_document_issues",
     "create_ingest_components",
+    "create_local_ingest_components",
     "enrich_chunks_with_document_metadata",
     "find_orphaned_documents",
     "fix_document_issues",

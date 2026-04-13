@@ -28,10 +28,10 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Supabase Configuration
-    supabase_url: str = Field(..., validation_alias="SUPABASE_URL")
-    supabase_key: str = Field(..., validation_alias="SUPABASE_KEY")
-    supabase_db_url: str = Field(..., validation_alias="SUPABASE_DB_URL")
+    # Supabase Configuration (optional for --local-only mode)
+    supabase_url: str | None = Field(default=None, validation_alias="SUPABASE_URL")
+    supabase_key: str | None = Field(default=None, validation_alias="SUPABASE_KEY")
+    supabase_db_url: str | None = Field(default=None, validation_alias="SUPABASE_DB_URL")
     supabase_jwt_secret: str | None = Field(
         default=None, validation_alias="SUPABASE_JWT_SECRET"
     )
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     embedding_model: str = Field(
         default="text-embedding-3-small", validation_alias="EMBEDDING_MODEL"
     )
-    embedding_dimensions: int = Field(default=1536, validation_alias="EMBEDDING_DIMENSIONS")
+    embedding_dimensions: int = Field(default=512, validation_alias="EMBEDDING_DIMENSIONS")
     embedding_max_tokens: int = Field(default=8000, validation_alias="EMBEDDING_MAX_TOKENS")
 
     # Default LLM model (fallback when specific model not set)
@@ -60,7 +60,7 @@ class Settings(BaseSettings):
         default=None, validation_alias="EMAIL_CLEANER_MODEL"
     )
     image_llm_model: str | None = Field(
-        default=None, validation_alias="IMAGE_LLM_MODEL"
+        default="gpt-4.1-nano", validation_alias="IMAGE_LLM_MODEL"
     )
     rag_llm_model: str | None = Field(
         default=None, validation_alias="RAG_LLM_MODEL"
@@ -71,8 +71,8 @@ class Settings(BaseSettings):
         return specific_model or self.llm_model
 
     # Chunking Configuration
-    chunk_size_tokens: int = Field(default=512, validation_alias="CHUNK_SIZE_TOKENS")
-    chunk_overlap_tokens: int = Field(default=50, validation_alias="CHUNK_OVERLAP_TOKENS")
+    chunk_size_tokens: int = Field(default=1024, validation_alias="CHUNK_SIZE_TOKENS")
+    chunk_overlap_tokens: int = Field(default=100, validation_alias="CHUNK_OVERLAP_TOKENS")
 
     # Base data directory
     data_dir: Path = Field(
@@ -132,7 +132,7 @@ class Settings(BaseSettings):
         default=5, validation_alias="MAX_CONCURRENT_EMBEDDINGS"
     )
     max_concurrent_files: int = Field(
-        default=5, validation_alias="MAX_CONCURRENT_FILES"
+        default=8, validation_alias="MAX_CONCURRENT_FILES"
     )
     enable_ocr: bool = Field(default=True, validation_alias="ENABLE_OCR")
     enable_picture_description: bool = Field(

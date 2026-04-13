@@ -14,11 +14,14 @@ logger = logging.getLogger(__name__)
 class LlamaParseParser(BaseParser):
     """Parser using LlamaParse API for document extraction.
 
-    Default parser for all document types including:
-    - PDF documents
-    - Office formats (DOCX, PPTX, XLSX)
+    Handles complex documents that need cloud-based parsing:
+    - PDF documents (complex PDFs with scanned pages, images, forms)
+    - Office formats (PPTX)
     - Legacy Office formats (DOC, XLS, PPT)
-    - Other document formats (CSV, RTF, EPUB, ODT, ODS, ODP)
+    - Other document formats (RTF, EPUB, ODT, ODS, ODP)
+
+    Note: DOCX, XLSX, CSV, HTML now use local parsers via tiered routing.
+    Simple PDFs also use local PyMuPDF4LLM parser.
     """
 
     name = "llamaparse"
@@ -27,41 +30,31 @@ class LlamaParseParser(BaseParser):
         # PDF
         "application/pdf",
         # Modern Office formats
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
         # Legacy Office formats
         "application/msword",  # .doc
         "application/vnd.ms-excel",  # .xls
         "application/vnd.ms-powerpoint",  # .ppt
         # Other formats
-        "text/csv",
         "application/rtf",
         "text/rtf",
         "application/epub+zip",
         "application/vnd.oasis.opendocument.text",  # .odt
         "application/vnd.oasis.opendocument.spreadsheet",  # .ods
         "application/vnd.oasis.opendocument.presentation",  # .odp
-        # HTML
-        "text/html",
     }
 
     supported_extensions = {
         ".pdf",
-        ".docx",
         ".pptx",
-        ".xlsx",
         ".doc",
         ".xls",
         ".ppt",
-        ".csv",
         ".rtf",
         ".epub",
         ".odt",
         ".ods",
         ".odp",
-        ".html",
-        ".htm",
     }
 
     def __init__(self):

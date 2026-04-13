@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..ingest.archive_generator import _sanitize_storage_key
-from ..ingest.helpers import enrich_chunks_with_document_metadata, get_format_name
+from ..ingest.helpers import (
+    apply_fallback_context,
+    enrich_chunks_with_document_metadata,
+    get_format_name,
+    prepend_date_prefix,
+)
 from ..models.document import ProcessingStatus
 
 if TYPE_CHECKING:
@@ -60,6 +65,7 @@ async def process_attachment(
     lenient: bool = False,
     on_verbose: Callable[[str, str | None], None] | None = None,
     issue_tracker: "IssueTracker | None" = None,
+    email_context_summary: str | None = None,
 ) -> list["Chunk"]:
     """Process a single attachment and return its chunks.
 
@@ -130,6 +136,7 @@ async def process_attachment(
                 lenient=lenient,
                 on_verbose=on_verbose,
                 issue_tracker=issue_tracker,
+                email_context_summary=email_context_summary,
             )
         )
         return chunks
@@ -211,6 +218,7 @@ async def process_attachment(
                     vprint("  -> 0 chunks (document has no extractable text)", file_ctx)
 
             # Generate context summary for better search relevance
+            attach_context_used = None
             if attach_chunks and components.context_generator and parsed_content:
                 try:
                     attach_context = await components.context_generator.generate_context(
@@ -218,6 +226,7 @@ async def process_attachment(
                     )
                     if attach_context:
                         vprint(f"  -> Context generated: {len(attach_context)} chars", file_ctx)
+                        attach_context_used = attach_context
                         # Apply context summary to ALL chunks
                         for chunk in attach_chunks:
                             chunk.context_summary = attach_context
@@ -226,6 +235,13 @@ async def process_attachment(
                             )
                 except Exception as e:
                     vprint(f"  -> Context generation failed: {e}", file_ctx)
+
+            # Inherit email context when no attachment-specific context was generated
+            if attach_chunks and not attach_context_used and email_context_summary:
+                vprint(f"  -> Inheriting email context ({len(email_context_summary)} chars)", file_ctx)
+                apply_fallback_context(attach_chunks, email_context_summary, components.context_generator)
+
+            prepend_date_prefix(attach_chunks, email_doc)
 
             chunks.extend(attach_chunks)
             await components.db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
@@ -300,13 +316,14 @@ async def process_zip_attachment(
     lenient: bool = False,
     on_verbose: Callable[[str, str | None], None] | None = None,
     issue_tracker: "IssueTracker | None" = None,
+    email_context_summary: str | None = None,
 ) -> list["Chunk"]:
     """Extract and process files from a ZIP attachment.
 
     Note: ZIP contents don't use the archive cache since they don't have
     pre-existing archive paths. They are always parsed fresh.
     """
-    vprint = on_verbose or _noop_verbose
+    vprint = on_verbose or _noop_verbose  # noqa: F841 - kept for future verbose output
     chunks: list["Chunk"] = []
     vessel_ids = vessel_ids or []
     vessel_types = vessel_types or []
@@ -371,6 +388,9 @@ async def process_zip_attachment(
                             chunk.metadata["vessel_types"] = vessel_types
                         if vessel_classes:
                             chunk.metadata["vessel_classes"] = vessel_classes
+                # Inherit email context and add date prefix for ZIP-extracted chunks
+                apply_fallback_context(attach_chunks, email_context_summary, components.context_generator)
+                prepend_date_prefix(attach_chunks, email_doc)
                 chunks.extend(attach_chunks)
                 await components.db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
 

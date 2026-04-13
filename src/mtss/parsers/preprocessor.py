@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ..image_filter import is_meaningful_image
 from ..processing.image_processor import ImageProcessor
 from .registry import ParserRegistry
 
@@ -141,6 +142,14 @@ class DocumentPreprocessor:
         # Check if it's an image that needs classification
         if self.is_image(actual_type):
             if classify_images:
+                # Local heuristic filter before Vision API call
+                if not is_meaningful_image(file_path):
+                    return PreprocessResult(
+                        should_process=False,
+                        skip_reason=f"filtered_by_heuristic: {file_path.name}",
+                        is_image=True,
+                        content_type=actual_type,
+                    )
                 result = await self.image_processor.classify_and_describe(file_path)
                 if result.should_skip:
                     return PreprocessResult(

@@ -5,9 +5,10 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 ## Features
 
 - **Email Parsing:** Conversation-aware parsing with participant tracking
-- **Multi-Format Support:** PDF, DOCX, PPTX, XLSX, images, ZIP archives, legacy formats (DOC, XLS, PPT)
-- **Image Understanding:** AI-powered image classification and descriptions via OpenAI Vision
-- **Document Parsing:** LlamaParse for all document types with high-res OCR and table extraction
+- **Multi-Format Support:** PDF, DOCX, PPTX, XLSX, CSV, HTML, images, ZIP archives, legacy formats (DOC, XLS, PPT)
+- **Image Understanding:** AI-powered image classification and descriptions via OpenAI Vision, with local heuristic pre-filtering
+- **Tiered Document Parsing:** Local parsers for simple PDFs (PyMuPDF4LLM), DOCX (python-docx), XLSX (openpyxl), CSV, and HTML; LlamaParse for complex PDFs and legacy formats
+- **Local-Only Ingest:** `--local-only` mode writes to JSONL files instead of Supabase — no cloud database required
 - **Contextual Chunking:** LLM-generated document summaries prepended to chunks (35-67% retrieval improvement)
 - **Vector Storage:** Supabase with pgvector for similarity search
 - **Two-Stage Retrieval:** Vector search + cross-encoder reranking (20-35% accuracy improvement)
@@ -25,7 +26,7 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 uv sync
 ```
 
-> **Note:** LlamaParse handles all document processing (PDFs, Office files) with built-in OCR. Requires `LLAMA_CLOUD_API_KEY`.
+> **Note:** Simple PDFs, DOCX, XLSX, CSV, and HTML are parsed locally (no API key needed). LlamaParse is used for complex PDFs and legacy formats — requires `LLAMA_CLOUD_API_KEY`. For local-only ingest without Supabase, use `--local-only`.
 
 ## Running the CLI
 
@@ -58,10 +59,10 @@ MTSS --help
 cp .env.template .env
 
 # 2. Configure your credentials in .env
-#    - SUPABASE_URL, SUPABASE_KEY, SUPABASE_DB_URL
+#    - SUPABASE_URL, SUPABASE_KEY, SUPABASE_DB_URL (not needed for --local-only)
 #    - OPENAI_API_KEY
 #    - COHERE_API_KEY (for reranking)
-#    - LLAMA_CLOUD_API_KEY (required for document parsing)
+#    - LLAMA_CLOUD_API_KEY (only needed for complex PDFs and legacy formats)
 #
 # Optional new settings:
 #    - CONTEXT_LLM_MODEL=gpt-4o-mini (for contextual chunking)
@@ -138,7 +139,15 @@ MAX_CONCURRENT_FILES=10 uv run MTSS ingest
 
 # Lenient mode - continue processing on errors instead of failing documents
 uv run MTSS ingest --lenient
+
+# Local-only mode - write to JSONL files instead of Supabase
+uv run MTSS ingest --local-only --source ./data/emails
+
+# Local-only with custom output directory
+uv run MTSS ingest --local-only --output-dir ./my-output --source ./data/emails
 ```
+
+**Local-only mode** writes documents, chunks, topics, and processing logs to JSONL files in the output directory. A `manifest.json` is written at the end with embedding model, dimensions, chunk settings, and record counts. No Supabase credentials are needed.
 
 ### Data Integrity
 
@@ -513,10 +522,10 @@ POST /feedback
 - **Frontend:** Next.js + React + TypeScript + TailwindCSS + Radix UI + AG-UI SDK
 - **Agent Framework:** LangGraph with AG-UI protocol integration
 - **Observability:** Langfuse (backend + browser SDK)
-- **Document Processing:** LlamaParse (PDFs, Office, legacy formats)
-- **Image Processing:** OpenAI Vision API (classification + description)
-- **Text Chunking:** LangChain text splitters with tiktoken
-- **Embeddings:** OpenAI text-embedding-3-small
+- **Document Processing:** Local parsers (PyMuPDF4LLM, python-docx, openpyxl) + LlamaParse fallback for complex/legacy formats
+- **Image Processing:** Local heuristic filtering + OpenAI Vision API (classification + description)
+- **Text Chunking:** LangChain text splitters with tiktoken (1024 token chunks, 100 token overlap)
+- **Embeddings:** OpenAI text-embedding-3-small (512 dimensions)
 - **LLM:** GPT-4o via LangChain
 - **Reranking:** Cohere via LiteLLM
 - **Database:** Supabase (PostgreSQL + pgvector)

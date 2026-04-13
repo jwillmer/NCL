@@ -7,6 +7,8 @@ from .failure_report import (
     FailureReportGenerator,
     IngestReportWriter,
 )
+from .local_client import LocalBucketStorage, LocalIngestOutput, LocalStorageClient
+from .local_progress_tracker import LocalProgressTracker
 from .progress_tracker import ProgressTracker
 from .supabase_client import SupabaseClient
 from .unsupported_file_logger import UnsupportedFileLogger
@@ -18,6 +20,10 @@ __all__ = [
     "FailureReport",
     "FailureReportGenerator",
     "IngestReportWriter",
+    "LocalBucketStorage",
+    "LocalIngestOutput",
+    "LocalProgressTracker",
+    "LocalStorageClient",
     "ProgressTracker",
     "SupabaseClient",
     "UnsupportedFileLogger",

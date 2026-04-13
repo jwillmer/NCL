@@ -20,34 +20,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "ag-ui-langgraph"
-version = "0.0.22"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "ag-ui-protocol" },
-    { name = "langchain" },
-    { name = "langchain-core" },
-    { name = "langgraph" },
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/93/b9/1d5c794cc7bf3b5d86d58821b6db167a8da7669aa7f52cc8b2ebfb052fc8/ag_ui_langgraph-0.0.22.tar.gz", hash = "sha256:92d963e416d3f2784ecaadfb8306217ad7d1bd13b2a07c0c75634a5f0820439d", size = 12963, upload-time = "2025-11-18T16:33:29.372Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/32/3fa9a8db5ffd5ff489f048227ff00651278a83466db85f57ad5fdc0d0f18/ag_ui_langgraph-0.0.22-py3-none-any.whl", hash = "sha256:7f86f9fc70614c909dbd2452fcdfc9759da53b8cdded163a3cb91f2ae753add2", size = 14697, upload-time = "2025-11-18T16:33:28.22Z" },
-]
-
-[[package]]
-name = "ag-ui-protocol"
-version = "0.1.10"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/67/bb/5a5ec893eea5805fb9a3db76a9888c3429710dfb6f24bbb37568f2cf7320/ag_ui_protocol-0.1.10.tar.gz", hash = "sha256:3213991c6b2eb24bb1a8c362ee270c16705a07a4c5962267a083d0959ed894f4", size = 6945, upload-time = "2025-11-06T15:17:17.068Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/78/eb55fabaab41abc53f52c0918a9a8c0f747807e5306273f51120fd695957/ag_ui_protocol-0.1.10-py3-none-any.whl", hash = "sha256:c81e6981f30aabdf97a7ee312bfd4df0cd38e718d9fc10019c7d438128b93ab5", size = 7889, upload-time = "2025-11-06T15:17:15.325Z" },
-]
-
-[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1554,25 +1526,6 @@ wheels = [
 ]
 
 [[package]]
-name = "langchain"
-version = "0.3.27"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "async-timeout", marker = "python_full_version < '3.11'" },
-    { name = "langchain-core" },
-    { name = "langchain-text-splitters" },
-    { name = "langsmith" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "sqlalchemy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/83/f6/f4f7f3a56626fe07e2bb330feb61254dbdf06c506e6b59a536a337da51cf/langchain-0.3.27.tar.gz", hash = "sha256:aa6f1e6274ff055d0fd36254176770f356ed0a8994297d1df47df341953cec62", size = 10233809, upload-time = "2025-07-24T14:42:32.959Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/d5/4861816a95b2f6993f1360cfb605aacb015506ee2090433a71de9cca8477/langchain-0.3.27-py3-none-any.whl", hash = "sha256:7b20c4f338826acb148d885b20a73a16e410ede9ee4f19bb02011852d5f98798", size = 1018194, upload-time = "2025-07-24T14:42:30.23Z" },
-]
-
-[[package]]
 name = "langchain-core"
 version = "0.3.81"
 source = { registry = "https://pypi.org/simple" }
@@ -2199,7 +2152,6 @@ name = "mtss"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "ag-ui-langgraph" },
     { name = "aiofiles" },
     { name = "anyio" },
     { name = "asyncpg" },
@@ -2252,7 +2204,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ag-ui-langgraph", specifier = ">=0.0.22" },
     { name = "aiofiles", specifier = ">=23.0.0" },
     { name = "anyio", specifier = ">=4.0.0" },
     { name = "asyncpg", specifier = ">=0.29.0" },

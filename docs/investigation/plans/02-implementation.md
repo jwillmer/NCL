@@ -1,7 +1,8 @@
 ---
 purpose: Merged implementation plan — local-only ingest with cost optimizations
-status: approved
+status: implemented
 date: 2026-04-13
+implemented_date: 2026-04-13
 scope: config changes, image pre-filtering, tiered parsing, local storage backend, CLI wiring, speed optimizations
 depends_on:
   - 01-critical-fixes.md (must be done first)
@@ -1281,3 +1282,62 @@ subsequent work benefits from correct config values and image filtering.
 | **Combined with model switch** | **$220+** (95%+ of baseline) | 1+2 |
 
 With all optimizations, estimated first-run cost drops from **$230 to ~$6-10**.
+
+---
+
+## Implementation Summary (2026-04-13)
+
+All phases implemented and validated. 317 tests passing, ruff clean.
+
+### What was built
+
+| Feature | Files |
+|---------|-------|
+| Config defaults (chunk 1024, dims 512, nano model, concurrent 8) | `config.py` |
+| Image pre-filtering heuristic (filename, size, dimensions) | `image_filter.py`, `estimator.py`, `preprocessor.py` |
+| PDF complexity classifier (simple→local, complex→LlamaParse) | `parsers/pdf_classifier.py` |
+| Local PDF parser (PyMuPDF4LLM) | `parsers/local_pdf_parser.py` |
+| Local Office parsers (DOCX, XLSX, CSV, HTML) | `parsers/local_office_parser.py` |
+| Tiered routing in AttachmentProcessor | `parsers/attachment_processor.py` |
+| LlamaParse scope reduced (DOCX/XLSX/CSV/HTML removed) | `parsers/llamaparse_parser.py`, `lane_classifier.py` |
+| LocalStorageClient (JSONL output, indexes, topics, manifest) | `storage/local_client.py` |
+| LocalProgressTracker (resume support) | `storage/local_progress_tracker.py` |
+| Component factory refactor (shared helper, local factory) | `ingest/components.py` |
+| `--local-only` + `--output-dir` CLI flags | `cli/ingest_cmd.py` |
+| Parallel attachment processing (gather + Semaphore(3)) | `ingest/pipeline.py` |
+| P6: Attachment context inheritance | `ingest/attachment_handler.py` |
+| P1-A: Minimum content filter (< 20 words) | `ingest/pipeline.py` |
+| P8-A: Date prefix in embedding text | `ingest/helpers.py`, `pipeline.py`, `attachment_handler.py` |
+| Type relaxation for DI (Supabase fields optional) | `config.py`, `supabase_client.py`, `hierarchy_manager.py`, `archive_generator.py`, `version_manager.py` |
+| New dependencies | `pyproject.toml` (pymupdf4llm, python-docx, openpyxl, html2text) |
+| README updated | CLI docs, tech stack, tiered parsing |
+
+### Deviations from plan
+
+- `LocalUnsupportedFileLogger` merged into `LocalStorageClient` (KISS — single method, same JSONL)
+- Manifest writer placed in `LocalStorageClient.write_manifest()` (storage concern)
+- Shared helpers extracted: `prepend_date_prefix()`, `apply_fallback_context()`, `_decode_with_fallback()`
+- `create_local_ingest_components()` accepts `db` param (avoids double-instance bug found in review)
+
+---
+
+## Next Steps
+
+### Before first ingest (required)
+
+1. **Install new dependencies**: `uv sync`
+2. **Validate local parser quality** (manual): Parse 20 PDFs (10 simple, 10 complex per classifier) with both local and LlamaParse. Accept if local output ≥ 90% complete for simple PDFs.
+3. **Run cost estimate**: `uv run MTSS estimate --source ./data/emails` — verify LlamaParse pages drop and Vision API images drop.
+
+### After first ingest
+
+4. **Test subset validation** (`03-test-validation.md`): Run local-only ingest on small test set, verify JSONL outputs before full corpus.
+5. **Full ingest**: `uv run MTSS ingest --local-only --source ./data/emails --verbose`
+6. **Verify manifest**: Check `manifest.json` counts match JSONL line counts.
+
+### Future improvements (not in scope)
+
+- Local PPTX parser (only 27 files — low priority)
+- numpy-based cosine similarity for topic matching (currently pure Python, fine for ~200 topics)
+- JSONL write buffering (currently per-record open/close, acceptable for local tool)
+- `compute_file_hash` deduplication across modules (3 identical copies exist)

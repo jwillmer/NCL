@@ -7,6 +7,7 @@ Extracted from cli.py for better modularity.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -289,6 +290,10 @@ async def process_email(
             if not cleaned_message.strip():
                 continue
 
+            # Skip very short messages (likely auto-replies, signatures only)
+            if len(cleaned_message.split()) < 20:
+                continue
+
             # Find char positions in original body
             msg_start = body_text.find(message[:50], char_offset)
             if msg_start == -1:
@@ -299,11 +304,19 @@ async def process_email(
             # Compute stable chunk_id
             chunk_id = compute_chunk_id(email_doc.doc_id or "", msg_start, msg_end)
 
+            # Compute date prefix for temporal search relevance
+            date_prefix = ""
+            if email_doc.email_metadata and getattr(email_doc.email_metadata, 'date_start', None):
+                date_prefix = f"[Date: {email_doc.email_metadata.date_start.strftime('%Y-%m-%d')}] "
+
             # Build embedding text with context (using cleaned message)
             # Apply context summary to ALL chunks for better search relevance
             embedding_text = cleaned_message
             if context_summary:
                 embedding_text = components.context_generator.build_embedding_text(context_summary, cleaned_message)
+
+            if date_prefix:
+                embedding_text = date_prefix + embedding_text
 
             # Build chunk metadata including vessel and topic info for filtering
             chunk_metadata: dict = {"type": "email_body", "message_index": msg_idx}
@@ -337,43 +350,48 @@ async def process_email(
                 )
             )
 
-    # Process attachments with progress updates
+    # Process attachments in parallel with concurrency limit
+
     attachment_chunk_count = 0
-    for i, attachment in enumerate(parsed_email.attachments):
-        # Get archive file result for this attachment if available
-        archive_file_result = None
-        if archive_result and archive_result.attachment_files:
-            # Look for matching attachment in archive result by sanitized filename
-            # Storage keys are sanitized (spaces->%20, brackets->parens), so match accordingly
-            safe_name = _sanitize_storage_key(attachment.filename)
-            for file_result in archive_result.attachment_files:
-                # original_path is like "abc123/attachments/sanitized_file.pdf"
-                if file_result.original_path.endswith(f"/{safe_name}"):
-                    archive_file_result = file_result
-                    break
+    _att_sem = asyncio.Semaphore(3)
 
-        attachment_chunks = await process_attachment(
-            attachment=attachment,
-            email_doc=email_doc,
-            source_eml_path=source_eml_path,
-            file_ctx=file_ctx,
-            components=components,
-            unsupported_logger=unsupported_logger,
-            archive_file_result=archive_file_result,
-            vessel_ids=vessel_ids,
-            vessel_types=vessel_types,
-            vessel_classes=vessel_classes,
-            force_reparse=force_reparse,
-            lenient=lenient,
-            on_verbose=on_verbose,
-            issue_tracker=issue_tracker,
-        )
-        attachment_chunk_count += len(attachment_chunks)
-        email_chunks.extend(attachment_chunks)
+    async def _process_one_attachment(attachment):
+        async with _att_sem:
+            afr = None
+            if archive_result and archive_result.attachment_files:
+                safe_name = _sanitize_storage_key(attachment.filename)
+                for file_result in archive_result.attachment_files:
+                    if file_result.original_path.endswith(f"/{safe_name}"):
+                        afr = file_result
+                        break
 
-        # Update progress after each attachment
+            return await process_attachment(
+                attachment=attachment,
+                email_doc=email_doc,
+                source_eml_path=source_eml_path,
+                file_ctx=file_ctx,
+                components=components,
+                unsupported_logger=unsupported_logger,
+                archive_file_result=afr,
+                vessel_ids=vessel_ids,
+                vessel_types=vessel_types,
+                vessel_classes=vessel_classes,
+                force_reparse=force_reparse,
+                lenient=lenient,
+                on_verbose=on_verbose,
+                issue_tracker=issue_tracker,
+                email_context_summary=context_summary,
+            )
+
+    if parsed_email.attachments:
+        att_tasks = [_process_one_attachment(att) for att in parsed_email.attachments]
+        att_results = await asyncio.gather(*att_tasks)
+        for att_chunks in att_results:
+            attachment_chunk_count += len(att_chunks)
+            email_chunks.extend(att_chunks)
+
         if on_progress:
-            on_progress(i + 1, max(1, attachment_count), file_ctx)
+            on_progress(attachment_count, max(1, attachment_count), file_ctx)
 
     # Summary of attachments processed
     if parsed_email.attachments:

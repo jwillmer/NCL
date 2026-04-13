@@ -151,8 +151,11 @@ class AttachmentProcessor:
         """Check if content type is an image format supported by Vision API."""
         return self.image_processor.is_supported(content_type)
 
+    # Extensions handled by local parsers (not in ParserRegistry)
+    _LOCAL_PARSER_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".csv", ".html", ".htm"}
+
     def is_supported(self, file_path: str, content_type: Optional[str] = None) -> bool:
-        """Check if file format is supported by any registered parser.
+        """Check if file format is supported by any parser (registry or local).
 
         Args:
             file_path: Path to the file.
@@ -161,7 +164,10 @@ class AttachmentProcessor:
         Returns:
             True if format is supported.
         """
-        parser = ParserRegistry.get_parser_for_file(Path(file_path), content_type)
+        path = Path(file_path)
+        if path.suffix.lower() in self._LOCAL_PARSER_EXTENSIONS:
+            return True
+        parser = ParserRegistry.get_parser_for_file(path, content_type)
         return parser is not None
 
     def get_document_type(self, content_type: str) -> DocumentType:
@@ -200,8 +206,8 @@ class AttachmentProcessor:
         if not file_path.exists():
             raise FileNotFoundError(f"Attachment not found: {file_path}")
 
-        # Get appropriate parser from registry
-        parser = ParserRegistry.get_parser_for_file(file_path, content_type)
+        # Get appropriate parser using tiered routing
+        parser = self._get_tiered_parser(file_path, content_type)
 
         if not parser:
             raise ValueError(f"No parser available for {file_path}")
@@ -231,6 +237,42 @@ class AttachmentProcessor:
 
         logger.info(f"Created {len(chunks)} chunks from {file_path.name}")
         return chunks
+
+    def _get_tiered_parser(self, file_path: Path, content_type: str | None = None):
+        """Select parser using tiered routing: local first, LlamaParse fallback."""
+        ext = file_path.suffix.lower()
+
+        if ext == ".pdf":
+            from .pdf_classifier import PDFComplexity, classify_pdf
+            complexity = classify_pdf(file_path)
+            if complexity == PDFComplexity.SIMPLE:
+                from .local_pdf_parser import LocalPDFParser
+                local = LocalPDFParser()
+                if local.is_available:
+                    return local
+                logger.info(f"PyMuPDF4LLM not available, falling back for {file_path.name}")
+
+        elif ext == ".docx":
+            from .local_office_parser import LocalDocxParser
+            local = LocalDocxParser()
+            if local.is_available:
+                return local
+
+        elif ext == ".xlsx":
+            from .local_office_parser import LocalXlsxParser
+            local = LocalXlsxParser()
+            if local.is_available:
+                return local
+
+        elif ext == ".csv":
+            from .local_office_parser import LocalCsvParser
+            return LocalCsvParser()
+
+        elif ext in (".html", ".htm"):
+            from .local_office_parser import LocalHtmlParser
+            return LocalHtmlParser()
+
+        return ParserRegistry.get_parser_for_file(file_path, content_type)
 
     def create_image_chunk(
         self,

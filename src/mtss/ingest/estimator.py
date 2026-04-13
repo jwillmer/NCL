@@ -26,8 +26,9 @@ from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree
 
 from ..config import get_settings
-from .lane_classifier import IMAGE_EXTENSIONS
+from ..image_filter import is_meaningful_image
 from ..utils import sanitize_filename
+from .lane_classifier import IMAGE_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -673,31 +674,7 @@ class IngestEstimator:
         Filters out tracking pixels, icons, logos, banners, and email
         signature images based on file size and dimensions.
         """
-        try:
-            file_size = path.stat().st_size
-        except OSError:
-            return True  # can't check, assume meaningful
-
-        # Very small files are almost always tracking pixels or tiny icons
-        if file_size < 15_000:
-            return False
-
-        # Check dimensions with PIL for more accurate filtering
-        try:
-            from PIL import Image
-
-            with Image.open(path) as im:
-                w, h = im.size
-            # Tiny images: icons, tracking pixels, small logos
-            if max(w, h) < 100:
-                return False
-            # Banner-shaped: wide and short (email separators, signature strips)
-            if h < 50 and w > 3 * h:
-                return False
-        except Exception:
-            pass  # can't read dimensions, file size check is enough
-
-        return True
+        return is_meaningful_image(path)
 
     # ── Helpers ─────────────────────────────────────────────────────────
 

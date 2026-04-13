@@ -100,16 +100,17 @@ class ArchiveGenerator:
     - Download links to original files
     """
 
-    def __init__(self, ingest_root: Optional[Path] = None):
+    def __init__(self, ingest_root: Optional[Path] = None, storage=None):
         """Initialize archive generator.
 
         Args:
             ingest_root: Root directory for ingestion (for stable source IDs). If None, uses settings.
+            storage: Optional storage backend. If None, uses default ArchiveStorage.
         """
         from ..config import get_settings
 
         settings = get_settings()
-        self.storage = ArchiveStorage()
+        self.storage = storage or ArchiveStorage()
         self.ingest_root = ingest_root or settings.eml_source_dir
 
     async def generate_archive(

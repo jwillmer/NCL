@@ -64,6 +64,17 @@ def register(app: typer.Typer):
             "--lenient",
             help="Continue processing on errors instead of failing (logs to ingest_events)",
         ),
+        local_only: bool = typer.Option(
+            False,
+            "--local-only",
+            help="Write to local JSONL files instead of Supabase",
+        ),
+        output_dir: Optional[Path] = typer.Option(
+            None,
+            "--output-dir",
+            "-o",
+            help="Output directory for local-only mode (default: <source>/../output)",
+        ),
         verbose: bool = typer.Option(
             False,
             "--verbose",
@@ -75,12 +86,20 @@ def register(app: typer.Typer):
         _common._verbose = verbose
         _common._shutdown_requested = False
 
+        # Validate output_dir for path traversal
+        if output_dir and ".." in str(output_dir):
+            console.print("[red]--output-dir must not contain '..' (path traversal)[/red]")
+            raise typer.Exit(1)
+
         # Set up signal handler for Ctrl+C
         from ._common import _handle_interrupt
         original_handler = signal.signal(signal.SIGINT, _handle_interrupt)
 
         try:
-            asyncio.run(_ingest(source_dir, batch_size, resume, retry_failed, reprocess_outdated, lenient))
+            asyncio.run(_ingest(
+                source_dir, batch_size, resume, retry_failed,
+                reprocess_outdated, lenient, local_only, output_dir,
+            ))
         finally:
             # Restore original signal handler
             signal.signal(signal.SIGINT, original_handler)
@@ -128,8 +147,8 @@ def register(app: typer.Typer):
         folder, counts actual pages, and produces a cost breakdown.
         Subsequent runs use cached results and are instant.
         """
-        from ..ingest.estimator import IngestEstimator
         from ..config import get_settings
+        from ..ingest.estimator import IngestEstimator
 
         settings = get_settings()
         source = source_dir or settings.eml_source_dir
@@ -156,17 +175,15 @@ async def _ingest(
     retry_failed: bool,
     reprocess_outdated: bool = False,
     lenient: bool = False,
+    local_only: bool = False,
+    output_dir: Optional[Path] = None,
 ):
     """Async implementation of ingest command."""
     from ..config import get_settings
-    from ..ingest.components import create_ingest_components
     from ..ingest.lane_classifier import LaneClassifier
     from ..ingest.pipeline import process_email
     from ..ingest.version_manager import VersionManager
     from ..storage.failure_report import IngestReportWriter
-    from ..storage.progress_tracker import ProgressTracker
-    from ..storage.supabase_client import SupabaseClient
-    from ..storage.unsupported_file_logger import UnsupportedFileLogger
 
     settings = get_settings()
     source_dir = source_dir or settings.eml_source_dir
@@ -175,22 +192,47 @@ async def _ingest(
         console.print(f"[red]Source directory not found: {source_dir}[/red]")
         raise typer.Exit(1)
 
-    # Initialize components
-    db = SupabaseClient()
-    tracker = ProgressTracker(db)
-    unsupported_logger = UnsupportedFileLogger(db)
-    version_manager = VersionManager(db)
+    # Initialize components based on mode
+    if local_only:
+        from ..ingest.components import create_local_ingest_components
+        from ..storage.local_client import LocalStorageClient
+        from ..storage.local_progress_tracker import LocalProgressTracker
 
-    # Load vessel registry for matching
-    vessels = await db.get_all_vessels()
+        resolved_output = (output_dir or source_dir.parent / "output").resolve()
+        resolved_output.mkdir(parents=True, exist_ok=True)
+        console.print(f"[green]Local-only mode: output → {resolved_output}[/green]")
 
-    # Create shared ingest components
-    components = create_ingest_components(
-        db=db,
-        source_dir=source_dir,
-        vessels=vessels,
-        enable_topics=True,
-    )
+        db = LocalStorageClient(output_dir=resolved_output)
+        tracker = LocalProgressTracker(output_dir=resolved_output)
+        unsupported_logger = db  # LocalStorageClient has log_unsupported_file()
+        version_manager = VersionManager(db)
+        vessels = await db.get_all_vessels()
+
+        components = create_local_ingest_components(
+            db=db,
+            output_dir=resolved_output,
+            source_dir=source_dir,
+            vessels=vessels,
+            enable_topics=True,
+        )
+    else:
+        from ..ingest.components import create_ingest_components
+        from ..storage.progress_tracker import ProgressTracker
+        from ..storage.supabase_client import SupabaseClient
+        from ..storage.unsupported_file_logger import UnsupportedFileLogger
+
+        db = SupabaseClient()
+        tracker = ProgressTracker(db)
+        unsupported_logger = UnsupportedFileLogger(db)
+        version_manager = VersionManager(db)
+        vessels = await db.get_all_vessels()
+
+        components = create_ingest_components(
+            db=db,
+            source_dir=source_dir,
+            vessels=vessels,
+            enable_topics=True,
+        )
 
     if components.vessel_matcher:
         vprint(f"Loaded {components.vessel_matcher.vessel_count} vessels ({components.vessel_matcher.name_count} names)")
@@ -412,6 +454,11 @@ async def _ingest(
         console.print(f"\nReport: {report_writer.get_path()}")
 
     finally:
+        # Flush and write manifest for local-only mode
+        if local_only:
+            db.flush()
+            db.write_manifest()
+            console.print(f"[green]Manifest written to {resolved_output / 'manifest.json'}[/green]")
         await db.close()
 
 

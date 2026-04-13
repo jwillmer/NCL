@@ -15,7 +15,6 @@ from ..models.document import (
     DocumentType,
     ParsedEmail,
 )
-from ..storage.supabase_client import SupabaseClient
 from ..utils import compute_doc_id, normalize_source_id
 
 if TYPE_CHECKING:
@@ -30,7 +29,7 @@ class HierarchyManager:
     Generates stable IDs for citations and archive paths.
     """
 
-    def __init__(self, db_client: SupabaseClient, ingest_root: Optional[Path] = None):
+    def __init__(self, db_client, ingest_root: Optional[Path] = None):
         """Initialize the hierarchy manager.
 
         Args:

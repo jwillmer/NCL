@@ -28,27 +28,24 @@ IMAGE_MIMETYPES = {
 }
 
 # Document MIME types that require LlamaParse (from LlamaParseParser)
+# Note: DOCX, XLSX, CSV, HTML now use local parsers (fast lane) via tiered routing.
+# PDF stays here because complex PDFs still need LlamaParse.
 LLAMAPARSE_MIMETYPES = {
-    # PDF
+    # PDF (complex PDFs still need LlamaParse)
     "application/pdf",
     # Modern Office formats
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
     # Legacy Office formats
     "application/msword",  # .doc
     "application/vnd.ms-excel",  # .xls
     "application/vnd.ms-powerpoint",  # .ppt
     # Other formats
-    "text/csv",
     "application/rtf",
     "text/rtf",
     "application/epub+zip",
     "application/vnd.oasis.opendocument.text",  # .odt
     "application/vnd.oasis.opendocument.spreadsheet",  # .ods
     "application/vnd.oasis.opendocument.presentation",  # .odp
-    # HTML
-    "text/html",
 }
 
 # ZIP MIME types (may contain documents, conservative: always slow lane)
@@ -58,23 +55,19 @@ ZIP_MIMETYPES = {
     "application/x-zip",
 }
 
-# Document extensions for fallback detection
+# Document extensions for fallback detection (slow lane)
+# Note: .docx, .xlsx, .csv, .html, .htm removed — now use local parsers (fast lane).
 DOCUMENT_EXTENSIONS = {
     ".pdf",
-    ".docx",
     ".pptx",
-    ".xlsx",
     ".doc",
     ".xls",
     ".ppt",
-    ".csv",
     ".rtf",
     ".epub",
     ".odt",
     ".ods",
     ".odp",
-    ".html",
-    ".htm",
     ".zip",
 }
 

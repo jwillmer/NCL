@@ -1,6 +1,6 @@
 """Shared components for ingest and ingest-update commands.
 
-Provides a factory function and dataclass to ensure both commands
+Provides factory functions and a dataclass to ensure all ingest commands
 use identical component initialization, preventing behavioral divergence.
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from ..parsers.attachment_processor import AttachmentProcessor
@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from ..processing.topics import TopicExtractor, TopicMatcher
     from ..processing.vessel_matcher import VesselMatcher
     from ..storage.archive_storage import ArchiveStorage
-    from ..storage.supabase_client import SupabaseClient
     from .archive_generator import ArchiveGenerator
     from .hierarchy_manager import HierarchyManager
 
@@ -31,7 +30,7 @@ class IngestComponents:
     identical behavior between regular ingest and repair operations.
     """
 
-    db: SupabaseClient
+    db: Any
     eml_parser: EMLParser
     attachment_processor: AttachmentProcessor
     hierarchy_manager: HierarchyManager
@@ -45,36 +44,28 @@ class IngestComponents:
     topic_matcher: Optional[TopicMatcher] = None
 
 
-def create_ingest_components(
-    db: SupabaseClient,
+def _create_shared_components(
+    db,
     source_dir: Path,
-    vessels: Optional[list] = None,
+    vessels: list | None = None,
     enable_topics: bool = True,
+    archive_storage=None,
+    archive_generator_storage=None,
 ) -> IngestComponents:
-    """Create all ingest components with identical initialization.
-
-    This factory function is used by both `ingest` and `ingest-update`
-    commands to ensure they use the same component configuration.
-
-    Args:
-        db: Initialized Supabase client.
-        source_dir: Root directory for email ingestion.
-        vessels: Optional list of vessels for VesselMatcher.
-        enable_topics: Whether to enable topic extraction (default True).
-
-    Returns:
-        IngestComponents dataclass with all initialized components.
-    """
+    """Internal helper: create components shared between Supabase and local modes."""
     # Import here to avoid circular imports
     from ..parsers.attachment_processor import AttachmentProcessor
     from ..parsers.chunker import ContextGenerator, DocumentChunker
     from ..parsers.eml_parser import EMLParser
     from ..processing.embeddings import EmbeddingGenerator
-    from .archive_generator import ArchiveGenerator
-    from .hierarchy_manager import HierarchyManager
     from ..processing.topics import TopicExtractor, TopicMatcher
     from ..processing.vessel_matcher import VesselMatcher
-    from ..storage.archive_storage import ArchiveStorage
+    from .archive_generator import ArchiveGenerator
+    from .hierarchy_manager import HierarchyManager
+
+    if archive_storage is None:
+        from ..storage.archive_storage import ArchiveStorage
+        archive_storage = ArchiveStorage()
 
     embeddings = EmbeddingGenerator()
 
@@ -91,11 +82,70 @@ def create_ingest_components(
         attachment_processor=AttachmentProcessor(),
         hierarchy_manager=HierarchyManager(db, ingest_root=source_dir),
         embeddings=embeddings,
-        archive_generator=ArchiveGenerator(ingest_root=source_dir),
+        archive_generator=ArchiveGenerator(
+            ingest_root=source_dir,
+            storage=archive_generator_storage,
+        ),
         context_generator=ContextGenerator(),
         chunker=DocumentChunker(),
-        archive_storage=ArchiveStorage(),
+        archive_storage=archive_storage,
         vessel_matcher=VesselMatcher(vessels) if vessels else None,
         topic_extractor=topic_extractor,
         topic_matcher=topic_matcher,
+    )
+
+
+def create_ingest_components(
+    db,
+    source_dir: Path,
+    vessels: list | None = None,
+    enable_topics: bool = True,
+) -> IngestComponents:
+    """Create all ingest components for Supabase mode.
+
+    This factory function is used by both ``ingest`` and ``ingest-update``
+    commands to ensure they use the same component configuration.
+
+    Args:
+        db: Initialized Supabase client.
+        source_dir: Root directory for email ingestion.
+        vessels: Optional list of vessels for VesselMatcher.
+        enable_topics: Whether to enable topic extraction (default True).
+
+    Returns:
+        IngestComponents dataclass with all initialized components.
+    """
+    return _create_shared_components(db, source_dir, vessels, enable_topics)
+
+
+def create_local_ingest_components(
+    db,
+    output_dir: Path,
+    source_dir: Path,
+    vessels: list | None = None,
+    enable_topics: bool = True,
+) -> IngestComponents:
+    """Create all ingest components for local-only mode (JSONL output).
+
+    Args:
+        db: Initialized LocalStorageClient instance.
+        output_dir: Directory for JSONL and archive output.
+        source_dir: Root directory for email ingestion.
+        vessels: Optional list of vessels for VesselMatcher.
+        enable_topics: Whether to enable topic extraction (default True).
+
+    Returns:
+        IngestComponents dataclass with all initialized components.
+    """
+    from ..storage.local_client import LocalBucketStorage
+
+    archive_storage = LocalBucketStorage(output_dir / "archive")
+
+    return _create_shared_components(
+        db=db,
+        source_dir=source_dir,
+        vessels=vessels,
+        enable_topics=enable_topics,
+        archive_storage=archive_storage,
+        archive_generator_storage=archive_storage,
     )

@@ -224,3 +224,37 @@ class IssueTracker:
     def __len__(self) -> int:
         """Return the number of tracked issues."""
         return len(self._issues)
+
+
+def prepend_date_prefix(chunks: list, email_doc) -> None:
+    """Prepend [Date: YYYY-MM-DD] to chunk embedding text for temporal search relevance.
+
+    Modifies chunks in-place.
+    """
+    if not chunks:
+        return
+    date_prefix = ""
+    if email_doc.email_metadata and getattr(email_doc.email_metadata, 'date_start', None):
+        date_prefix = f"[Date: {email_doc.email_metadata.date_start.strftime('%Y-%m-%d')}] "
+    if not date_prefix:
+        return
+    for chunk in chunks:
+        if chunk.embedding_text:
+            chunk.embedding_text = date_prefix + chunk.embedding_text
+        else:
+            chunk.embedding_text = date_prefix + chunk.content
+
+
+def apply_fallback_context(chunks: list, email_context_summary: str, context_generator=None) -> None:
+    """Apply email-level context to chunks that lack attachment-specific context.
+
+    Modifies chunks in-place.
+    """
+    if not chunks or not email_context_summary:
+        return
+    for chunk in chunks:
+        chunk.context_summary = email_context_summary
+        if context_generator:
+            chunk.embedding_text = context_generator.build_embedding_text(
+                email_context_summary, chunk.content
+            )
