@@ -164,7 +164,7 @@ class TestTopicFilter:
 
         assert result.detected_topics == ["Cargo Damage"]
         assert result.unmatched_topics == ["Cargo Damage"]
-        assert result.should_skip_rag is False
+        assert result.should_skip_rag is True
         assert "Cargo Damage" in result.message
 
     @pytest.mark.asyncio
