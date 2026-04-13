@@ -33,8 +33,8 @@ This document captures every decision made during the ingest pipeline investigat
 | 06c — Processing speed | Yes | P1, P4 approved; P7 low-priority; P2, P3, P5 deferred; P6, P9, P10 irrelevant | `06c-review-findings.md` | Pending |
 | 06d — Parser alternatives | Reviewed (during investigation) | Stay with OpenAI (LiteLLM), local parsers for simple docs | Covered in `optimization-plan.md` | Pending |
 | 06e — LLM provider comparison | Reviewed (during investigation) | GPT-4.1-mini batch for complex PDFs, no new provider | Covered in `optimization-plan.md` | Pending |
-| 07a — Search optimization | Yes | P0 bug fix + P1 quick wins approved; P2-P5 deferred post-ingest; tsvector auto-generates | Yes (`01-critical-fixes.md`) | Pending |
-| 07b — Scenario analysis | Yes | Query-side completeness transparency included in Plan 00; remaining deferred | Partial (`01-critical-fixes.md` Fix 2.5) | Pending |
+| 07a — Search optimization | Yes | P0 bug fix + P1 quick wins approved; P2-P5 deferred post-ingest; tsvector auto-generates | Yes (`01-critical-fixes.md`) | **Done** (d710f5f) |
+| 07b — Scenario analysis | Yes | Query-side completeness transparency included in Plan 01; remaining deferred | Partial (`01-critical-fixes.md` Fix 2.5) | **Done** (d710f5f) |
 | 09 — Test validation plan | Yes | Plan created (`03-test-validation.md`) | Yes | Execution pending |
 
 ## Decisions Log
@@ -171,7 +171,7 @@ This document captures every decision made during the ingest pipeline investigat
 
 | Bug | Location | Severity | Status |
 |-----|----------|----------|--------|
-| Reranker silently disabled | `src/mtss/api/agent.py:461` — `top_k=settings.rerank_top_n` (5) means retriever gets 5 candidates, skips reranking | P0 | Verified, fix approved (D-11) |
+| Reranker silently disabled | `src/mtss/api/agent.py:461` — `top_k=settings.rerank_top_n` (5) means retriever gets 5 candidates, skips reranking | P0 | **Fixed** (d710f5f) |
 | DATA_SOURCE_DIR mismatch | `.env` pointed to `./data/source`, files at `./data/emails` | P0 | **Fixed** |
 | Image pre-filter not in pipeline | `_is_meaningful_image()` exists in estimator but not used in actual ingest | P1 | Not fixed |
 | Estimator underestimates by 24% | Misses LLM calls, undercounts image processing | P2 | Documented |
@@ -181,7 +181,7 @@ This document captures every decision made during the ingest pipeline investigat
 **Plan 00 runs FIRST** -- fixes critical search bugs and quick wins that affect production NOW.
 See `plans/02-implementation.md` for the full merged ingest plan.
 
-1. **Plan 00: Critical fixes & search quick wins** -- reranker bug fix, enriched rerank, max_tokens, rerank_top_n, ef_search, parallel embed, score floor, completeness transparency (~3-4 hrs) **(DO FIRST)**
+1. ~~**Plan 01: Critical fixes & search quick wins**~~ -- **DONE** (d710f5f, 879b010). Reranker bug fixed, enriched rerank, max_tokens 2000, rerank_top_n 8, retrieval_top_k 40, ef_search 100, parallel embed+topic, score floor 0.2, completeness transparency. Also fixed pre-existing test_topic_filter assertion.
 2. **Phase 0: Config quick wins** -- chunk 512->1024, dims 1536->512 (15 min)
 3. **Phase 1: Image pre-filtering + model switch** -- port estimator heuristic + filename filter + GPT-4.1-nano (2-3 hrs)
 4. **Phase 2: Local parsers** (parallel with Phase 3) -- PDF classifier, PyMuPDF4LLM, DOCX/XLSX/CSV/HTML (4-5 days)
@@ -198,6 +198,14 @@ See `plans/02-implementation.md` for the full merged ingest plan.
 | File | Change | Date |
 |------|--------|------|
 | `.env` | `DATA_SOURCE_DIR=./data/source` → `./data/emails` | 2026-04-13 |
+| `src/mtss/api/agent.py` | Fix reranker bug (top_k), parallel embed+topic, completeness transparency | 2026-04-13 |
+| `src/mtss/config.py` | Add `retrieval_top_k=40`, `rerank_score_floor=0.2`, rerank_top_n 5→8 | 2026-04-13 |
+| `src/mtss/rag/reranker.py` | Enriched rerank context, score floor with fallback | 2026-04-13 |
+| `src/mtss/rag/retriever.py` | Unified retrieve() with optional query_embedding, embed_query() | 2026-04-13 |
+| `src/mtss/rag/query_engine.py` | max_tokens 1000→2000, pass query_embedding through | 2026-04-13 |
+| `src/mtss/storage/repositories/search.py` | HNSW ef_search=100 via SET LOCAL in transaction | 2026-04-13 |
+| `tests/test_reranker.py` | Tests for enriched context, score floor, all-below-keeps-one | 2026-04-13 |
+| `tests/test_topic_filter.py` | Fix assertion: unmatched topic correctly skips RAG | 2026-04-13 |
 
 ## Plan Documents Index
 
@@ -207,7 +215,7 @@ See `plans/02-implementation.md` for the full merged ingest plan.
 
 | Plan | Purpose | Status |
 |------|---------|--------|
-| `01-critical-fixes.md` | **Priority 0**: Critical search/retrieval bug fixes + quick wins (execute FIRST) | **Ready** |
+| `01-critical-fixes.md` | Critical search/retrieval bug fixes + quick wins | **Completed** (d710f5f) |
 | `02-implementation.md` | **Merged plan**: local-only ingest + cost optimizations (Phases 0-5) | **Active** |
 | `03-test-validation.md` | Test validation (execute after implementation) | **Ready** |
 | `decisions-and-progress.md` | This document | **Active** |

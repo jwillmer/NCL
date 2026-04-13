@@ -2,7 +2,9 @@
 purpose: Fix critical search/retrieval bugs and quick wins BEFORE any ingest work
 priority: 1 (execute first)
 source: 07a search optimization, 07b scenario analysis (completeness transparency)
-status: ready for implementation
+status: completed
+completed_date: 2026-04-13
+commit: d710f5f (fixes) + 879b010 (test fix)
 date: 2026-04-13
 estimated_time: ~3-4 hours total
 ---
