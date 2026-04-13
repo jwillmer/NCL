@@ -163,6 +163,10 @@ Replace gpt-4o-mini with GPT-4.1-nano for context/topic calls. Same quality for 
 
 ## Processing Time Before & After
 
+> **Note:** These estimates pre-date the local-only architecture decision. See
+> [06c-review-findings.md](06c-review-findings.md) for revised estimates (~53 minutes with local parsers
+> and local storage).
+
 Based on analysis from 06c-optimization-processing-speed.
 
 ### Current Pipeline
@@ -240,6 +244,9 @@ Replacing LlamaParse API calls (5-30s per document) with local parsers (< 0.1s p
 ---
 
 ## Retrieval Quality Quick Wins (from 06b review)
+
+> **Implementation:** See [implementation-plan.md](../implementation-plan.md) for code-level details.
+> See [06b-review-findings.md](06b-review-findings.md) for edge case analysis (e.g., ZIP attachment handling for RQ-1).
 
 These affect embedding text and **must be implemented before the first ingest run**. Changing them later requires re-embedding all chunks (costly). All three have zero additional LLM/API cost.
 
@@ -361,56 +368,11 @@ The pipeline cost drops from **$230.56 to $133.15 (Phase 1)** with minimal effor
 
 ---
 
-## Search/Retrieval Fixes (from 07a review)
+## Search/Retrieval Fixes
 
-These are query-time fixes that do NOT affect ingest cost but significantly impact response quality. They should be applied before or alongside the first ingest.
-
-### SR-0: Reranker Bug Fix (P0 CRITICAL)
-
-**Problem:** `src/mtss/api/agent.py:461` sets `top_k=settings.rerank_top_n` (5) when reranking is enabled. The retriever gets exactly 5 candidates, and `retriever.py:76` skips reranking because `len(results) <= effective_top_n`. The cross-encoder reranker (documented to improve accuracy by 20-35%) is silently disabled in the production agent path.
-
-**Fix:** Change `top_k=settings.rerank_top_n if settings.rerank_enabled else 10` to `top_k=20` at agent.py:461.
-
-**Impact:** Restores the 20-35% accuracy improvement from reranking.
-**Effort:** 1 line, 1 minute.
-**Risk:** None.
-
-### SR-1: Enriched Rerank Context (P1)
-
-**Problem:** `reranker.py:64` passes only `r.text` (chunk content) to the cross-encoder. The reranker cannot distinguish between chunks from different incidents that have similar content.
-
-**Fix:** Prepend `email_subject` and `source_title` to each document before reranking.
-
-**Impact:** Better incident disambiguation during reranking.
-**Effort:** ~5 lines in `reranker.py`.
-**Risk:** Very low. Stays well under Cohere's 4096-token per-document limit.
-
-### SR-2: Increase max_tokens to 2000 (P1)
-
-**Problem:** `query_engine.py:218` limits LLM response to 1000 tokens, which can truncate detailed multi-incident analysis answers.
-
-**Fix:** Change `max_tokens=1000` to `max_tokens=2000`.
-
-**Impact:** Allows more complete answers for complex queries.
-**Effort:** 1 line.
-**Cost:** +$0.0006/query (gpt-4o-mini) to +$0.01/query (gpt-4o). Negligible.
-
-### SR-3: Increase rerank_top_n to 8 (P1)
-
-**Problem:** `config.py:147` defaults `rerank_top_n=5`, which limits LLM context to 5 chunks. Complex queries spanning multiple documents/incidents lack coverage.
-
-**Fix:** Change default to 8 in config.py.
-
-**Impact:** Better coverage for multi-document queries.
-**Effort:** 1 line (config change).
-**Cost:** +$0.008/query (gpt-4o). Negligible.
-
-### Search/Retrieval Implementation Summary
-
-| Task | Files | Effort | Risk |
-|------|-------|--------|------|
-| SR-0: Reranker bug fix | `agent.py` | 1 min | None |
-| SR-1: Enriched rerank context | `reranker.py` | 15 min | Very low |
-| SR-2: max_tokens to 2000 | `query_engine.py` | 1 min | None |
-| SR-3: rerank_top_n to 8 | `config.py` | 1 min | None |
-| **Total** | | **~20 min** | **Very low** |
+See [00-critical-fixes-plan.md](../00-critical-fixes-plan.md) for the authoritative implementation plan covering:
+- SR-0/Fix 0.1: Reranker bug fix (P0 CRITICAL)
+- SR-1/Fix 1.1: Enriched rerank context
+- SR-2/Fix 1.2: max_tokens increase
+- SR-3/Fix 1.3: rerank_top_n increase
+- Fix 2.1-2.5: Additional search improvements (top_k, HNSW, parallel, score floor, transparency)

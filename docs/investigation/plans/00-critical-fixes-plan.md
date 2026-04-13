@@ -29,6 +29,10 @@ These must be fixed before any ingest work because:
 - Access to a running instance (local or staging) for verification
 - Database access for HNSW tuning verification (Phase 2)
 
+> **Note:** This plan modifies `src/mtss/config.py` (adds `retrieval_top_k` and `rerank_score_floor`).
+> `implementation-plan.md` also modifies `config.py` (changes `chunk_size_tokens`, `chunk_overlap_tokens`,
+> `embedding_dimensions`, `max_concurrent_files`). The changes are additive and do not conflict.
+
 ---
 
 ## Phase 0: Critical Bug Fix (~5 minutes)

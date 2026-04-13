@@ -23,7 +23,7 @@ This document captures every decision made during the ingest pipeline investigat
 | 06e — LLM provider comparison | Reviewed (during investigation) | GPT-4.1-mini batch for complex PDFs, no new provider | Covered in `optimization-plan.md` | Pending |
 | 07a — Search optimization | Yes | P0 bug fix + P1 quick wins approved; P2-P5 deferred post-ingest; tsvector auto-generates | Yes (`00-critical-fixes-plan.md`) | Pending |
 | 07b — Scenario analysis | Yes | Query-side completeness transparency included in Plan 00; remaining deferred | Partial (`00-critical-fixes-plan.md` Fix 2.5) | Pending |
-| 09 — Test validation plan | Pending | — | — | — |
+| 09 — Test validation plan | Yes | Plan created (`09-test-validation-execution.md`) | Yes | Execution pending |
 
 ## Decisions Log
 
@@ -33,7 +33,7 @@ This document captures every decision made during the ingest pipeline investigat
 - **Options:** SQLite + sqlite-vec, JSONL flat files, hybrid
 - **Decision:** JSONL flat files
 - **Reasoning:** 80% of code already exists in `tests/local_storage.py`; sqlite-vec has Windows loading issues; only ~200 topics need similarity search (brute-force <1ms); no full vector search needed locally
-- **Document:** `plans/local-storage-sqlite-vs-files.md`
+- **Document:** `plans/reference/local-storage-sqlite-vs-files.md`
 
 ### D-02: Implement local-only ingest before cloud
 - **Date:** 2026-04-13
@@ -62,14 +62,14 @@ This document captures every decision made during the ingest pipeline investigat
 - **Context:** Baseline cost $230.56; Phase 1+2 reduces to $6.34
 - **Decision:** Implement both phases before running ingest
 - **Reasoning:** $224 savings worth the 5-6 day implementation effort; building local-only ingest anyway (need to wire parsers regardless)
-- **Document:** `plans/optimization-plan.md`
+- **Document:** `plans/reference/optimization-plan.md`
 
 ### D-06: Full estimate completed and stored
 - **Date:** 2026-04-13
 - **Context:** Previously only had 3.9% sample (243/6,289 emails)
 - **Result:** All 6,289 emails scanned. Actual numbers: 20,995 pages, 20,684 images (9,860 meaningful), 24,974 total attachments
 - **Baseline cost:** $230.56 (LlamaParse $131.22 + Vision $98.60 + LLM $0.12 + Embeddings $0.63)
-- **Document:** `plans/estimate-full-results.md`
+- **Document:** `plans/reference/estimate-full-results.md`
 
 ### D-07: Retrieval quality proposals (06b) — batch decision
 - **Date:** 2026-04-13
@@ -118,7 +118,7 @@ This document captures every decision made during the ingest pipeline investigat
   - **P5 -- Progressive embedding:** Irrelevant for local-only (JSONL output, no early searchability).
 - **Skipped (irrelevant for local-only):** P6 (batch storage uploads), P9 (batch pre-fetch), P10 (asyncpg migration).
 - **Revised total ingest estimate:** ~53 minutes for 6,289 emails with 8 workers (vs 06c's original 10.5 hours).
-- **Document:** `plans/06c-review-findings.md`
+- **Document:** `plans/reference/06c-review-findings.md`
 
 ### D-11: Search/retrieval proposals (07a) -- batch decision
 - **Date:** 2026-04-13
@@ -139,12 +139,21 @@ This document captures every decision made during the ingest pipeline investigat
   - **P5 -- Query expansion (4), Caching (10):** Skip for now.
 - **No changes needed:** Proposal 6 (vessel pre-filtering already correct), Proposal 11 streaming (already well-structured).
 - **Key finding on tsvector:** The `tsvector` column for hybrid search does NOT require ingest code changes. PostgreSQL generated columns auto-populate from `content` on INSERT. A trivial migration can be added now or later. JSONL local output stores raw `content` text; tsvector auto-populates when imported to production. No reason to block ingest.
-- **Document:** `plans/07a-review-findings.md`
+- **Document:** `plans/reference/07a-review-findings.md`
+
+### D-12: Scenario analysis (07b) -- batch decision
+- **Date:** 2026-04-13
+- **Context:** Reviewed 07b scenario analysis covering query-side improvements for search result quality, trust, and completeness.
+- **Included in Plan 00 (Fix 2.5):**
+  - **Result completeness transparency:** Surface `total_candidate_count` and a note to the LLM context so it can say "showing top 8 of 47 results." Low effort (~10 lines in `agent.py`), high trust impact. Already available from `TopicFilterResult.total_chunk_count`.
+- **Deferred (post-ingest, query-time only):**
+  - All remaining 07b proposals are query-time improvements that don't depend on ingest changes. They will be evaluated during the "remaining optimizations" phase (step 10 in implementation order).
+- **Document:** `07b-response-scenario-analysis.md`
 
 ## Pending Decisions
 
-### PD-03: Remaining document decisions (07b, 09)
-- **Status:** 06b, 06c, 07a complete. Continuing through remaining documents one by one.
+### PD-03: Remaining document decisions (09)
+- **Status:** 06b, 06c, 07a, 07b complete. Only 09 (test validation) remains.
 
 ## Critical Bugs Found
 
@@ -157,20 +166,20 @@ This document captures every decision made during the ingest pipeline investigat
 
 ## Implementation Order (Planned)
 
-See `plans/implementation-plan.md` for the full merged plan. Summary:
+**Plan 00 runs FIRST** -- fixes critical search bugs and quick wins that affect production NOW.
+See `plans/implementation-plan.md` for the full merged ingest plan.
 
-1. **Phase 0: Config quick wins** -- chunk 512->1024, dims 1536->512, rerank_top_n 5->8 (15 min)
-2. **Phase 1: Image pre-filtering** -- port estimator heuristic + filename filter (2-3 hrs)
-3. **Phase 2: Local parsers** (parallel with Phase 3) -- PDF classifier, PyMuPDF4LLM, DOCX/XLSX/CSV/HTML (4-5 days)
-4. **Phase 3: Local storage backend** (parallel with Phase 2) -- extend LocalStorageClient, progress tracker, loggers (5-7 hrs)
-5. **Retrieval quality quick wins (06b)** -- P6, P1-A, P8-A (~2 hours, MUST be before first ingest)
-6. **Phase 4: Pipeline wiring + speed optimizations** -- component factory, CLI --local-only, manifest, P1 parallel attachments, P4 concurrent files to 8 (4-5 hrs)
+1. **Plan 00: Critical fixes & search quick wins** -- reranker bug fix, enriched rerank, max_tokens, rerank_top_n, ef_search, parallel embed, score floor, completeness transparency (~3-4 hrs) **(DO FIRST)**
+2. **Phase 0: Config quick wins** -- chunk 512->1024, dims 1536->512 (15 min)
+3. **Phase 1: Image pre-filtering + model switch** -- port estimator heuristic + filename filter + GPT-4.1-nano (2-3 hrs)
+4. **Phase 2: Local parsers** (parallel with Phase 3) -- PDF classifier, PyMuPDF4LLM, DOCX/XLSX/CSV/HTML (4-5 days)
+5. **Phase 3: Local storage backend** (parallel with Phase 2) -- extend LocalStorageClient, progress tracker, loggers (5-7 hrs)
+6. **Phase 4: Pipeline wiring + speed + quality** -- component factory, CLI --local-only, manifest, P1 parallel attachments, P4 concurrent files to 8, 06b quality wins (P6/P1-A/P8-A) (5-6 hrs, quality wins MUST be before first ingest)
 7. **Phase 5: Validation** -- unit tests, integration test, cost verification (4-6 hrs)
-8. **Search/retrieval fixes (07a)** -- P0 reranker bug fix (agent.py:461), P1 enriched rerank context (reranker.py), P1 max_tokens 1000->2000 (query_engine.py) (~30 min)
-9. **Test subset validation** (doc 09) -- run small ingest, validate via UI
-10. **Remaining optimizations** -- 06c P7 batch topic embeddings; 07a P2-P5 query-time improvements; 07b decisions; 06b Phase 2 items
-11. **Full ingest** -- local-only, all 6,289 emails (~$6-10 estimated cost)
-12. **Production import** -- when production system is ready
+8. **Test subset validation** (`09-test-validation-execution.md`) -- run small ingest, validate via UI
+9. **Remaining optimizations** -- 06c P7 batch topic embeddings; 07a P3-P5 query-time improvements; 07b remaining proposals; 06b Phase 2 items
+10. **Full ingest** -- local-only, all 6,289 emails (~$6-10 estimated cost)
+11. **Production import** -- when production system is ready
 
 ## Files Changed
 
@@ -180,14 +189,31 @@ See `plans/implementation-plan.md` for the full merged plan. Summary:
 
 ## Plan Documents Index
 
+> **For implementation, follow `00-critical-fixes-plan.md` first, then `implementation-plan.md`.**
+
+### Active Plans
+
 | Plan | Purpose | Status |
 |------|---------|--------|
+| `00-critical-fixes-plan.md` | **Priority 0**: Critical search/retrieval bug fixes + quick wins (execute FIRST) | **Ready** |
 | `implementation-plan.md` | **Merged plan**: local-only ingest + cost optimizations (Phases 0-5) | **Active** |
-| `estimate-full-results.md` | Raw output from full 6,289-email estimate | Complete |
-| `optimization-plan.md` | Before/after cost optimization with real numbers | Complete |
-| `local-storage-sqlite-vs-files.md` | SQLite vs JSONL decision | Complete (JSONL) |
-| `local-only-ingest-plan.md` | Detailed local-only ingest steps (referenced by implementation-plan.md) | Complete |
-| `06b-review-findings.md` | Code-level review of 06b proposals, feasibility verification | Complete |
-| `06c-review-findings.md` | Code-level review of 06c speed proposals, bottleneck re-analysis | Complete |
-| `07a-review-findings.md` | Code-level review of 07a search/retrieval proposals, bug verification, tsvector decision | Complete |
-| `decisions-and-progress.md` | This document | Active |
+| `09-test-validation-execution.md` | Test validation (execute after implementation) | **Ready** |
+| `decisions-and-progress.md` | This document | **Active** |
+
+### Reference Documents (`reference/`)
+
+| Plan | Purpose | Status |
+|------|---------|--------|
+| `reference/optimization-plan.md` | Cost analysis with before/after numbers | Reference (cost analysis) |
+| `reference/estimate-full-results.md` | Raw output from full 6,289-email estimate | Reference |
+| `reference/local-storage-sqlite-vs-files.md` | SQLite vs JSONL decision rationale | Reference (JSONL decided) |
+| `reference/06b-review-findings.md` | Code-level review of 06b proposals, feasibility verification | Reference |
+| `reference/06c-review-findings.md` | Code-level review of 06c speed proposals, bottleneck re-analysis | Reference |
+| `reference/07a-review-findings.md` | Code-level review of 07a search/retrieval proposals, bug verification, tsvector decision | Reference |
+| `reference/consolidation-proposal.md` | Plan consolidation rationale | Reference |
+
+### Archived Plans (`archive/`)
+
+| Plan | Purpose | Status |
+|------|---------|--------|
+| `archive/local-only-ingest-plan.md` | Detailed local-only ingest steps | Archived (superseded by `implementation-plan.md`) |

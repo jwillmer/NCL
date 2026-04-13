@@ -2,8 +2,8 @@
 purpose: Step-by-step execution plan for test subset validation after all implementation plans are complete
 status: pending
 date: 2026-04-13
-depends_on: [implementation-plan.md, 00-critical-fixes-plan.md, optimization-plan.md]
-execute_after: All implementation plans (Phases 0-5) and critical fixes (SR-0 through SR-3) are complete
+depends_on: [implementation-plan.md, 00-critical-fixes-plan.md]
+execute_after: All implementation plans (Phases 0-5) and critical fixes (Plan 00) are complete
 ---
 
 # Plan 09: Test Validation Execution
@@ -25,7 +25,6 @@ Before starting this plan, verify ALL of the following are done:
 - [ ] **Implementation Plan Phase 4:** Pipeline wired with --local-only flag, parallel attachments
 - [ ] **Implementation Plan Phase 5:** Unit tests passing
 - [ ] **06b Quality Wins:** P6 (attachment context), P1-A (min content filter), P8-A (dates in embedding)
-- [ ] **Optimization Plan SR-0 through SR-3:** Search/retrieval fixes applied
 
 ## Phase 1: Infrastructure Verification (~10 min)
 

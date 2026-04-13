@@ -7,12 +7,12 @@ depends_on:
   - 02-local-storage-design.md
   - 06a-optimization-cost-reduction.md
   - 06c-optimization-processing-speed.md
-  - local-storage-sqlite-vs-files.md
+  - reference/local-storage-sqlite-vs-files.md
   - local-only-ingest-plan.md
-  - optimization-plan.md
+  - reference/optimization-plan.md
 decisions:
-  - "D-07: chunk_size_tokens 512 -> 1024, overlap 50 -> 100"
-  - "D-08: embedding_dimensions 1536 -> 512"
+  - "D-08: chunk_size_tokens 512 -> 1024, overlap 50 -> 100"
+  - "D-09: embedding_dimensions 1536 -> 512"
   - "D-05: implement cost optimization Phase 1+2 before first ingest"
 ---
 
@@ -28,9 +28,9 @@ This plan merges two workstreams into a single implementation order:
 **Expected outcome:** A pipeline that ingests 6,289 EML files to local JSONL files, costing approximately $6 instead of $230, with 73% smaller vector storage.
 
 **Key decisions already made:**
-- JSONL over SQLite for local storage (`local-storage-sqlite-vs-files.md`)
-- Chunk size: 1024 tokens, overlap: 100 tokens (was 512/50) -- D-07
-- Embedding dimensions: 512 (was 1536) -- D-08
+- JSONL over SQLite for local storage (`reference/local-storage-sqlite-vs-files.md`)
+- Chunk size: 1024 tokens, overlap: 100 tokens (was 512/50) -- D-08
+- Embedding dimensions: 512 (was 1536) -- D-09
 - Local parsers for simple PDFs + GPT-4.1-mini batch for complex -- D-04
 - Image pre-filtering with estimator heuristic before Vision API -- D-05
 
@@ -40,6 +40,12 @@ This plan merges two workstreams into a single implementation order:
 
 Config-only changes that affect ALL subsequent work. Do these first so every test
 run, embedding, and chunk produced from this point forward uses the final settings.
+
+> **Note:** `src/mtss/config.py` is also modified by `00-critical-fixes-plan.md`, which adds
+> `retrieval_top_k` (default 20, later 40) and `rerank_score_floor` fields. The changes are
+> additive (different fields) and do not conflict:
+> - **This plan:** `chunk_size_tokens`, `chunk_overlap_tokens`, `embedding_dimensions`, `max_concurrent_files`
+> - **Plan 00:** `retrieval_top_k`, `rerank_score_floor`
 
 ### 0.1 Increase chunk size (Proposal 5)
 
@@ -73,7 +79,7 @@ embedding_dimensions: int = Field(default=512, validation_alias="EMBEDDING_DIMEN
 
 **Impact:** 67% reduction in vector storage per chunk. Combined with 0.1, total vector storage drops ~73%. At production scale (~100 GB DB), this is significant.
 
-**Dependencies:** Update `local-only-ingest-plan.md` Step 2 comment from "1536-dim" to "512-dim" in the embedding round-trip test.
+**Dependencies:** Update `archive/local-only-ingest-plan.md` Step 2 comment from "1536-dim" to "512-dim" in the embedding round-trip test.
 
 **Test strategy:** Verify `EmbeddingGenerator` passes `dimensions=512` to the API. Verify output embeddings have length 512.
 
@@ -255,6 +261,15 @@ Check if the `utils` directory needs an `__init__.py`. Currently `src/mtss/utils
 **Recommendation:** Option A is simpler. Create `src/mtss/image_filter.py` instead of `src/mtss/utils/image_filter.py` to avoid refactoring the existing `utils.py` module.
 
 If Option A is chosen, update all imports in 1.1-1.3 from `..utils.image_filter` to `..image_filter`.
+
+### 1.5 Switch image model to GPT-4.1-nano
+
+**File:** `src/mtss/config.py` or `.env`
+
+Change `IMAGE_LLM_MODEL` from `gpt-4o-mini` to `gpt-4.1-nano`. Per-image cost drops
+from ~$0.01 to ~$0.0002. Simple classify+describe tasks do not require the larger model.
+
+**Effort:** 1 line, 1 minute.
 
 **Effort:** Phase 1 total: 2-3 hours.
 
@@ -761,7 +776,7 @@ Before proceeding to Phase 3, validate local parser output quality:
 
 Extend `LocalStorageClient` from `tests/local_storage.py` to support the full
 ingest pipeline. This phase implements Steps 1-6 and 10-13 from the
-`local-only-ingest-plan.md`.
+`archive/local-only-ingest-plan.md`.
 
 ### 3.1 Move LocalStorageClient to src/
 
@@ -777,7 +792,7 @@ for backward compatibility if tests import from it.
 
 **File:** `src/mtss/storage/local_client.py`
 
-Add all missing methods documented in `local-only-ingest-plan.md` Step 1:
+Add all missing methods documented in `archive/local-only-ingest-plan.md` Step 1:
 
 | Method | Purpose |
 |---|---|
@@ -850,7 +865,7 @@ Implements the `ProgressTracker` interface using `processing_log.jsonl`:
 - `get_pending_files`, `get_failed_files`, `get_processing_stats`
 - `reset_stale_processing`, `get_outdated_files`
 
-See `local-only-ingest-plan.md` Step 3 for full implementation.
+See `archive/local-only-ingest-plan.md` Step 3 for full implementation.
 
 **Effort:** 1-2 hours.
 
@@ -860,7 +875,7 @@ See `local-only-ingest-plan.md` Step 3 for full implementation.
 
 Single method: `log_unsupported_file(...)` -> appends to `ingest_events.jsonl`.
 
-See `local-only-ingest-plan.md` Step 4 for full implementation.
+See `archive/local-only-ingest-plan.md` Step 4 for full implementation.
 
 **Effort:** 30 minutes.
 
@@ -895,7 +910,7 @@ Wire everything together: component factory, CLI flag, manifest writer.
 
 **File:** `src/mtss/ingest/components.py`
 
-Add a new factory function (see `local-only-ingest-plan.md` Step 7 for full code):
+Add a new factory function (see `archive/local-only-ingest-plan.md` Step 7 for full code):
 
 ```python
 def create_local_ingest_components(
@@ -924,7 +939,7 @@ output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Outp
 ```
 
 Add a branch in `_ingest()` (around line 179) that uses `create_local_ingest_components`
-instead of `SupabaseClient` when `local_only=True`. See `local-only-ingest-plan.md`
+instead of `SupabaseClient` when `local_only=True`. See `archive/local-only-ingest-plan.md`
 Step 8 for full implementation.
 
 **Key differences from Supabase mode:**
@@ -949,7 +964,7 @@ Write `manifest.json` after successful ingest with:
 - Chunk size and overlap settings.
 - Record counts for documents, chunks, topics.
 
-See `local-only-ingest-plan.md` Step 9 for full implementation. Note: use
+See `archive/local-only-ingest-plan.md` Step 9 for full implementation. Note: use
 `settings.embedding_dimensions` (now 512) rather than hardcoded 1536.
 
 **Dependencies:** Phase 4.2.
@@ -961,7 +976,7 @@ See `local-only-ingest-plan.md` Step 9 for full implementation. Note: use
 **File to create:** `src/mtss/ingest/local_version_manager.py`
 
 Thin wrapper with same `check_document()` logic as `VersionManager` but without
-requiring Supabase imports. See `local-only-ingest-plan.md` Step 11.
+requiring Supabase imports. See `archive/local-only-ingest-plan.md` Step 11.
 
 Alternatively, modify `VersionManager.__init__` to lazy-import `SupabaseClient`
 (simpler, no new file needed).
@@ -1037,7 +1052,26 @@ after gather completes.
 
 **Effort:** 1 hour (including progress reporting adjustment and testing).
 
-**Effort:** Phase 4 total: 4-5 hours.
+### 4.7 Retrieval quality quick wins (06b P6, P1-A, P8-A)
+
+These affect embedding text and **must be implemented before the first ingest run**
+(changing them later requires re-embedding all chunks). All three are zero-cost.
+
+See `reference/optimization-plan.md` RQ-1/RQ-2/RQ-3 for full implementation code and
+`reference/06b-review-findings.md` for edge case analysis.
+
+- **P6 -- Attachment context inheritance:** Pass parent email `context_summary` to
+  `process_attachment()` and prepend to attachment embedding text. Also update
+  `process_zip_attachment()` to accept and use `email_context_summary` (ZIP edge case
+  identified in `reference/06b-review-findings.md`).
+- **P1-A -- Minimum content filter:** Skip email body messages with fewer than 20 words
+  after boilerplate removal.
+- **P8-A -- Date in embedding text:** Prepend `[Date: YYYY-MM-DD]` to embedding text
+  for both email body chunks and attachment chunks.
+
+**Effort:** ~1 hour total.
+
+**Effort:** Phase 4 total: 5-6 hours.
 
 ---
 
