@@ -8,6 +8,39 @@ execute_after: All implementation plans (Phases 0-5) and critical fixes (Plan 00
 
 # Plan 09: Test Validation Execution
 
+## Context for New Agents
+
+**What is MTSS?** Maritime Technical Support System -- a RAG (Retrieval-Augmented Generation) pipeline that ingests maritime incident report emails (EML files with PDF/image attachments), chunks and embeds them, stores them in a vector database, and provides a chat UI for searching and querying incident history.
+
+**Tech stack:** Python 3.12, FastAPI, Supabase (PostgreSQL + pgvector), LiteLLM (wraps OpenAI APIs), Cohere reranker, Vite + React chat frontend. Build/dependency management via `uv`. CLI entry point: `uv run mtss <command>`.
+
+**Project root:** `C:/Projects/GitHub/NCL/`
+
+**Key directories:**
+- `src/mtss/` -- main application code (pipeline, parsers, storage, config, CLI)
+- `tests/` -- pytest test suite; `tests/fixtures/test_email.eml` is used as the 15th test document
+- `data/emails/` -- 6,289 source EML files (~50 GB)
+- `data/test-subset/` -- will be created by this plan (14 selected test emails)
+- `data/test-output/` -- will be created by this plan (JSONL ingest output)
+
+**What this plan accomplishes:** Validates the entire ingest-to-search pipeline end-to-end using a curated 15-email subset before committing to the full $6-10 production ingest of 6,289 emails. Covers local-only ingest, JSONL output validation, database import, and search query verification.
+
+**Prerequisites / what came before:** This plan runs LAST, after all other plans are complete:
+- Plan 00 (critical search fixes) -- must be done
+- Implementation plan Phases 0-5 (local-only ingest pipeline) -- must be done
+- 06b quality wins (P6, P1-A, P8-A) -- must be done (they affect embedding text)
+- See the Prerequisites checklist below for the full list
+
+**Key decisions affecting this plan:**
+- D-08: Chunk size is 1024 tokens (verify in output)
+- D-09: Embedding dimensions are 512 (verify in output)
+- D-01: Output format is JSONL flat files (documents.jsonl, chunks.jsonl, topics.jsonl)
+- Config is via `.env` file and `src/mtss/config.py` Pydantic settings
+
+**What NOT to do:** Do NOT proceed to full ingest if any critical check fails. Do NOT modify pipeline code during this plan -- if something fails, go back and fix it in the relevant implementation plan first.
+
+---
+
 This plan executes AFTER all implementation plans are complete. It validates the full pipeline
 using a 15-document subset before the production run of 6,289 emails.
 

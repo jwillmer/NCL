@@ -11,6 +11,39 @@ estimated_time: ~3-4 hours total
 
 **Execute BEFORE all other plans.**
 
+## Context for New Agents
+
+**What is MTSS?** Maritime Technical Support System -- a RAG (Retrieval-Augmented Generation) pipeline that ingests maritime incident report emails (EML files with PDF/image attachments), chunks and embeds them, stores them in a vector database, and provides a chat UI for searching and querying incident history.
+
+**Tech stack:** Python 3.12, FastAPI, Supabase (PostgreSQL + pgvector), LiteLLM (wraps OpenAI APIs), Cohere reranker, Vite + React chat frontend.
+
+**Project root:** `C:/Projects/GitHub/NCL/`
+
+**Key directories:**
+- `src/mtss/` -- main application code
+  - `api/agent.py` -- LLM agent with tool-calling search node
+  - `rag/retriever.py` -- vector search + reranking
+  - `rag/reranker.py` -- Cohere cross-encoder reranking
+  - `rag/query_engine.py` -- standalone RAG query engine
+  - `config.py` -- Pydantic settings (env-based configuration)
+  - `storage/repositories/search.py` -- database search queries (pgvector HNSW)
+- `tests/` -- pytest test suite
+- `data/emails/` -- 6,289 source EML files
+- `docs/investigation/plans/` -- all execution plans and decision tracking
+
+**What this plan accomplishes:** Fixes a critical production bug (reranker silently disabled) and applies low-effort search quality improvements. These are all query-side fixes -- they do not touch the ingest pipeline and can be deployed independently.
+
+**Prerequisites / what came before:** The codebase has a working ingest pipeline and search system, but investigation documents `07a` and `07b` uncovered bugs and improvement opportunities. This plan extracts the urgent fixes. See `decisions-and-progress.md` for the full decision trail (D-11, D-12).
+
+**Key decisions affecting this plan:**
+- D-11: Reranker bug confirmed (P0), quick wins approved (P1), deferred items identified (P2+)
+- D-12: Completeness transparency (Fix 2.5) pulled from 07b scenario analysis
+- This plan modifies `config.py` (adds `retrieval_top_k`, `rerank_score_floor`); the implementation plan also modifies `config.py` (different fields) -- changes are additive and non-conflicting
+
+**What NOT to do:** Do not change chunk size, embedding dimensions, or any ingest pipeline code. Those belong to `implementation-plan.md`.
+
+---
+
 ## Overview
 
 The 07a investigation found a critical bug where the reranker is silently disabled in

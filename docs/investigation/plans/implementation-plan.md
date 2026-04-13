@@ -18,6 +18,46 @@ decisions:
 
 # Implementation Plan: Local-Only Ingest with Cost Optimizations
 
+## Context for New Agents
+
+**What is MTSS?** Maritime Technical Support System -- a RAG (Retrieval-Augmented Generation) pipeline that ingests maritime incident report emails (EML files with PDF/image attachments), chunks and embeds them, stores them in a vector database, and provides a chat UI for searching and querying incident history.
+
+**Tech stack:** Python 3.12, FastAPI, Supabase (PostgreSQL + pgvector), LiteLLM (wraps OpenAI APIs for embeddings, LLM calls, and image classification), Cohere reranker, Vite + React chat frontend. Build/dependency management via `uv` and `pyproject.toml`.
+
+**Project root:** `C:/Projects/GitHub/NCL/`
+
+**Key directories:**
+- `src/mtss/` -- main application code
+  - `ingest/pipeline.py` -- main email processing pipeline
+  - `ingest/estimator.py` -- cost estimation for ingest runs
+  - `ingest/components.py` -- dependency injection factory
+  - `parsers/` -- attachment parsers (LlamaParse, image processor, preprocessor)
+  - `storage/` -- Supabase client, repositories, search
+  - `config.py` -- Pydantic settings (all config via env vars)
+  - `cli/` -- Typer CLI commands (ingest, estimate, serve)
+- `tests/` -- pytest test suite; `tests/local_storage.py` has the prototype `LocalStorageClient`
+- `data/emails/` -- 6,289 source EML files (~50 GB)
+- `docs/investigation/` -- investigation documents (01-09) that analyzed the pipeline
+
+**What this plan accomplishes:** Builds a local-only ingest mode that writes to JSONL files instead of Supabase, while also cutting ingest cost from $230 to ~$6 through local parsers, image pre-filtering, and config optimizations. The result is a pipeline that can run without any cloud database dependency.
+
+**Prerequisites / what came before:**
+- `00-critical-fixes-plan.md` must be executed FIRST (fixes production search bugs)
+- Investigation documents 01-07 analyzed cost, storage, parsers, speed, and search quality
+- Key decisions (D-01 through D-12) are tracked in `decisions-and-progress.md`
+
+**Key decisions affecting this plan:**
+- D-01: JSONL over SQLite for local storage (simpler, 80% of code exists)
+- D-04: Stay with OpenAI/LiteLLM, add local parsers for simple docs
+- D-05: Implement cost optimization Phases 1+2 before first ingest ($224 savings)
+- D-08: Chunk size 512 to 1024 tokens (must be set before first ingest)
+- D-09: Embedding dimensions 1536 to 512 (must be set before first ingest)
+- D-07: Quality wins P6/P1-A/P8-A must be in place before first ingest (affect embedding text)
+
+**What NOT to do:** Do not modify search/retrieval code (that belongs to Plan 00). Do not run a full ingest until the test subset validation (`09-test-validation-execution.md`) passes.
+
+---
+
 ## Overview
 
 This plan merges two workstreams into a single implementation order:

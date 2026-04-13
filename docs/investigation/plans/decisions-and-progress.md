@@ -7,6 +7,18 @@ last_updated: 2026-04-14T01:00:00
 
 # Decisions & Progress Tracker
 
+## Context for New Agents
+
+**What is MTSS?** Maritime Technical Support System -- a RAG (Retrieval-Augmented Generation) pipeline that ingests maritime incident report emails (EML files with PDF/image attachments), chunks and embeds them, stores them in a vector database, and provides a chat UI for searching and querying incident history.
+
+**Tech stack:** Python 3.12, FastAPI, Supabase (PostgreSQL + pgvector), LiteLLM (wraps OpenAI APIs), Cohere reranker, Vite + React chat frontend. Project root: `C:/Projects/GitHub/NCL/`, source code at `src/mtss/`, tests at `tests/`, data at `data/emails/` (6,289 EML files).
+
+**What this document is:** A tracker of every decision made during a multi-document investigation of the MTSS ingest pipeline. The investigation analyzed cost, storage, parsers, speed, and search quality across documents 01-09 in `docs/investigation/`. Each decision references its source investigation document and rationale.
+
+**How to use this document:** Read the Quick Status table for an overview, then check Implementation Order at the bottom for what to do next. All active plans are in this same `plans/` directory. Execute `00-critical-fixes-plan.md` first, then `implementation-plan.md`, then `09-test-validation-execution.md`.
+
+---
+
 This document captures every decision made during the ingest pipeline investigation so a new agent or session can pick up exactly where we left off.
 
 ## Quick Status
