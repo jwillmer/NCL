@@ -36,9 +36,20 @@ WHAT TO EXCLUDE (skip over these to find start/end):
 - Mailto syntax like <mailto:email@domain.com>
 - Image references like [cid:xxx@domain.com]
 - Lines of underscores (______) or dashes (-----)
-- Standard legal notices, disclaimers
+- Standard legal notices, disclaimers, confidentiality notices
+- "Please find attached" or "Please see enclosed" boilerplate lines (when no other meaningful detail)
+- Auto-reply / out-of-office notices
+- Unsubscribe / opt-out links
 - Placeholder markers like [X]
 - Header lines at very start: standalone "Date:", "From:", "To:", "Att:" lines
+
+WHAT TO ALWAYS KEEP (even if near excluded content):
+- Vessel names, IMO numbers, hull numbers
+- Port names, locations, coordinates
+- Technical equipment references (pumps, engines, compressors, etc.)
+- Company names (identify parties involved in support threads)
+- Job titles and roles (identify participants)
+- URLs that reference documents, portals, or resources (NOT unsubscribe/tracking links)
 
 Return JSON:
 {
@@ -110,12 +121,18 @@ async def extract_content_bounds(
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
                 {"role": "user", "content": text},
             ],
-            response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=200,
+            max_tokens=300,
+            reasoning_effort="minimal",
+            drop_params=True,
         )
 
-        result = json.loads(response.choices[0].message.content)
+        raw = response.choices[0].message.content or ""
+        # Extract JSON from response (model may wrap it in markdown fences)
+        json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
+        if not json_match:
+            logger.warning(f"No JSON found in LLM response: {raw[:100]}...")
+            return (0, len(text))
+        result = json.loads(json_match.group())
         first_words = result.get("first_words", "")
         last_words = result.get("last_words", "")
 
@@ -265,9 +282,23 @@ def remove_boilerplate_from_message(text: str) -> str:
     text = re.sub(r'^IMPORTANT:\s*Please always use[^\n]+$', '', text, flags=re.MULTILINE | re.IGNORECASE)
     text = re.sub(r'^Please send all invoices[^\n]+$', '', text, flags=re.MULTILINE | re.IGNORECASE)
 
-    # Remove company titles/roles on their own lines after signatures
-    text = re.sub(r'^(?:Technical Department|Fleet Manager|Chief Engineer)[^\n]*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^(?:Maran Tankers|Management Inc)[^\n]*$', '', text, flags=re.MULTILINE)
+    # "Please find attached" when it's the whole line (no technical detail after)
+    text = re.sub(r'^(?:Please\s+)?(?:find|see)\s+(?:the\s+)?(?:attached|enclosed|herewith)\s*\.?\s*$',
+                  '', text, flags=re.MULTILINE | re.IGNORECASE)
+
+    # Legal disclaimer blocks (trigger line + continuation non-blank lines)
+    text = re.sub(
+        r'^(?:DISCLAIMER|CONFIDENTIAL(?:ITY)?[\s:]|This (?:e-?mail|message|communication) '
+        r'(?:and any|is|may)[^\n]*(?:confidential|privileged|intended))[^\n]*(?:\n(?![\n])[^\n]*)*',
+        '', text, flags=re.MULTILINE | re.IGNORECASE)
+
+    # Unsubscribe lines only (not general URLs)
+    text = re.sub(r'^(?:Unsubscribe|Click here to (?:unsubscribe|opt[- ]out))[^\n]*$',
+                  '', text, flags=re.MULTILINE | re.IGNORECASE)
+
+    # Standalone closing regards
+    text = re.sub(r'^(?:Best [Rr]egards|Kind [Rr]egards|Regards|Warm [Rr]egards)\s*,?\s*$',
+                  '', text, flags=re.MULTILINE)
 
     # Normalize multiple blank lines
     text = re.sub(r'\n{3,}', '\n\n', text)

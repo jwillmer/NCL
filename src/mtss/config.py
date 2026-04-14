@@ -57,7 +57,7 @@ class Settings(BaseSettings):
         default=None, validation_alias="CONTEXT_LLM_FALLBACK"
     )
     email_cleaner_model: str | None = Field(
-        default=None, validation_alias="EMAIL_CLEANER_MODEL"
+        default="gpt-5-nano", validation_alias="EMAIL_CLEANER_MODEL"
     )
     image_llm_model: str | None = Field(
         default="gpt-4.1-nano", validation_alias="IMAGE_LLM_MODEL"
@@ -133,6 +133,9 @@ class Settings(BaseSettings):
     )
     max_concurrent_files: int = Field(
         default=8, validation_alias="MAX_CONCURRENT_FILES"
+    )
+    max_concurrent_llamaparse: int = Field(
+        default=4, validation_alias="MAX_CONCURRENT_LLAMAPARSE"
     )
     enable_ocr: bool = Field(default=True, validation_alias="ENABLE_OCR")
     enable_picture_description: bool = Field(

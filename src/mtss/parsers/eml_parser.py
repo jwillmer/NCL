@@ -523,7 +523,7 @@ class EMLParser:
 
             attachments.append(
                 ParsedAttachment(
-                    filename=filename,
+                    filename=saved_path.name,
                     content_type=content_type,
                     size_bytes=len(payload),
                     saved_path=str(saved_path),

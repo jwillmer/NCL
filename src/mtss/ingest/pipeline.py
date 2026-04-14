@@ -7,6 +7,7 @@ Extracted from cli.py for better modularity.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from ..config import get_settings
 from ..ingest.archive_generator import _sanitize_storage_key
 from ..models.document import ProcessingStatus
 from ..parsers.email_cleaner import (
+    clean_email_body,
     remove_boilerplate_from_message,
     split_into_messages,
 )
@@ -209,9 +211,23 @@ def _create_body_chunks(
         # Clean boilerplate from this message
         cleaned_message = remove_boilerplate_from_message(message)
         if not cleaned_message.strip():
+            components.db.log_ingest_event(
+                document_id=email_doc.id,
+                event_type="message_filtered",
+                severity="info",
+                message=f"Message {msg_idx} empty after boilerplate removal ({len(message.split())} words raw)",
+                source_eml_path=email_doc.source_id,
+            )
             continue
         # Skip very short messages (auto-replies, signatures only)
         if len(cleaned_message.split()) < 20:
+            components.db.log_ingest_event(
+                document_id=email_doc.id,
+                event_type="message_filtered",
+                severity="info",
+                message=f"Message {msg_idx} too short after cleaning: {len(cleaned_message.split())} words",
+                source_eml_path=email_doc.source_id,
+            )
             continue
 
         # Find char positions in original body
@@ -382,10 +398,23 @@ async def process_email(
 
     # Step 4: Body chunks (extracted)
     if body_text:
+        # Clean email body using LLM boundary detection + regex boilerplate removal
+        settings = get_settings()
+        cleaner_model = settings.get_model(settings.email_cleaner_model)
+        cleaned_body = await clean_email_body(body_text, model=cleaner_model)
+
         body_chunks_list = _create_body_chunks(
-            email_doc, body_text, context_summary,
+            email_doc, cleaned_body, context_summary,
             vessel_ids, vessel_types, vessel_classes, topic_ids, components,
         )
+        if not body_chunks_list:
+            components.db.log_ingest_event(
+                document_id=email_doc.id,
+                event_type="no_body_chunks",
+                severity="info",
+                message="Email body produced 0 chunks (forwarding/cover email)",
+                source_eml_path=email_doc.source_id,
+            )
         vprint(f"Email body: {len(body_chunks_list)} chunk(s)", file_ctx)
         email_chunks.extend(body_chunks_list)
 
@@ -399,11 +428,15 @@ async def process_email(
             key = fr.original_path.rsplit("/", 1)[-1]
             archive_file_map[key] = fr
 
-    for i, attachment in enumerate(parsed_email.attachments):
+    # Process attachments concurrently (LlamaParse calls run in parallel)
+    _att_completed = 0
+
+    async def _run_attachment(i: int, attachment):
+        nonlocal _att_completed
         safe_name = _sanitize_storage_key(attachment.filename)
         archive_file_result = archive_file_map.get(safe_name)
 
-        attachment_chunks = await process_attachment(
+        chunks = await process_attachment(
             attachment=attachment,
             email_doc=email_doc,
             source_eml_path=source_eml_path,
@@ -421,12 +454,25 @@ async def process_email(
             email_context_summary=context_summary,
             collect_docs=attachment_docs,
         )
-        attachment_chunk_count += len(attachment_chunks)
-        email_chunks.extend(attachment_chunks)
-
-        # Update progress after each attachment
+        _att_completed += 1
         if on_progress:
-            on_progress(i + 1, max(1, attachment_count), file_ctx)
+            on_progress(_att_completed, max(1, attachment_count), file_ctx)
+        return chunks
+
+    att_results = await asyncio.gather(
+        *[_run_attachment(i, att) for i, att in enumerate(parsed_email.attachments)],
+        return_exceptions=True,
+    )
+
+    for i, att_result in enumerate(att_results):
+        if isinstance(att_result, BaseException):
+            att_name = parsed_email.attachments[i].filename
+            vprint(f"Attachment failed: {att_name}: {att_result}", file_ctx)
+            if not lenient:
+                raise att_result
+        else:
+            attachment_chunk_count += len(att_result)
+            email_chunks.extend(att_result)
 
     # Summary of attachments processed
     if parsed_email.attachments:

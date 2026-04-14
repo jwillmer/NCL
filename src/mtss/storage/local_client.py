@@ -51,17 +51,35 @@ class LocalStorageClient:
         """Load existing documents and topics from previous runs.
 
         Documents are stored as raw dicts for flush merge.
-        Topics are also loaded into in-memory indexes so deduplication
-        works correctly across batched runs.
+        Also populates in-memory indexes (hash, doc_id, source_id) so
+        deduplication works correctly across batched runs.
+        Topics are similarly loaded into indexes for topic dedup.
         """
+        from ..models.document import ProcessingStatus
+
         docs_path = self.output_dir / "documents.jsonl"
         if docs_path.exists():
             with open(docs_path, "r", encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
                         try:
-                            self._prior_documents.append(json.loads(line))
-                        except json.JSONDecodeError:
+                            doc_dict = json.loads(line)
+                            self._prior_documents.append(doc_dict)
+                            # Populate dedup indexes with SimpleNamespace wrappers
+                            doc_obj = SimpleNamespace(**doc_dict)
+                            doc_obj.id = UUID(doc_dict["id"]) if isinstance(doc_dict["id"], str) else doc_dict["id"]
+                            if doc_dict.get("status"):
+                                try:
+                                    doc_obj.status = ProcessingStatus(doc_dict["status"])
+                                except ValueError:
+                                    pass
+                            if doc_dict.get("file_hash"):
+                                self._documents_by_hash[doc_dict["file_hash"]] = doc_obj
+                            if doc_dict.get("doc_id"):
+                                self._documents_by_doc_id[doc_dict["doc_id"]] = doc_obj
+                            if doc_dict.get("source_id"):
+                                self._documents_by_source_id[doc_dict["source_id"]] = doc_obj
+                        except (json.JSONDecodeError, KeyError):
                             pass
 
         topics_path = self.output_dir / "topics.jsonl"

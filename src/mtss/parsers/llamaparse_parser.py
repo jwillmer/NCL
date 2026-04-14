@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -9,6 +10,18 @@ from ..config import get_settings
 from .base import BaseParser
 
 logger = logging.getLogger(__name__)
+
+# Module-level semaphore to limit concurrent LlamaParse API calls
+_llamaparse_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_llamaparse_semaphore() -> asyncio.Semaphore:
+    """Get or create the LlamaParse concurrency semaphore."""
+    global _llamaparse_semaphore
+    if _llamaparse_semaphore is None:
+        settings = get_settings()
+        _llamaparse_semaphore = asyncio.Semaphore(settings.max_concurrent_llamaparse)
+    return _llamaparse_semaphore
 
 
 class LlamaParseParser(BaseParser):
@@ -102,23 +115,25 @@ class LlamaParseParser(BaseParser):
             specialized_image_parsing=True,
         )
 
-        try:
-            logger.info(f"Parsing {file_path.name} with LlamaParse...")
-            result = await parser.aparse(str(file_path))
+        sem = _get_llamaparse_semaphore()
+        async with sem:
+            try:
+                logger.info(f"Parsing {file_path.name} with LlamaParse...")
+                result = await parser.aparse(str(file_path))
 
-            # Get markdown (combined, not split by page)
-            markdown_docs = result.get_markdown_documents(split_by_page=False)
-            markdown_text = "\n\n".join(doc.text for doc in markdown_docs)
+                # Get markdown (combined, not split by page)
+                markdown_docs = result.get_markdown_documents(split_by_page=False)
+                markdown_text = "\n\n".join(doc.text for doc in markdown_docs)
 
-            if not markdown_text or not markdown_text.strip():
-                raise ValueError(f"LlamaParse produced no content for {file_path}")
+                if not markdown_text or not markdown_text.strip():
+                    raise ValueError(f"LlamaParse produced no content for {file_path}")
 
-            logger.info(
-                f"LlamaParse extracted {len(markdown_text)} chars from {file_path.name}"
-            )
-            return markdown_text
+                logger.info(
+                    f"LlamaParse extracted {len(markdown_text)} chars from {file_path.name}"
+                )
+                return markdown_text
 
-        except Exception as e:
-            if "LlamaParse" in str(type(e).__name__):
-                raise ValueError(f"LlamaParse failed: {e}") from e
-            raise
+            except Exception as e:
+                if "LlamaParse" in str(type(e).__name__):
+                    raise ValueError(f"LlamaParse failed: {e}") from e
+                raise
