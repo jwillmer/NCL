@@ -12,6 +12,7 @@ import mimetypes
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -40,8 +41,47 @@ class LocalStorageClient:
     _chunks_by_document: Dict[str, list] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Ensure output directory exists."""
+        """Ensure output directory exists and load prior data."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._prior_documents: list[Dict[str, Any]] = []
+        self._prior_topics: Dict[str, Dict[str, Any]] = {}
+        self._load_prior_data()
+
+    def _load_prior_data(self):
+        """Load existing documents and topics from previous runs.
+
+        Documents are stored as raw dicts for flush merge.
+        Topics are also loaded into in-memory indexes so deduplication
+        works correctly across batched runs.
+        """
+        docs_path = self.output_dir / "documents.jsonl"
+        if docs_path.exists():
+            with open(docs_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            self._prior_documents.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+
+        topics_path = self.output_dir / "topics.jsonl"
+        if topics_path.exists():
+            with open(topics_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            t = json.loads(line)
+                            self._prior_topics[t["id"]] = t
+                            # Load into in-memory indexes for topic dedup
+                            topic_obj = SimpleNamespace(**t)
+                            topic_obj.id = UUID(t["id"]) if isinstance(t["id"], str) else t["id"]
+                            self._topics[t["id"]] = topic_obj
+                            if t.get("name"):
+                                self._topics_by_name[t["name"]] = topic_obj
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+        if self._prior_documents:
+            logger.info(f"Loaded {len(self._prior_documents)} prior documents, {len(self._prior_topics)} prior topics")
 
     def _append_jsonl(self, filename: str, data: Dict[str, Any]) -> None:
         """Append a JSON object as a line to a JSONL file."""
@@ -408,19 +448,26 @@ class LocalStorageClient:
         logger.info(f"Wrote manifest to {manifest_path}")
 
     def flush(self):
-        """Rewrite JSONL files with final in-memory state."""
-        # Rewrite documents.jsonl with final state
+        """Rewrite JSONL files merging prior data with current run."""
+        # Merge prior documents with current run (current overrides by id)
+        current_doc_ids = {str(doc.id) for doc in self._documents.values()}
         docs_path = self.output_dir / "documents.jsonl"
         with open(docs_path, "w") as f:
+            for prior_doc in self._prior_documents:
+                if prior_doc.get("id") not in current_doc_ids:
+                    f.write(json.dumps(prior_doc, default=str) + "\n")
             for doc in self._documents.values():
                 f.write(json.dumps(self._doc_to_dict(doc), default=str) + "\n")
 
-        # Rewrite topics.jsonl with final counts
-        if self._topics:
-            topics_path = self.output_dir / "topics.jsonl"
-            with open(topics_path, "w") as f:
-                for topic in self._topics.values():
-                    f.write(json.dumps(self._topic_to_dict(topic), default=str) + "\n")
+        # Merge prior topics with current run (current overrides by id)
+        topics_path = self.output_dir / "topics.jsonl"
+        current_topic_ids = set(self._topics.keys())
+        with open(topics_path, "w") as f:
+            for tid, prior_topic in self._prior_topics.items():
+                if tid not in current_topic_ids:
+                    f.write(json.dumps(prior_topic, default=str) + "\n")
+            for topic in self._topics.values():
+                f.write(json.dumps(self._topic_to_dict(topic), default=str) + "\n")
 
     async def close(self) -> None:
         """Flush and close local storage."""

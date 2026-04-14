@@ -40,6 +40,12 @@ class EmailResult:
     attachment_count: int = 0
     skipped: bool = False
     skip_reason: str = ""
+    # Service usage counters
+    local_pages: int = 0
+    llamaparse_pages: int = 0
+    vision_images: int = 0
+    embedding_chunks: int = 0
+    llm_calls: int = 0  # context + topic extraction
 
 
 def _noop_verbose(msg: str, file_ctx: str | None = None) -> None:

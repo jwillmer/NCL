@@ -79,6 +79,12 @@ PAGE_COUNT_CATEGORIES = {"PDF", "DOCX", "PPTX", "XLSX", "DOC", "PPT", "XLS", "Ot
 # Categories processed by LlamaParse
 LLAMAPARSE_CATEGORIES = {"PDF", "DOCX", "PPTX", "XLSX", "DOC", "PPT", "XLS", "Other Docs"}
 
+# Categories parsed locally (free, no API cost)
+LOCAL_PARSE_CATEGORIES = {"DOCX", "XLSX"}
+
+# Categories that always require LlamaParse (no local parser)
+LLAMAPARSE_ONLY_CATEGORIES = {"PPTX", "DOC", "PPT", "XLS", "Other Docs"}
+
 # Categories processed by vision API
 VISION_CATEGORIES = {"Images"}
 
@@ -96,6 +102,8 @@ class CategoryStats:
     errors: int = 0
     images_meaningful: int = 0
     images_skipped: int = 0
+    pdf_simple_pages: int = 0
+    pdf_complex_pages: int = 0
 
 
 @dataclass
@@ -280,16 +288,19 @@ class IngestEstimator:
                 categories[category] = {
                     "file_count": 0, "page_count": 0, "pages_unknown": 0,
                     "images_meaningful": 0, "images_skipped": 0,
+                    "pdf_simple_pages": 0, "pdf_complex_pages": 0,
                 }
 
             categories[category]["file_count"] += 1
 
             if category in PAGE_COUNT_CATEGORIES:
-                pages, issue = self._count_pages(file_path, folder)
+                pages, issue, complexity = self._count_pages(file_path, folder)
                 if issue:
                     issues.append(issue)
                     categories[category]["pages_unknown"] += 1
                 categories[category]["page_count"] += pages
+                if category == "PDF" and complexity:
+                    categories[category][f"pdf_{complexity}_pages"] += pages
             elif category in VISION_CATEGORIES:
                 if self._is_meaningful_image(file_path):
                     categories[category]["images_meaningful"] += 1
@@ -417,10 +428,11 @@ class IngestEstimator:
 
     def _count_pages(
         self, file_path: Path, eml_folder: Path
-    ) -> tuple[int, Optional[FileIssue]]:
-        """Count pages for a file. Returns (page_count, issue_or_none).
+    ) -> tuple[int, Optional[FileIssue], Optional[str]]:
+        """Count pages for a file. Returns (page_count, issue_or_none, complexity).
 
-        If page count can't be determined, returns (1, FileIssue).
+        complexity is 'simple'/'complex' for PDFs, None for other types.
+        If page count can't be determined, returns (1, FileIssue, complexity).
         """
         rel = str(file_path.relative_to(eml_folder))
         ext = file_path.suffix.lower()
@@ -429,29 +441,38 @@ class IngestEstimator:
             if ext == ".pdf":
                 return self._count_pdf_pages(file_path, rel)
             if ext == ".docx":
-                return self._count_docx_pages(file_path, rel)
+                pages, issue = self._count_docx_pages(file_path, rel)
+                return pages, issue, None
             if ext == ".pptx":
-                return self._count_pptx_pages(file_path, rel)
+                pages, issue = self._count_pptx_pages(file_path, rel)
+                return pages, issue, None
             if ext == ".xlsx":
-                return self._count_xlsx_pages(file_path, rel)
+                pages, issue = self._count_xlsx_pages(file_path, rel)
+                return pages, issue, None
             if ext == ".doc":
-                return self._count_ole_pages(file_path, rel, "doc")
+                pages, issue = self._count_ole_pages(file_path, rel, "doc")
+                return pages, issue, None
             if ext == ".ppt":
-                return self._count_ole_pages(file_path, rel, "ppt")
+                pages, issue = self._count_ole_pages(file_path, rel, "ppt")
+                return pages, issue, None
             if ext == ".xls":
-                return self._count_ole_pages(file_path, rel, "xls")
+                pages, issue = self._count_ole_pages(file_path, rel, "xls")
+                return pages, issue, None
             # CSV, RTF, HTML, other docs → 1 page each
-            return 1, None
+            return 1, None, None
         except Exception as e:
             return 1, FileIssue(
                 file=rel, issue="parse_error", detail=str(e)
-            )
+            ), None
 
-    def _count_pdf_pages(self, path: Path, rel: str) -> tuple[int, Optional[FileIssue]]:
-        """Count PDF pages using pypdf with fallbacks for broken PDFs.
+    def _count_pdf_pages(self, path: Path, rel: str) -> tuple[int, Optional[FileIssue], str]:
+        """Count PDF pages and classify complexity using pypdf.
 
-        Fallback chain:
-        1. pypdf on raw file
+        Returns (page_count, issue_or_none, complexity).
+        complexity is 'simple' (free local parsing) or 'complex' (LlamaParse).
+
+        Fallback chain for page counting:
+        1. pypdf on raw file (also classifies)
         2. If file is base64-encoded, decode and retry pypdf
         3. Regex: linearized /N value (page count in linearized PDF header)
         4. Regex: count /Type /Page objects in the raw/decoded data
@@ -474,7 +495,8 @@ class IngestEstimator:
             reader = PdfReader(io.BytesIO(pdf_data))
             count = len(reader.pages)
             if count > 0:
-                return count, None
+                complexity = self._classify_pdf_from_reader(reader)
+                return count, None, complexity
         except Exception:
             pass
 
@@ -483,18 +505,53 @@ class IngestEstimator:
         if lin:
             count = int(lin.group(1))
             if count > 0:
-                return count, None
+                return count, None, "complex"
 
         # Strategy 3: count /Type /Page objects (not /Pages)
         page_count = len(re.findall(rb"/Type\s*/Page\b(?!s)", pdf_data))
         if page_count > 0:
-            return page_count, None
+            return page_count, None, "complex"
 
         return 1, FileIssue(
             file=rel,
             issue="parse_error",
             detail="could not determine page count (pypdf + regex fallbacks failed)",
-        )
+        ), "complex"
+
+    @staticmethod
+    def _classify_pdf_from_reader(reader) -> str:
+        """Classify a PDF as 'simple' or 'complex' using an already-opened PdfReader.
+
+        Mirrors the logic in parsers.pdf_classifier.classify_pdf but reuses
+        the reader that _count_pdf_pages already created.
+        """
+        if not reader.pages:
+            return "complex"
+        try:
+            if reader.get_fields():
+                return "complex"
+        except Exception:
+            return "complex"
+
+        for page in reader.pages:
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                return "complex"
+            if len(text.strip()) < 50:
+                return "complex"
+            try:
+                resources = page.get("/Resources") or {}
+                if "/XObject" in resources:
+                    xobjects = resources["/XObject"].get_object()
+                    for obj_name in xobjects:
+                        xobj = xobjects[obj_name].get_object()
+                        if xobj.get("/Subtype") == "/Image":
+                            return "complex"
+            except (KeyError, AttributeError, TypeError):
+                return "complex"
+
+        return "simple"
 
     def _count_docx_pages(self, path: Path, rel: str) -> tuple[int, Optional[FileIssue]]:
         """Count DOCX pages from metadata or structural analysis."""
@@ -656,6 +713,8 @@ class IngestEstimator:
                 stats.pages_unknown += cat_data.get("pages_unknown", 0)
                 stats.images_meaningful += cat_data.get("images_meaningful", 0)
                 stats.images_skipped += cat_data.get("images_skipped", 0)
+                stats.pdf_simple_pages += cat_data.get("pdf_simple_pages", 0)
+                stats.pdf_complex_pages += cat_data.get("pdf_complex_pages", 0)
 
             # Collect issues
             for issue_data in summary.get("issues", []):

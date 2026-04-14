@@ -2,7 +2,7 @@
 purpose: Track all decisions made and progress across investigation documents for session continuity
 status: active
 date: 2026-04-13
-last_updated: 2026-04-14T02:00:00
+last_updated: 2026-04-14T03:00:00
 ---
 
 # Decisions & Progress Tracker
@@ -215,6 +215,24 @@ See `plans/02-implementation.md` for the full merged ingest plan.
 | `src/mtss/cli/ingest_cmd.py` | Replace `→` with ASCII `->` | 2026-04-14 |
 | `src/mtss/parsers/chunker.py` | Add >= 5 words min filter on chunk splits | 2026-04-14 |
 | `tests/test_image_filter.py` | New: tests for size override logic | 2026-04-14 |
+| `src/mtss/processing/topics.py` | Add `get_or_create_topics_batch()` for batch topic embeddings | 2026-04-14 |
+| `src/mtss/ingest/pipeline.py` | Use batch topic creation in ingest pipeline | 2026-04-14 |
+| `src/mtss/models/vessel.py` | Add `aliases`, `imo` fields to Vessel model | 2026-04-14 |
+| `src/mtss/processing/vessel_matcher.py` | Index vessel aliases in lookup | 2026-04-14 |
+| `src/mtss/cli/entities_cmd.py` | Parse optional IMO + aliases columns from CSV | 2026-04-14 |
+| `data/vessel-list.csv` | Fix header separator `;` consistency | 2026-04-14 |
+| `src/mtss/config.py` | Add `topic_match_threshold_loose`, `rerank_model` v3.5 | 2026-04-14 |
+| `src/mtss/rag/reranker.py` | Update default model to `cohere/rerank-v3.5` | 2026-04-14 |
+| `src/mtss/rag/topic_filter.py` | Add automatic topic loosening (retry at 0.55 threshold) | 2026-04-14 |
+| `src/mtss/rag/retriever.py` | Return `context_summary` in retrieval results | 2026-04-14 |
+| `src/mtss/storage/repositories/search.py` | Add `query_text` param for hybrid search | 2026-04-14 |
+| `src/mtss/models/chunk.py` | Add `context_summary` to RetrievalResult | 2026-04-14 |
+| `migrations/006_vessel_aliases.sql` | New: add aliases/IMO columns to vessels | 2026-04-14 |
+| `migrations/007_hybrid_search.sql` | New: tsvector column + hybrid match_chunks_v2 function | 2026-04-14 |
+| `tests/test_topics.py` | New: batch topic embedding tests | 2026-04-14 |
+| `tests/test_vessel_matcher.py` | New: vessel alias matching tests | 2026-04-14 |
+| `tests/test_topic_filter.py` | Add topic loosening tests | 2026-04-14 |
+| `tests/test_query_engine.py` | Add context_summary in retrieval result tests | 2026-04-14 |
 
 ## Plan Documents Index
 

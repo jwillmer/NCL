@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -75,6 +78,12 @@ def register(app: typer.Typer):
             "-o",
             help="Output directory for local-only mode (default: <source>/../output)",
         ),
+        limit: Optional[int] = typer.Option(
+            None,
+            "--limit",
+            "-n",
+            help="Max number of files to process (for validation batches)",
+        ),
         verbose: bool = typer.Option(
             False,
             "--verbose",
@@ -98,7 +107,7 @@ def register(app: typer.Typer):
         try:
             asyncio.run(_ingest(
                 source_dir, batch_size, resume, retry_failed,
-                reprocess_outdated, lenient, local_only, output_dir,
+                reprocess_outdated, lenient, local_only, output_dir, limit,
             ))
         finally:
             # Restore original signal handler
@@ -177,6 +186,7 @@ async def _ingest(
     lenient: bool = False,
     local_only: bool = False,
     output_dir: Optional[Path] = None,
+    limit: Optional[int] = None,
 ):
     """Async implementation of ingest command."""
     from ..config import get_settings
@@ -247,6 +257,9 @@ async def _ingest(
     report_writer = IngestReportWriter(source_dir=str(source_dir))
     console.print(f"[dim]Report: {report_writer.get_path()}[/dim]")
 
+    run_start = time.monotonic()
+    run_start_time = datetime.now(timezone.utc).isoformat()
+
     try:
         # Get files to process
         if reprocess_outdated:
@@ -267,6 +280,10 @@ async def _ingest(
         else:
             files = list(source_dir.glob("**/*.eml"))
             console.print(f"[green]Found {len(files)} total EML files[/green]")
+
+        if limit and len(files) > limit:
+            files = files[:limit]
+            console.print(f"[yellow]Limited to {limit} files[/yellow]")
 
         vprint(f"Source directory: {source_dir}")
 
@@ -448,6 +465,10 @@ async def _ingest(
         _show_stats(stats)
         _issue_tracker.show_summary()
 
+        # Write run summary (local-only mode)
+        if local_only:
+            _write_run_summary(resolved_output, run_start, run_start_time, len(files), processed_count, stats)
+
         # Finalize report with stats and cleanup old reports
         report_writer.update_stats(len(files), processed_count)
         report_writer.cleanup_old_reports()
@@ -462,6 +483,113 @@ async def _ingest(
         await db.close()
 
 
+def _write_run_summary(
+    output_dir: Path,
+    run_start: float,
+    run_start_time: str,
+    files_attempted: int,
+    processed_count: int,
+    stats: dict,
+):
+    """Write run summary to run_history.jsonl and print to console."""
+    from rich.table import Table
+
+    elapsed = time.monotonic() - run_start
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Count documents created during THIS run (by timestamp)
+    run_docs: dict[str, int] = {}  # doc_type -> count
+    total_docs: dict[str, int] = {}
+    docs_path = output_dir / "documents.jsonl"
+    if docs_path.exists():
+        with open(docs_path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    dt = d.get("document_type", "unknown")
+                    total_docs[dt] = total_docs.get(dt, 0) + 1
+                except json.JSONDecodeError:
+                    pass
+
+    # Count chunks and topics (total in output dir)
+    chunk_count = topic_count = 0
+    for name, var_name in [("chunks.jsonl", "chunk"), ("topics.jsonl", "topic")]:
+        path = output_dir / name
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                count = sum(1 for _ in f)
+            if var_name == "chunk":
+                chunk_count = count
+            else:
+                topic_count = count
+
+    # Count events by reason
+    events_by_reason: dict[str, int] = {}
+    events_path = output_dir / "ingest_events.jsonl"
+    if events_path.exists():
+        with open(events_path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                    reason = e.get("reason", "unknown")
+                    events_by_reason[reason] = events_by_reason.get(reason, 0) + 1
+                except json.JSONDecodeError:
+                    pass
+
+    doc_count = sum(total_docs.values())
+    vision_images = total_docs.get("attachment_image", 0)
+
+    # Build summary
+    summary = {
+        "timestamp": now,
+        "elapsed_seconds": round(elapsed, 1),
+        "files_attempted": files_attempted,
+        "files_processed": processed_count,
+        "files_failed": stats.get("failed", 0),
+        "cumulative": {
+            "documents": doc_count,
+            "chunks": chunk_count,
+            "topics": topic_count,
+            "doc_types": total_docs,
+        },
+        "services": {
+            "vision_images": vision_images,
+            "skipped_events": events_by_reason,
+        },
+    }
+
+    # Append to run_history.jsonl
+    history_path = output_dir / "run_history.jsonl"
+    with open(history_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(summary) + "\n")
+
+    # Print concise summary table
+    table = Table(title="Run Summary")
+    table.add_column("Metric", style="cyan")
+    table.add_column("This Run", justify="right", style="green")
+    table.add_column("Cumulative", justify="right", style="dim")
+
+    mins = int(elapsed // 60)
+    secs = int(elapsed % 60)
+    table.add_row("Duration", f"{mins}m {secs}s", "")
+    table.add_row("Files processed", str(processed_count), str(stats.get("completed", 0)))
+    table.add_row("Failed", str(stats.get("failed", 0)), "")
+    table.add_row("Documents", f"+{processed_count}", str(doc_count))
+    table.add_row("Chunks", "", str(chunk_count))
+    table.add_row("Topics", "", str(topic_count))
+    table.add_section()
+    table.add_row("Vision API (images)", "", str(vision_images))
+    for dt, count in sorted(total_docs.items()):
+        if dt != "email" and dt != "attachment_image":
+            table.add_row(f"  {dt}", "", str(count))
+    if events_by_reason:
+        skipped = sum(events_by_reason.values())
+        table.add_row("Skipped (non-content)", "", str(skipped))
+
+    console.print(table)
+    console.print(f"[dim]Run history: {history_path}[/dim]")
+
+
 def _show_estimate(
     result,
     page_cost: float,
@@ -474,6 +602,8 @@ def _show_estimate(
     from rich.table import Table
 
     from ..ingest.estimator import (
+        LLAMAPARSE_ONLY_CATEGORIES,
+        LOCAL_PARSE_CATEGORIES,
         PAGE_COUNT_CATEGORIES,
         TEXT_CATEGORIES,
         VISION_CATEGORIES,
@@ -485,6 +615,7 @@ def _show_estimate(
     inv_table.add_column("Files", justify="right", style="green")
     inv_table.add_column("Pages", justify="right")
     inv_table.add_column("Unknown", justify="right", style="yellow")
+    inv_table.add_column("Parse Method", style="dim")
 
     # Display order
     display_order = [
@@ -522,7 +653,30 @@ def _show_estimate(
             pages_str = "\u2014"
             unknown_str = "\u2014"
 
-        inv_table.add_row(cat_name, str(stats.file_count), pages_str, unknown_str)
+        # Determine parse method for this category
+        if cat_name in LOCAL_PARSE_CATEGORIES:
+            method = "local (free)"
+        elif cat_name in LLAMAPARSE_ONLY_CATEGORIES:
+            method = "LlamaParse"
+        elif cat_name == "PDF":
+            sp = stats.pdf_simple_pages
+            cp = stats.pdf_complex_pages
+            if sp > 0 and cp > 0:
+                method = f"local:{sp}pp / LP:{cp}pp"
+            elif sp > 0:
+                method = "local (free)"
+            elif cp > 0:
+                method = "LlamaParse"
+            else:
+                method = "LlamaParse*"
+        elif cat_name in VISION_CATEGORIES:
+            method = "Vision API"
+        elif cat_name in TEXT_CATEGORIES:
+            method = "local (free)"
+        else:
+            method = "--"
+
+        inv_table.add_row(cat_name, str(stats.file_count), pages_str, unknown_str, method)
 
     # Total row
     inv_table.add_section()
@@ -536,6 +690,7 @@ def _show_estimate(
         f"[bold]{total_files}[/bold]",
         f"[bold]{total_pages}[/bold]",
         f"[bold]{total_unknown_str}[/bold]",
+        "",
     )
 
     console.print(inv_table)
@@ -548,11 +703,37 @@ def _show_estimate(
     cost_table.add_column("Unit Cost", justify="right")
     cost_table.add_column("Cost", justify="right", style="green")
 
-    # LlamaParse (documents)
-    llama_pages = total_pages
+    # Compute local vs LlamaParse page split
+    local_pages = 0
+    llama_pages = 0
+    for cat_name in PAGE_COUNT_CATEGORIES:
+        stats = result.categories.get(cat_name)
+        if not stats:
+            continue
+        if cat_name in LOCAL_PARSE_CATEGORIES:
+            local_pages += stats.page_count
+        elif cat_name == "PDF":
+            if stats.pdf_simple_pages or stats.pdf_complex_pages:
+                local_pages += stats.pdf_simple_pages
+                llama_pages += stats.pdf_complex_pages
+            else:
+                llama_pages += stats.page_count  # legacy cache
+        else:
+            llama_pages += stats.page_count
+
+    # Local parsing (free)
+    if local_pages > 0:
+        cost_table.add_row(
+            "Local parsing (free)",
+            f"{local_pages} pages",
+            "$0.00000",
+            "$0.00",
+        )
+
+    # LlamaParse (complex/legacy docs)
     llama_total = llama_pages * page_cost
     cost_table.add_row(
-        "LlamaParse (documents)",
+        "LlamaParse (complex docs)",
         f"{llama_pages} pages",
         f"${page_cost:.5f}",
         f"${llama_total:.2f}",
@@ -622,10 +803,14 @@ def _show_estimate(
     # -- Footnotes --
     console.print()
     console.print(
-        "  [dim]LlamaParse: 5 avg credits/page \u00d7 $0.00125/credit ($50 / 40k credits)[/dim]"
+        "  [dim]Local: simple PDFs (PyMuPDF), DOCX (python-docx), XLSX (openpyxl) -- no API cost[/dim]"
     )
     console.print(
-        "  [dim]Embeddings: ~1.5 chunks/page \u00d7 text-embedding-3-small ($0.02/M tokens)[/dim]"
+        "  [dim]LlamaParse: complex/scanned PDFs, PPTX, legacy Office -- "
+        "5 avg credits/page x $0.00125/credit[/dim]"
+    )
+    console.print(
+        "  [dim]Embeddings: ~1.5 chunks/page x text-embedding-3-small ($0.02/M tokens)[/dim]"
     )
     if image_skipped > 0:
         console.print(
