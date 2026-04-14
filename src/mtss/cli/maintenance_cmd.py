@@ -145,11 +145,10 @@ def register(app: typer.Typer):
         Scans ingested emails and automatically fixes:
 
         - Orphaned documents (source file deleted, removes from DB)
-        - Missing/mislinked archives (checks bucket, updates DB or regenerates)
-        - Missing chunk line numbers (re-chunks from archive, atomic replace)
-        - Missing context summaries (regenerates with LLM, includes retry)
+        - Missing topics (backfills topic extraction for older documents)
 
-        Uses identical processing as regular ingest for consistency.
+        With atomic persistence, crash-recovery repairs (missing archives,
+        lines, context) are no longer needed.
 
         Examples:
             MTSS ingest-update --dry-run          # Scan only, show issues
@@ -446,8 +445,8 @@ async def _ingest_update(
         # Create shared components (same as regular ingest)
         components = create_ingest_components(db, source_dir, vessels)
 
-        # Always check all issue types (now includes topics)
-        checks = {"archives", "chunks", "context", "topics"}
+        # With atomic persistence, only topic backfill remains
+        checks = {"topics"}
 
         # Progress callback for scan phase
         scan_progress = None

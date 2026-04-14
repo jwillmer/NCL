@@ -136,6 +136,19 @@ class SupabaseClient:
     async def replace_chunks_atomic(self, doc_id: UUID, new_chunks: List[Chunk]) -> int:
         return await self._docs.replace_chunks_atomic(doc_id, new_chunks)
 
+    async def persist_ingest_result(
+        self,
+        email_doc: Document,
+        attachment_docs: List[Document],
+        chunks: List[Chunk],
+        topic_ids: List[UUID] | None = None,
+        chunk_delta: int = 0,
+    ) -> None:
+        """Persist all documents + chunks in a single asyncpg transaction."""
+        return await self._docs.persist_ingest_result(
+            email_doc, attachment_docs, chunks, topic_ids, chunk_delta,
+        )
+
     def get_chunk_by_id(self, chunk_id: str) -> Optional[Chunk]:
         return self._docs.get_chunk_by_id(chunk_id)
 

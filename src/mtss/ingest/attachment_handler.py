@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING, Callable
 
 from ..ingest.archive_generator import _sanitize_storage_key
 from ..ingest.helpers import (
-    apply_fallback_context,
     enrich_chunks_with_document_metadata,
     get_format_name,
-    prepend_date_prefix,
+    noop_verbose,
+    sanitize_error_message,
 )
 from ..models.document import ProcessingStatus
 
@@ -26,8 +26,7 @@ if TYPE_CHECKING:
     from .helpers import IssueTracker
 
 
-def _noop_verbose(msg: str, file_ctx: str | None = None) -> None:
-    """Default no-op verbose callback."""
+_noop_verbose = noop_verbose  # backward compat alias
 
 
 def _extract_content_from_cached_markdown(cached_md: str) -> str | None:
@@ -66,6 +65,7 @@ async def process_attachment(
     on_verbose: Callable[[str, str | None], None] | None = None,
     issue_tracker: "IssueTracker | None" = None,
     email_context_summary: str | None = None,
+    collect_docs: list["Document"] | None = None,
 ) -> list["Chunk"]:
     """Process a single attachment and return its chunks.
 
@@ -137,12 +137,13 @@ async def process_attachment(
                 on_verbose=on_verbose,
                 issue_tracker=issue_tracker,
                 email_context_summary=email_context_summary,
+                collect_docs=collect_docs,
             )
         )
         return chunks
 
-    # Create attachment document for non-ZIP files
-    attach_doc = await components.hierarchy_manager.create_attachment_document(
+    # Build attachment document (deferred DB insert - caller persists atomically)
+    attach_doc = components.hierarchy_manager.build_attachment_document(
         parent_doc=email_doc,
         attachment_path=file_path,
         content_type=attachment.content_type,
@@ -162,7 +163,7 @@ async def process_attachment(
             chunks.append(chunk)
             parsed_content = result.image_description
             vprint("  -> 1 chunk created (image described)", file_ctx)
-            await components.db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+            attach_doc.status = ProcessingStatus.COMPLETED
         elif result.is_image:
             # Image needs description (preprocessing didn't provide one)
             attach_chunks = await components.attachment_processor.process_document_image(
@@ -172,7 +173,7 @@ async def process_attachment(
             if attach_chunks:
                 parsed_content = attach_chunks[0].content
             vprint(f"  -> {len(attach_chunks)} chunks created (image described)", file_ctx)
-            await components.db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+            attach_doc.status = ProcessingStatus.COMPLETED
         else:
             # Document - check for cached parsed content before calling LlamaParse
             cached_content: str | None = None
@@ -218,7 +219,6 @@ async def process_attachment(
                     vprint("  -> 0 chunks (document has no extractable text)", file_ctx)
 
             # Generate context summary for better search relevance
-            attach_context_used = None
             if attach_chunks and components.context_generator and parsed_content:
                 try:
                     attach_context = await components.context_generator.generate_context(
@@ -226,7 +226,6 @@ async def process_attachment(
                     )
                     if attach_context:
                         vprint(f"  -> Context generated: {len(attach_context)} chars", file_ctx)
-                        attach_context_used = attach_context
                         # Apply context summary to ALL chunks
                         for chunk in attach_chunks:
                             chunk.context_summary = attach_context
@@ -236,15 +235,8 @@ async def process_attachment(
                 except Exception as e:
                     vprint(f"  -> Context generation failed: {e}", file_ctx)
 
-            # Inherit email context when no attachment-specific context was generated
-            if attach_chunks and not attach_context_used and email_context_summary:
-                vprint(f"  -> Inheriting email context ({len(email_context_summary)} chars)", file_ctx)
-                apply_fallback_context(attach_chunks, email_context_summary, components.context_generator)
-
-            prepend_date_prefix(attach_chunks, email_doc)
-
             chunks.extend(attach_chunks)
-            await components.db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+            attach_doc.status = ProcessingStatus.COMPLETED
 
         # Update archive with .md file for this attachment
         vprint(f"  -> MD check: archive_gen={components.archive_generator is not None}, parsed_content={len(parsed_content) if parsed_content else 0} chars, doc_id={email_doc.doc_id[:16] if email_doc.doc_id else None}", file_ctx)
@@ -265,9 +257,6 @@ async def process_attachment(
                 download_uri = f"/archive/{download_path}"
                 attach_doc.archive_browse_uri = browse_uri
                 attach_doc.archive_download_uri = download_uri
-                await components.db.update_document_archive_uris(
-                    attach_doc.id, browse_uri, download_uri
-                )
             else:
                 vprint("  -> update_attachment_markdown returned None", file_ctx)
         else:
@@ -276,13 +265,18 @@ async def process_attachment(
     except Exception as e:
         if issue_tracker:
             await issue_tracker.track_async(file_ctx, attachment.filename, str(e))
-        await components.db.update_document_status(attach_doc.id, ProcessingStatus.FAILED, str(e))
+        attach_doc.status = ProcessingStatus.FAILED
+        attach_doc.error_message = sanitize_error_message(str(e))
         await unsupported_logger.log_unsupported_file(
             file_path=file_path,
             reason="extraction_failed",
             source_eml_path=source_eml_path,
             parent_document_id=email_doc.id,
         )
+
+    # Collect document for atomic persist by caller
+    if collect_docs is not None:
+        collect_docs.append(attach_doc)
 
     # Enrich chunks with document citation metadata (source_id, source_title, archive URIs)
     enrich_chunks_with_document_metadata(chunks, attach_doc)
@@ -317,13 +311,14 @@ async def process_zip_attachment(
     on_verbose: Callable[[str, str | None], None] | None = None,
     issue_tracker: "IssueTracker | None" = None,
     email_context_summary: str | None = None,
+    collect_docs: list["Document"] | None = None,
 ) -> list["Chunk"]:
     """Extract and process files from a ZIP attachment.
 
     Note: ZIP contents don't use the archive cache since they don't have
     pre-existing archive paths. They are always parsed fresh.
     """
-    vprint = on_verbose or _noop_verbose  # noqa: F841 - kept for future verbose output
+    vprint = on_verbose or _noop_verbose
     chunks: list["Chunk"] = []
     vessel_ids = vessel_ids or []
     vessel_types = vessel_types or []
@@ -349,8 +344,8 @@ async def process_zip_attachment(
                 )
                 continue
 
-            # Create document for each extracted file
-            attach_doc = await components.hierarchy_manager.create_attachment_document(
+            # Build document for each extracted file (deferred DB insert)
+            attach_doc = components.hierarchy_manager.build_attachment_document(
                 parent_doc=email_doc,
                 attachment_path=extracted_path,
                 content_type=extracted_content_type,
@@ -388,11 +383,8 @@ async def process_zip_attachment(
                             chunk.metadata["vessel_types"] = vessel_types
                         if vessel_classes:
                             chunk.metadata["vessel_classes"] = vessel_classes
-                # Inherit email context and add date prefix for ZIP-extracted chunks
-                apply_fallback_context(attach_chunks, email_context_summary, components.context_generator)
-                prepend_date_prefix(attach_chunks, email_doc)
                 chunks.extend(attach_chunks)
-                await components.db.update_document_status(attach_doc.id, ProcessingStatus.COMPLETED)
+                attach_doc.status = ProcessingStatus.COMPLETED
 
                 # Update archive with .md file for this extracted file
                 if components.archive_generator and parsed_content and email_doc.doc_id:
@@ -406,9 +398,8 @@ async def process_zip_attachment(
             except Exception as e:
                 if issue_tracker:
                     await issue_tracker.track_async(file_ctx, f"{attachment.filename}/{extracted_path.name}", str(e))
-                await components.db.update_document_status(
-                    attach_doc.id, ProcessingStatus.FAILED, str(e)
-                )
+                attach_doc.status = ProcessingStatus.FAILED
+                attach_doc.error_message = sanitize_error_message(str(e))
                 await unsupported_logger.log_unsupported_file(
                     file_path=extracted_path,
                     reason="extraction_failed",
@@ -416,6 +407,10 @@ async def process_zip_attachment(
                     source_zip_path=attachment.saved_path,
                     parent_document_id=email_doc.id,
                 )
+
+            # Collect document for atomic persist (after try/except so it's always collected)
+            if collect_docs is not None:
+                collect_docs.append(attach_doc)
 
     except Exception as e:
         if issue_tracker:

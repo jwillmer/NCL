@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import signal
 import time
 from datetime import datetime, timezone
@@ -109,11 +108,10 @@ def register(app: typer.Typer):
                 source_dir, batch_size, resume, retry_failed,
                 reprocess_outdated, lenient, local_only, output_dir, limit,
             ))
+        except (SystemExit, KeyboardInterrupt):
+            pass
         finally:
-            # Restore original signal handler
             signal.signal(signal.SIGINT, original_handler)
-            # Force exit to clean up any lingering async resources (e.g., httpx clients from Agents SDK)
-            os._exit(0)
 
     @app.command()
     def estimate(
@@ -379,20 +377,28 @@ async def _ingest(
                         completed=0,
                     )
 
-                    email_result = await process_email(
-                        eml_path=file_path,
-                        components=components,
-                        tracker=tracker,
-                        unsupported_logger=unsupported_logger,
-                        version_manager=version_manager,
-                        force_reparse=reprocess_outdated,
-                        lenient=lenient,
-                        on_verbose=vprint,
-                        issue_tracker=_issue_tracker,
-                        on_progress=_on_progress,
+                    email_result = await asyncio.wait_for(
+                        process_email(
+                            eml_path=file_path,
+                            components=components,
+                            tracker=tracker,
+                            unsupported_logger=unsupported_logger,
+                            version_manager=version_manager,
+                            force_reparse=reprocess_outdated,
+                            lenient=lenient,
+                            on_verbose=vprint,
+                            issue_tracker=_issue_tracker,
+                            on_progress=_on_progress,
+                        ),
+                        timeout=settings.per_file_timeout_seconds,
                     )
                     if not email_result.skipped:
                         processed_count += 1
+                except asyncio.TimeoutError:
+                    error_msg = f"Timed out after {settings.per_file_timeout_seconds}s"
+                    await tracker.mark_failed(file_path, error_msg)
+                    report_writer.add_eml_failure(str(file_path), error_msg)
+                    console.print(f"[red]Timeout: {file_path.name} ({error_msg})[/red]")
                 except Exception as e:
                     await tracker.mark_failed(file_path, str(e))
                     report_writer.add_eml_failure(str(file_path), str(e))

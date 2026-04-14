@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -364,47 +365,129 @@ class DocumentRepository(BaseRepository):
 
         pool = await self.get_pool()
         async with pool.acquire() as conn:
-            records = [
-                (
-                    chunk.id,
-                    chunk.chunk_id or "",  # Stable chunk ID for citations
-                    chunk.document_id,
-                    chunk.content,
-                    chunk.chunk_index,
-                    chunk.context_summary,  # LLM-generated context
-                    chunk.embedding_text,  # Full text used for embedding
-                    chunk.section_path,  # Renamed from heading_path
-                    chunk.section_title,
-                    chunk.source_title,  # Denormalized citation metadata
-                    chunk.source_id,
-                    chunk.page_number,
-                    chunk.line_from,
-                    chunk.line_to,
-                    chunk.char_start,
-                    chunk.char_end,
-                    chunk.archive_browse_uri,
-                    chunk.archive_download_uri,
-                    chunk.embedding,
-                    json.dumps(chunk.metadata),
-                )
-                for chunk in chunks
-            ]
-
-            await conn.executemany(
-                """
-                INSERT INTO chunks
-                (id, chunk_id, document_id, content, chunk_index,
-                 context_summary, embedding_text, section_path, section_title,
-                 source_title, source_id,
-                 page_number, line_from, line_to, char_start, char_end,
-                 archive_browse_uri, archive_download_uri,
-                 embedding, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-                """,
-                records,
-            )
+            await self._insert_chunks_pg(conn, chunks)
 
         return chunks
+
+    async def persist_ingest_result(
+        self,
+        email_doc: Document,
+        attachment_docs: List[Document],
+        chunks: List[Chunk],
+        topic_ids: List[UUID] | None = None,
+        chunk_delta: int = 0,
+    ) -> None:
+        """Persist all documents + chunks in a single asyncpg transaction.
+
+        Ensures atomic persistence: either everything is committed or nothing.
+        This prevents partial data from crashes mid-processing.
+        """
+        settings = get_settings()
+        pool = await self.get_pool()
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Insert all documents
+                for doc in [email_doc] + attachment_docs:
+                    await self._insert_document_pg(conn, doc, settings)
+
+                # Batch insert all chunks
+                if chunks:
+                    await self._insert_chunks_pg(conn, chunks)
+
+                # Increment topic counts
+                if topic_ids and chunk_delta:
+                    for topic_id in topic_ids:
+                        await conn.execute(
+                            """
+                            UPDATE topics
+                            SET chunk_count = chunk_count + $2,
+                                document_count = document_count + $3,
+                                updated_at = NOW()
+                            WHERE id = $1
+                            """,
+                            topic_id, chunk_delta, 1,
+                        )
+
+    @staticmethod
+    async def _insert_chunks_pg(conn, chunks: List[Chunk]) -> None:
+        """Insert chunks via asyncpg connection (shared by insert_chunks and persist_ingest_result)."""
+        records = [
+            (
+                chunk.id, chunk.chunk_id or "", chunk.document_id,
+                chunk.content, chunk.chunk_index,
+                chunk.context_summary, chunk.embedding_text,
+                chunk.section_path, chunk.section_title,
+                chunk.source_title, chunk.source_id,
+                chunk.page_number, chunk.line_from, chunk.line_to,
+                chunk.char_start, chunk.char_end,
+                chunk.archive_browse_uri, chunk.archive_download_uri,
+                chunk.embedding, json.dumps(chunk.metadata),
+            )
+            for chunk in chunks
+        ]
+        await conn.executemany(
+            """
+            INSERT INTO chunks
+            (id, chunk_id, document_id, content, chunk_index,
+             context_summary, embedding_text, section_path, section_title,
+             source_title, source_id,
+             page_number, line_from, line_to, char_start, char_end,
+             archive_browse_uri, archive_download_uri,
+             embedding, metadata)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+            """,
+            records,
+        )
+
+    @staticmethod
+    async def _insert_document_pg(conn, doc: Document, settings) -> None:
+        """Insert a document via asyncpg connection (for use within transactions)."""
+        await conn.execute(
+            """
+            INSERT INTO documents (
+                id, source_id, doc_id, content_version, ingest_version,
+                parent_id, root_id, depth, path,
+                document_type, file_path, file_name, file_hash,
+                source_title, archive_path, archive_browse_uri, archive_download_uri,
+                status, error_message, processed_at,
+                email_subject, email_participants, email_initiator,
+                email_date_start, email_date_end, email_message_count,
+                attachment_content_type, attachment_size_bytes
+            ) VALUES (
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                $21,$22,$23,$24,$25,$26,$27,$28
+            )
+            """,
+            doc.id,
+            doc.source_id or "",
+            doc.doc_id or "",
+            doc.content_version,
+            doc.ingest_version or settings.current_ingest_version,
+            doc.parent_id,
+            doc.root_id,
+            doc.depth,
+            doc.path,
+            doc.document_type.value,
+            doc.file_path,
+            doc.file_name,
+            doc.file_hash,
+            doc.source_title,
+            doc.archive_path,
+            doc.archive_browse_uri,
+            doc.archive_download_uri,
+            doc.status.value,
+            doc.error_message,
+            datetime.now(timezone.utc) if doc.status == ProcessingStatus.COMPLETED else None,
+            doc.email_metadata.subject if doc.email_metadata else None,
+            doc.email_metadata.participants if doc.email_metadata else None,
+            doc.email_metadata.initiator if doc.email_metadata else None,
+            doc.email_metadata.date_start.isoformat() if doc.email_metadata and doc.email_metadata.date_start else None,
+            doc.email_metadata.date_end.isoformat() if doc.email_metadata and doc.email_metadata.date_end else None,
+            doc.email_metadata.message_count if doc.email_metadata else None,
+            doc.attachment_metadata.content_type if doc.attachment_metadata else None,
+            doc.attachment_metadata.size_bytes if doc.attachment_metadata else None,
+        )
 
     async def get_chunks_by_document(self, doc_id: UUID) -> List[Chunk]:
         """Get all chunks for a document.

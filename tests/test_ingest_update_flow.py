@@ -15,7 +15,7 @@ from mtss.ingest.repair import IssueRecord
 
 
 class TestFindOrphanedDocuments:
-    """Tests for _find_orphaned_documents() (cli.py:2084)."""
+    """Tests for find_orphaned_documents()."""
 
     @pytest.mark.asyncio
     async def test_no_orphans_when_all_files_exist(
@@ -113,7 +113,7 @@ class TestFindOrphanedDocuments:
 
 
 class TestScanIngestIssues:
-    """Tests for _scan_ingest_issues() (cli.py:2114)."""
+    """Tests for scan_ingest_issues()."""
 
     @pytest.fixture
     def mock_components(self, mock_supabase_client, mock_archive_storage):
@@ -127,7 +127,7 @@ class TestScanIngestIssues:
     async def test_no_issues_for_complete_documents(
         self, temp_dir, mock_components, sample_document, sample_chunk
     ):
-        """Doc has archive, lines, context."""
+        """Doc with topics has no issues."""
         (temp_dir / "complete.eml").write_text("content")
 
         # Document has all required fields
@@ -135,6 +135,7 @@ class TestScanIngestIssues:
         sample_chunk.line_from = 1
         sample_chunk.line_to = 10
         sample_chunk.context_summary = "Context summary"
+        sample_chunk.metadata = {"topic_ids": ["topic1"]}
 
         mock_components.db.get_document_by_source_id = AsyncMock(
             return_value=sample_document
@@ -149,23 +150,21 @@ class TestScanIngestIssues:
         issues = await scan_ingest_issues(
             temp_dir,
             mock_components,
-            checks={"archives", "chunks", "context"},
+            checks={"topics"},
             limit=0,
         )
 
         assert len(issues) == 0
 
     @pytest.mark.asyncio
-    async def test_detects_missing_archive(
+    async def test_detects_missing_topics(
         self, temp_dir, mock_components, sample_document, sample_chunk
     ):
-        """Root doc missing archive_browse_uri."""
-        (temp_dir / "no_archive.eml").write_text("content")
+        """Chunks missing topic_ids detected."""
+        (temp_dir / "no_topics.eml").write_text("content")
 
-        # Document missing archive
-        sample_document.archive_browse_uri = None
-        sample_chunk.line_from = 1
-        sample_chunk.context_summary = "Context"
+        sample_document.archive_browse_uri = "/archive/test.md"
+        sample_chunk.metadata = {}  # No topic_ids
 
         mock_components.db.get_document_by_source_id = AsyncMock(
             return_value=sample_document
@@ -180,107 +179,12 @@ class TestScanIngestIssues:
         issues = await scan_ingest_issues(
             temp_dir,
             mock_components,
-            checks={"archives"},
+            checks={"topics"},
             limit=0,
         )
 
         assert len(issues) == 1
-        assert "missing_archive" in issues[0].issues
-
-    @pytest.mark.asyncio
-    async def test_detects_missing_child_archive(
-        self,
-        temp_dir,
-        mock_components,
-        sample_document,
-        sample_attachment_document,
-        sample_chunk,
-    ):
-        """Child doc missing archive."""
-        (temp_dir / "parent.eml").write_text("content")
-
-        sample_document.archive_browse_uri = "/archive/test.md"
-        sample_attachment_document.archive_browse_uri = None  # Missing
-        sample_chunk.line_from = 1
-        sample_chunk.context_summary = "Context"
-
-        mock_components.db.get_document_by_source_id = AsyncMock(
-            return_value=sample_document
-        )
-        mock_components.db.get_document_children = AsyncMock(
-            return_value=[sample_attachment_document]
-        )
-        mock_components.db.get_chunks_by_document = AsyncMock(
-            return_value=[sample_chunk]
-        )
-
-        from mtss.ingest.repair import scan_ingest_issues
-
-        issues = await scan_ingest_issues(
-            temp_dir,
-            mock_components,
-            checks={"archives"},
-            limit=0,
-        )
-
-        assert len(issues) == 1
-        assert "missing_child_archive" in issues[0].issues
-
-    @pytest.mark.asyncio
-    async def test_detects_missing_lines(
-        self, temp_dir, mock_components, sample_document, sample_chunks_missing_lines
-    ):
-        """Chunks have NULL line_from."""
-        (temp_dir / "no_lines.eml").write_text("content")
-
-        sample_document.archive_browse_uri = "/archive/test.md"
-        mock_components.db.get_document_by_source_id = AsyncMock(
-            return_value=sample_document
-        )
-        mock_components.db.get_document_children = AsyncMock(return_value=[])
-        mock_components.db.get_chunks_by_document = AsyncMock(
-            return_value=sample_chunks_missing_lines
-        )
-
-        from mtss.ingest.repair import scan_ingest_issues
-
-        issues = await scan_ingest_issues(
-            temp_dir,
-            mock_components,
-            checks={"chunks"},
-            limit=0,
-        )
-
-        assert len(issues) == 1
-        assert "missing_lines" in issues[0].issues
-
-    @pytest.mark.asyncio
-    async def test_detects_missing_context(
-        self, temp_dir, mock_components, sample_document, sample_chunks_missing_context
-    ):
-        """Chunks have NULL context_summary."""
-        (temp_dir / "no_context.eml").write_text("content")
-
-        sample_document.archive_browse_uri = "/archive/test.md"
-        mock_components.db.get_document_by_source_id = AsyncMock(
-            return_value=sample_document
-        )
-        mock_components.db.get_document_children = AsyncMock(return_value=[])
-        mock_components.db.get_chunks_by_document = AsyncMock(
-            return_value=sample_chunks_missing_context
-        )
-
-        from mtss.ingest.repair import scan_ingest_issues
-
-        issues = await scan_ingest_issues(
-            temp_dir,
-            mock_components,
-            checks={"context"},
-            limit=0,
-        )
-
-        assert len(issues) == 1
-        assert "missing_context" in issues[0].issues
+        assert "missing_topics" in issues[0].issues
 
     @pytest.mark.asyncio
     async def test_skips_non_ingested_files(self, temp_dir, mock_components):
@@ -294,7 +198,7 @@ class TestScanIngestIssues:
         issues = await scan_ingest_issues(
             temp_dir,
             mock_components,
-            checks={"archives", "chunks", "context"},
+            checks={"topics"},
             limit=0,
         )
 
@@ -302,73 +206,15 @@ class TestScanIngestIssues:
 
     @pytest.mark.asyncio
     async def test_respects_limit_parameter(
-        self, temp_dir, mock_components, sample_document
+        self, temp_dir, mock_components, sample_document, sample_chunk
     ):
         """limit=5 with 10 issues."""
         # Create 10 .eml files
         for i in range(10):
             (temp_dir / f"email{i}.eml").write_text(f"content{i}")
 
-        sample_document.archive_browse_uri = None  # Will trigger issue
-
-        mock_components.db.get_document_by_source_id = AsyncMock(
-            return_value=sample_document
-        )
-        mock_components.db.get_document_children = AsyncMock(return_value=[])
-        mock_components.db.get_chunks_by_document = AsyncMock(return_value=[])
-
-        from mtss.ingest.repair import scan_ingest_issues
-
-        issues = await scan_ingest_issues(
-            temp_dir,
-            mock_components,
-            checks={"archives"},
-            limit=5,
-        )
-
-        assert len(issues) == 5
-
-    @pytest.mark.asyncio
-    async def test_skips_image_attachments(
-        self, temp_dir, mock_components, sample_document, sample_image_document
-    ):
-        """Image child doc skipped for lines/context checks."""
-        (temp_dir / "with_image.eml").write_text("content")
-
         sample_document.archive_browse_uri = "/archive/test.md"
-        # Image has no archive, but should be skipped
-        sample_image_document.archive_browse_uri = None
-
-        mock_components.db.get_document_by_source_id = AsyncMock(
-            return_value=sample_document
-        )
-        mock_components.db.get_document_children = AsyncMock(
-            return_value=[sample_image_document]
-        )
-        mock_components.db.get_chunks_by_document = AsyncMock(return_value=[])
-
-        from mtss.ingest.repair import scan_ingest_issues
-
-        issues = await scan_ingest_issues(
-            temp_dir,
-            mock_components,
-            checks={"archives"},  # archives check skips images
-            limit=0,
-        )
-
-        # No issues because images are skipped for archive check
-        assert len(issues) == 0
-
-    @pytest.mark.asyncio
-    async def test_caches_chunks_for_reuse(
-        self, temp_dir, mock_components, sample_document, sample_chunk
-    ):
-        """Verifies cached_chunks dict populated."""
-        (temp_dir / "test.eml").write_text("content")
-
-        sample_document.archive_browse_uri = None  # Trigger issue
-        sample_chunk.line_from = 1
-        sample_chunk.context_summary = "Context"
+        sample_chunk.metadata = {}  # No topic_ids — triggers issue
 
         mock_components.db.get_document_by_source_id = AsyncMock(
             return_value=sample_document
@@ -383,7 +229,36 @@ class TestScanIngestIssues:
         issues = await scan_ingest_issues(
             temp_dir,
             mock_components,
-            checks={"archives", "chunks"},
+            checks={"topics"},
+            limit=5,
+        )
+
+        assert len(issues) == 5
+
+    @pytest.mark.asyncio
+    async def test_caches_chunks_for_reuse(
+        self, temp_dir, mock_components, sample_document, sample_chunk
+    ):
+        """Verifies cached_chunks dict populated."""
+        (temp_dir / "test.eml").write_text("content")
+
+        sample_document.archive_browse_uri = "/archive/test.md"
+        sample_chunk.metadata = {}  # No topic_ids — triggers issue
+
+        mock_components.db.get_document_by_source_id = AsyncMock(
+            return_value=sample_document
+        )
+        mock_components.db.get_document_children = AsyncMock(return_value=[])
+        mock_components.db.get_chunks_by_document = AsyncMock(
+            return_value=[sample_chunk]
+        )
+
+        from mtss.ingest.repair import scan_ingest_issues
+
+        issues = await scan_ingest_issues(
+            temp_dir,
+            mock_components,
+            checks={"topics"},
             limit=0,
         )
 
@@ -393,587 +268,8 @@ class TestScanIngestIssues:
         assert issues[0].cached_chunks[sample_document.id] == [sample_chunk]
 
 
-class TestFixMissingArchives:
-    """Tests for _fix_missing_archives() (cli.py:2296)."""
-
-    @pytest.fixture
-    def mock_fix_components(self, mock_supabase_client, mock_archive_storage):
-        """Mock IngestComponents for fix tests."""
-        components = MagicMock()
-        components.db = mock_supabase_client
-        components.archive_storage = mock_archive_storage
-        components.eml_parser = MagicMock()
-        components.archive_generator = MagicMock()
-        components.archive_generator.generate_archive = AsyncMock()
-        return components
-
-    @pytest.mark.asyncio
-    async def test_fast_path_archive_exists_in_bucket(
-        self, temp_dir, mock_fix_components, sample_document
-    ):
-        """Only updates DB (no regeneration) when archive exists in bucket."""
-        sample_document.archive_browse_uri = None
-        sample_document.doc_id = "abc123def456"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_archive"],
-        )
-
-        # Archive exists in bucket
-        mock_fix_components.archive_storage.file_exists = MagicMock(return_value=True)
-        mock_fix_components.db.update_document_archive_uris = AsyncMock()
-
-        parsed_email = MagicMock()
-
-        from mtss.ingest.repair import fix_missing_archives
-
-        await fix_missing_archives(record, mock_fix_components, parsed_email)
-
-        # Should update DB without regenerating
-        mock_fix_components.db.update_document_archive_uris.assert_called_once()
-        mock_fix_components.archive_generator.generate_archive.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_regenerates_archive_when_missing(
-        self, temp_dir, mock_fix_components, sample_document
-    ):
-        """Calls archive generator when archive not in bucket."""
-        sample_document.archive_browse_uri = None
-        sample_document.doc_id = "abc123def456"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_archive"],
-        )
-
-        # Archive doesn't exist
-        mock_fix_components.archive_storage.file_exists = MagicMock(return_value=False)
-        mock_fix_components.db.update_document_archive_uris = AsyncMock()
-
-        # Mock archive generation result
-        archive_result = MagicMock()
-        archive_result.markdown_path = "abc123de/email.eml.md"
-        mock_fix_components.archive_generator.generate_archive = AsyncMock(
-            return_value=archive_result
-        )
-
-        parsed_email = MagicMock()
-
-        from mtss.ingest.repair import fix_missing_archives
-
-        await fix_missing_archives(record, mock_fix_components, parsed_email)
-
-        # Should regenerate and update DB
-        mock_fix_components.archive_generator.generate_archive.assert_called_once()
-        mock_fix_components.db.update_document_archive_uris.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_fixes_root_document_archive(
-        self, temp_dir, mock_fix_components, sample_document
-    ):
-        """Updates root doc in DB."""
-        sample_document.archive_browse_uri = None
-        sample_document.doc_id = "abc123def456"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_archive"],
-        )
-
-        mock_fix_components.archive_storage.file_exists = MagicMock(return_value=True)
-        mock_fix_components.db.update_document_archive_uris = AsyncMock()
-
-        parsed_email = MagicMock()
-
-        from mtss.ingest.repair import fix_missing_archives
-
-        await fix_missing_archives(record, mock_fix_components, parsed_email)
-
-        # Should update root document
-        call_args = mock_fix_components.db.update_document_archive_uris.call_args
-        assert call_args[0][0] == sample_document.id
-
-    @pytest.mark.asyncio
-    async def test_fixes_child_document_archives(
-        self, temp_dir, mock_fix_components, sample_document, sample_attachment_document
-    ):
-        """Iterates and fixes each child."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-        sample_document.doc_id = "abc123def456"
-        sample_attachment_document.archive_browse_uri = None
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[sample_attachment_document],
-            issues=["missing_child_archive"],
-        )
-
-        mock_fix_components.archive_storage.file_exists = MagicMock(return_value=True)
-        mock_fix_components.db.update_document_archive_uris = AsyncMock()
-
-        parsed_email = MagicMock()
-
-        from mtss.ingest.repair import fix_missing_archives
-
-        await fix_missing_archives(record, mock_fix_components, parsed_email)
-
-        # Should update child document
-        mock_fix_components.db.update_document_archive_uris.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_skips_image_attachments(
-        self, temp_dir, mock_fix_components, sample_document, sample_image_document
-    ):
-        """Image child doc skipped."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-        sample_document.doc_id = "abc123def456"
-        sample_image_document.archive_browse_uri = None
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[sample_image_document],
-            issues=["missing_child_archive"],
-        )
-
-        mock_fix_components.archive_storage.file_exists = MagicMock(return_value=True)
-        mock_fix_components.db.update_document_archive_uris = AsyncMock()
-
-        parsed_email = MagicMock()
-
-        from mtss.ingest.repair import fix_missing_archives
-
-        await fix_missing_archives(record, mock_fix_components, parsed_email)
-
-        # Should not update image document
-        mock_fix_components.db.update_document_archive_uris.assert_not_called()
-
-
-class TestFixMissingLines:
-    """Tests for _fix_missing_lines() (cli.py:2436)."""
-
-    @pytest.fixture
-    def mock_fix_components(self, mock_supabase_client, mock_archive_storage):
-        """Mock IngestComponents for fix tests."""
-        components = MagicMock()
-        components.db = mock_supabase_client
-        components.archive_storage = mock_archive_storage
-        components.chunker = MagicMock()
-        components.context_generator = MagicMock()
-        components.context_generator.generate_context = AsyncMock(return_value="Context")
-        components.context_generator.build_embedding_text = MagicMock(
-            return_value="Context\n\nContent"
-        )
-        components.embeddings = MagicMock()
-        components.embeddings.embed_chunks = AsyncMock(side_effect=lambda x: x)
-        return components
-
-    @pytest.mark.asyncio
-    async def test_rechunks_from_archive_content(
-        self, temp_dir, mock_fix_components, sample_document, sample_chunks_missing_lines
-    ):
-        """Downloads archive, re-chunks."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_lines"],
-            cached_chunks={sample_document.id: sample_chunks_missing_lines},
-        )
-
-        # Mock archive download
-        mock_fix_components.archive_storage.download_file = MagicMock(
-            return_value=b"# Markdown content\nLine 1\nLine 2"
-        )
-
-        # Mock chunker to return chunks with lines
-        from mtss.models.chunk import Chunk
-
-        new_chunks = [
-            Chunk(
-                document_id=sample_document.id,
-                content="Markdown content",
-                chunk_index=0,
-                line_from=1,
-                line_to=3,
-                section_path=[],
-                metadata={},
-            )
-        ]
-        mock_fix_components.chunker.chunk_text = MagicMock(return_value=new_chunks)
-        mock_fix_components.db.replace_chunks_atomic = AsyncMock(return_value=1)
-
-        with patch("mtss.ingest.repair.enrich_chunks_with_document_metadata"):
-            from mtss.ingest.repair import fix_missing_lines
-
-            count = await fix_missing_lines(record, mock_fix_components)
-
-        assert count == 1
-        mock_fix_components.archive_storage.download_file.assert_called_once()
-        mock_fix_components.chunker.chunk_text.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_uses_cached_chunks(
-        self, temp_dir, mock_fix_components, sample_document, sample_chunks_missing_lines
-    ):
-        """Does not call DB if cached."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_lines"],
-            cached_chunks={sample_document.id: sample_chunks_missing_lines},
-        )
-
-        mock_fix_components.archive_storage.download_file = MagicMock(
-            return_value=b"# Content"
-        )
-
-        from mtss.models.chunk import Chunk
-
-        new_chunks = [
-            Chunk(
-                document_id=sample_document.id,
-                content="Content",
-                chunk_index=0,
-                line_from=1,
-                line_to=1,
-                section_path=[],
-                metadata={},
-            )
-        ]
-        mock_fix_components.chunker.chunk_text = MagicMock(return_value=new_chunks)
-        mock_fix_components.db.replace_chunks_atomic = AsyncMock(return_value=1)
-
-        with patch("mtss.ingest.repair.enrich_chunks_with_document_metadata"):
-            from mtss.ingest.repair import fix_missing_lines
-
-            await fix_missing_lines(record, mock_fix_components)
-
-        # Should NOT call get_chunks_by_document since chunks are cached
-        mock_fix_components.db.get_chunks_by_document.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_generates_embeddings_for_new_chunks(
-        self, temp_dir, mock_fix_components, sample_document, sample_chunks_missing_lines
-    ):
-        """Calls embed_chunks."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_lines"],
-            cached_chunks={sample_document.id: sample_chunks_missing_lines},
-        )
-
-        mock_fix_components.archive_storage.download_file = MagicMock(
-            return_value=b"# Content"
-        )
-
-        from mtss.models.chunk import Chunk
-
-        new_chunks = [
-            Chunk(
-                document_id=sample_document.id,
-                content="Content",
-                chunk_index=0,
-                line_from=1,
-                line_to=1,
-                section_path=[],
-                metadata={},
-            )
-        ]
-        mock_fix_components.chunker.chunk_text = MagicMock(return_value=new_chunks)
-        mock_fix_components.db.replace_chunks_atomic = AsyncMock(return_value=1)
-
-        with patch("mtss.ingest.repair.enrich_chunks_with_document_metadata"):
-            from mtss.ingest.repair import fix_missing_lines
-
-            await fix_missing_lines(record, mock_fix_components)
-
-        mock_fix_components.embeddings.embed_chunks.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_atomic_replace_chunks(
-        self, temp_dir, mock_fix_components, sample_document, sample_chunks_missing_lines
-    ):
-        """Calls replace_chunks_atomic()."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_lines"],
-            cached_chunks={sample_document.id: sample_chunks_missing_lines},
-        )
-
-        mock_fix_components.archive_storage.download_file = MagicMock(
-            return_value=b"# Content"
-        )
-
-        from mtss.models.chunk import Chunk
-
-        new_chunks = [
-            Chunk(
-                document_id=sample_document.id,
-                content="Content",
-                chunk_index=0,
-                line_from=1,
-                line_to=1,
-                section_path=[],
-                metadata={},
-            )
-        ]
-        mock_fix_components.chunker.chunk_text = MagicMock(return_value=new_chunks)
-        mock_fix_components.db.replace_chunks_atomic = AsyncMock(return_value=1)
-
-        with patch("mtss.ingest.repair.enrich_chunks_with_document_metadata"):
-            from mtss.ingest.repair import fix_missing_lines
-
-            await fix_missing_lines(record, mock_fix_components)
-
-        mock_fix_components.db.replace_chunks_atomic.assert_called_once()
-        call_args = mock_fix_components.db.replace_chunks_atomic.call_args
-        assert call_args[0][0] == sample_document.id
-
-    @pytest.mark.asyncio
-    async def test_skips_image_attachments(
-        self, temp_dir, mock_fix_components, sample_document, sample_image_document
-    ):
-        """Image docs skipped."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[sample_image_document],
-            issues=["missing_child_lines"],
-            cached_chunks={},
-        )
-
-        # Root doc has valid chunks
-        mock_fix_components.db.get_chunks_by_document = AsyncMock(return_value=[])
-
-        from mtss.ingest.repair import fix_missing_lines
-
-        count = await fix_missing_lines(record, mock_fix_components)
-
-        assert count == 0
-
-    @pytest.mark.asyncio
-    async def test_skips_docs_without_archive_uri(
-        self, temp_dir, mock_fix_components, sample_document, sample_chunks_missing_lines
-    ):
-        """Skips with warning when no archive URI."""
-        sample_document.archive_browse_uri = None  # No archive
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_lines"],
-            cached_chunks={sample_document.id: sample_chunks_missing_lines},
-        )
-
-        mock_verbose = MagicMock()
-
-        from mtss.ingest.repair import fix_missing_lines
-
-        count = await fix_missing_lines(record, mock_fix_components, on_verbose=mock_verbose)
-
-        assert count == 0
-        # Should log a skip message
-        mock_verbose.assert_called()
-
-
-class TestFixMissingContext:
-    """Tests for _fix_missing_context() (cli.py:2528)."""
-
-    @pytest.fixture
-    def mock_fix_components(self, mock_supabase_client, mock_archive_storage):
-        """Mock IngestComponents for context fix tests."""
-        components = MagicMock()
-        components.db = mock_supabase_client
-        components.archive_storage = mock_archive_storage
-        components.context_generator = MagicMock()
-        components.context_generator.generate_context = AsyncMock(
-            return_value="Generated context summary"
-        )
-        components.context_generator.build_embedding_text = MagicMock(
-            return_value="Context\n\nContent"
-        )
-        components.embeddings = MagicMock()
-        components.embeddings.embed_chunks = AsyncMock(side_effect=lambda x: x)
-        return components
-
-    @pytest.mark.asyncio
-    async def test_generates_context_from_archive(
-        self,
-        temp_dir,
-        mock_fix_components,
-        sample_document,
-        sample_chunks_missing_context,
-    ):
-        """Downloads archive, generates context."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_context"],
-            cached_chunks={sample_document.id: sample_chunks_missing_context},
-        )
-
-        mock_fix_components.archive_storage.download_file = MagicMock(
-            return_value=b"# Document content for context generation"
-        )
-        mock_fix_components.db.update_chunk_context = AsyncMock()
-
-        from mtss.ingest.repair import fix_missing_context
-
-        count = await fix_missing_context(record, mock_fix_components)
-
-        assert count == len(sample_chunks_missing_context)
-        mock_fix_components.context_generator.generate_context.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_fallback_to_chunk_content(
-        self,
-        temp_dir,
-        mock_fix_components,
-        sample_document,
-        sample_chunks_missing_context,
-    ):
-        """Uses chunks when archive fails."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_context"],
-            cached_chunks={sample_document.id: sample_chunks_missing_context},
-        )
-
-        # Archive download fails
-        mock_fix_components.archive_storage.download_file = MagicMock(
-            side_effect=Exception("Download failed")
-        )
-        mock_fix_components.db.update_chunk_context = AsyncMock()
-
-        from mtss.ingest.repair import fix_missing_context
-
-        count = await fix_missing_context(record, mock_fix_components)
-
-        # Should still generate context using chunk content fallback
-        assert count == len(sample_chunks_missing_context)
-        mock_fix_components.context_generator.generate_context.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_updates_embedding_text(
-        self,
-        temp_dir,
-        mock_fix_components,
-        sample_document,
-        sample_chunks_missing_context,
-    ):
-        """Context prefix added to embedding_text."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_context"],
-            cached_chunks={sample_document.id: sample_chunks_missing_context},
-        )
-
-        mock_fix_components.archive_storage.download_file = MagicMock(
-            return_value=b"Content"
-        )
-        mock_fix_components.db.update_chunk_context = AsyncMock()
-
-        from mtss.ingest.repair import fix_missing_context
-
-        await fix_missing_context(record, mock_fix_components)
-
-        # build_embedding_text should be called for each chunk
-        assert mock_fix_components.context_generator.build_embedding_text.call_count == len(
-            sample_chunks_missing_context
-        )
-
-    @pytest.mark.asyncio
-    async def test_regenerates_embeddings(
-        self,
-        temp_dir,
-        mock_fix_components,
-        sample_document,
-        sample_chunks_missing_context,
-    ):
-        """Calls embed_chunks."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_context"],
-            cached_chunks={sample_document.id: sample_chunks_missing_context},
-        )
-
-        mock_fix_components.archive_storage.download_file = MagicMock(
-            return_value=b"Content"
-        )
-        mock_fix_components.db.update_chunk_context = AsyncMock()
-
-        from mtss.ingest.repair import fix_missing_context
-
-        await fix_missing_context(record, mock_fix_components)
-
-        mock_fix_components.embeddings.embed_chunks.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_skips_image_attachments(
-        self, temp_dir, mock_fix_components, sample_document, sample_image_document
-    ):
-        """Image docs skipped."""
-        sample_document.archive_browse_uri = "/archive/test.md"
-
-        record = IssueRecord(
-            eml_path=temp_dir / "test.eml",
-            doc=sample_document,
-            child_docs=[sample_image_document],
-            issues=["missing_child_context"],
-            cached_chunks={},
-        )
-
-        mock_fix_components.db.get_chunks_by_document = AsyncMock(return_value=[])
-
-        from mtss.ingest.repair import fix_missing_context
-
-        count = await fix_missing_context(record, mock_fix_components)
-
-        assert count == 0
-
-
 class TestFixDocumentIssues:
-    """Tests for _fix_document_issues() (cli.py:2258)."""
+    """Tests for fix_document_issues()."""
 
     @pytest.fixture
     def mock_fix_components(self, mock_supabase_client, mock_archive_storage):
@@ -982,130 +278,62 @@ class TestFixDocumentIssues:
         components.db = mock_supabase_client
         components.archive_storage = mock_archive_storage
         components.eml_parser = MagicMock()
-        components.chunker = MagicMock()
-        components.context_generator = MagicMock()
-        components.context_generator.generate_context = AsyncMock(return_value="Context")
-        components.context_generator.build_embedding_text = MagicMock(
-            return_value="Text"
-        )
-        components.embeddings = MagicMock()
-        components.embeddings.embed_chunks = AsyncMock(side_effect=lambda x: x)
-        components.archive_generator = MagicMock()
+        components.topic_extractor = MagicMock()
+        components.topic_matcher = MagicMock()
         return components
 
     @pytest.mark.asyncio
-    async def test_executes_fixes_in_dependency_order(
+    async def test_calls_fix_missing_topics(
         self, temp_dir, mock_fix_components, sample_document
     ):
-        """Archives -> Lines -> Context order."""
-        sample_document.archive_browse_uri = None
+        """Topics fix called when missing_topics in issues."""
+        sample_document.archive_browse_uri = "/archive/test.md"
 
         record = IssueRecord(
             eml_path=temp_dir / "test.eml",
             doc=sample_document,
             child_docs=[],
-            issues=["missing_archive", "missing_lines", "missing_context"],
+            issues=["missing_topics"],
             cached_chunks={},
         )
 
-        # Track call order
-        call_order = []
-
-        async def mock_fix_archives(*args, **kwargs):
-            call_order.append("archives")
-            record.doc.archive_browse_uri = "/archive/test.md"
-
-        async def mock_fix_lines(*args, **kwargs):
-            call_order.append("lines")
-            return 1
-
-        async def mock_fix_context(*args, **kwargs):
-            call_order.append("context")
-            return 1
-
-        with patch("mtss.ingest.repair.fix_missing_archives", side_effect=mock_fix_archives):
-            with patch("mtss.ingest.repair.fix_missing_lines", side_effect=mock_fix_lines):
-                with patch("mtss.ingest.repair.fix_missing_context", side_effect=mock_fix_context):
-                    from mtss.ingest.repair import fix_document_issues
-
-                    await fix_document_issues(
-                        record,
-                        mock_fix_components,
-                        checks={"archives", "chunks", "context"},
-                    )
-
-        assert call_order == ["archives", "lines", "context"]
-
-    @pytest.mark.asyncio
-    async def test_parses_email_once_for_archive_fixes(
-        self, temp_dir, mock_fix_components, sample_document
-    ):
-        """Single parse call for archive fixes."""
-        sample_document.archive_browse_uri = None
-        eml_path = temp_dir / "test.eml"
-        eml_path.write_text("email content")
-
-        record = IssueRecord(
-            eml_path=eml_path,
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_archive", "missing_child_archive"],
-            cached_chunks={},
-        )
-
-        mock_parsed_email = MagicMock()
-        mock_fix_components.eml_parser.parse_file = MagicMock(
-            return_value=mock_parsed_email
-        )
-
-        with patch("mtss.ingest.repair.fix_missing_archives", new_callable=AsyncMock):
+        with patch("mtss.ingest.repair.fix_missing_topics", new_callable=AsyncMock) as mock_topics:
             from mtss.ingest.repair import fix_document_issues
 
             await fix_document_issues(
                 record,
                 mock_fix_components,
-                checks={"archives"},
+                checks={"topics"},
             )
 
-        # Parse should be called exactly once
-        mock_fix_components.eml_parser.parse_file.assert_called_once_with(eml_path)
+        mock_topics.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_skips_fix_when_not_in_checks(
         self, temp_dir, mock_fix_components, sample_document
     ):
         """Respects checks parameter."""
-        sample_document.archive_browse_uri = None
+        sample_document.archive_browse_uri = "/archive/test.md"
 
         record = IssueRecord(
             eml_path=temp_dir / "test.eml",
             doc=sample_document,
             child_docs=[],
-            issues=["missing_archive", "missing_lines", "missing_context"],
+            issues=["missing_topics"],
             cached_chunks={},
         )
 
-        with patch(
-            "mtss.ingest.repair.fix_missing_archives", new_callable=AsyncMock
-        ) as mock_archives:
-            with patch(
-                "mtss.ingest.repair.fix_missing_lines", new_callable=AsyncMock
-            ) as mock_lines:
-                with patch(
-                    "mtss.ingest.repair.fix_missing_context", new_callable=AsyncMock
-                ) as mock_context:
-                    from mtss.ingest.repair import fix_document_issues
+        with patch("mtss.ingest.repair.fix_missing_topics", new_callable=AsyncMock) as mock_topics:
+            from mtss.ingest.repair import fix_document_issues
 
-                    # Only fix archives
-                    await fix_document_issues(
-                        record,
-                        mock_fix_components,
-                        checks={"archives"},
-                    )
+            # Empty checks — nothing should be called
+            await fix_document_issues(
+                record,
+                mock_fix_components,
+                checks=set(),
+            )
 
-        mock_archives.assert_called_once()
-        mock_lines.assert_not_called()
-        mock_context.assert_not_called()
+        mock_topics.assert_not_called()
 
 
 class TestDryRunMode:
@@ -1185,17 +413,19 @@ class TestDryRunMode:
         comprehensive_mock_settings,
         mock_supabase_client,
         sample_document,
+        sample_chunk,
     ):
         """Fixes applied when not dry-run."""
         (temp_dir / "test.eml").write_text("content")
-        sample_document.archive_browse_uri = None
+        sample_document.archive_browse_uri = "/archive/test.md"
+        sample_chunk.metadata = {}  # No topic_ids — triggers missing_topics
 
         mock_supabase_client.get_all_root_source_ids = AsyncMock(return_value={})
         mock_supabase_client.get_document_by_source_id = AsyncMock(
             return_value=sample_document
         )
         mock_supabase_client.get_document_children = AsyncMock(return_value=[])
-        mock_supabase_client.get_chunks_by_document = AsyncMock(return_value=[])
+        mock_supabase_client.get_chunks_by_document = AsyncMock(return_value=[sample_chunk])
         mock_supabase_client.delete_orphaned_documents = AsyncMock(return_value=0)
         mock_supabase_client.get_all_vessels = AsyncMock(return_value=[])
         mock_supabase_client.close = AsyncMock()
@@ -1278,42 +508,6 @@ class TestSecurityAndEdgeCases:
                         )
 
     @pytest.mark.asyncio
-    async def test_handles_malformed_eml_file(
-        self, temp_dir, mock_supabase_client, sample_document
-    ):
-        """Parse failure raises exception (caller should handle)."""
-        # Create a malformed .eml file
-        eml_path = temp_dir / "malformed.eml"
-        eml_path.write_bytes(b"\x00\x01\x02\x03")  # Binary garbage
-
-        sample_document.archive_browse_uri = None
-
-        record = IssueRecord(
-            eml_path=eml_path,
-            doc=sample_document,
-            child_docs=[],
-            issues=["missing_archive"],
-            cached_chunks={},
-        )
-
-        mock_components = MagicMock()
-        mock_components.db = mock_supabase_client
-        mock_components.eml_parser = MagicMock()
-        mock_components.eml_parser.parse_file = MagicMock(
-            side_effect=Exception("Failed to parse EML")
-        )
-
-        from mtss.ingest.repair import fix_document_issues
-
-        # The fix function propagates parse errors
-        with pytest.raises(Exception, match="Failed to parse EML"):
-            await fix_document_issues(
-                record,
-                mock_components,
-                checks={"archives"},
-            )
-
-    @pytest.mark.asyncio
     async def test_continues_after_single_document_failure(
         self,
         temp_dir,
@@ -1326,7 +520,7 @@ class TestSecurityAndEdgeCases:
         (temp_dir / "email1.eml").write_text("content1")
         (temp_dir / "email2.eml").write_text("content2")
 
-        sample_document.archive_browse_uri = None
+        sample_document.archive_browse_uri = "/archive/test.md"
 
         call_count = [0]
 
@@ -1362,7 +556,7 @@ class TestSecurityAndEdgeCases:
                 await scan_ingest_issues(
                     temp_dir,
                     mock_components,
-                    checks={"archives"},
+                    checks={"topics"},
                     limit=0,
                 )
             except Exception:

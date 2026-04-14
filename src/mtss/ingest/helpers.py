@@ -6,6 +6,7 @@ Extracted from cli.py for better maintainability and reusability.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
@@ -43,6 +44,10 @@ MIME_FORMAT_MAP: dict[str, str] = {
     "application/zip": "ZIP",
     "application/x-zip-compressed": "ZIP",
 }
+
+
+def noop_verbose(msg: str, file_ctx: str | None = None) -> None:
+    """No-op verbose callback for pipeline functions."""
 
 
 def get_format_name(content_type: str) -> str:
@@ -226,35 +231,15 @@ class IssueTracker:
         return len(self._issues)
 
 
-def prepend_date_prefix(chunks: list, email_doc) -> None:
-    """Prepend [Date: YYYY-MM-DD] to chunk embedding text for temporal search relevance.
-
-    Modifies chunks in-place.
-    """
-    if not chunks:
-        return
-    date_prefix = ""
-    if email_doc.email_metadata and getattr(email_doc.email_metadata, 'date_start', None):
-        date_prefix = f"[Date: {email_doc.email_metadata.date_start.strftime('%Y-%m-%d')}] "
-    if not date_prefix:
-        return
-    for chunk in chunks:
-        if chunk.embedding_text:
-            chunk.embedding_text = date_prefix + chunk.embedding_text
-        else:
-            chunk.embedding_text = date_prefix + chunk.content
+_SECRET_PATTERNS = [
+    re.compile(r'(Bearer\s+|sk-|api[_-]?key[=:]\s*)[^\s"\']+', re.IGNORECASE),
+    re.compile(r'(postgres://|mysql://|https?://[^@\s]+@)[^\s"\']+'),
+]
 
 
-def apply_fallback_context(chunks: list, email_context_summary: str, context_generator=None) -> None:
-    """Apply email-level context to chunks that lack attachment-specific context.
-
-    Modifies chunks in-place.
-    """
-    if not chunks or not email_context_summary:
-        return
-    for chunk in chunks:
-        chunk.context_summary = email_context_summary
-        if context_generator:
-            chunk.embedding_text = context_generator.build_embedding_text(
-                email_context_summary, chunk.content
-            )
+def sanitize_error_message(error: str, max_length: int = 500) -> str:
+    """Truncate and strip potential secrets from error messages before DB storage."""
+    sanitized = error
+    for pattern in _SECRET_PATTERNS:
+        sanitized = pattern.sub(r'\1[REDACTED]', sanitized)
+    return sanitized[:max_length]

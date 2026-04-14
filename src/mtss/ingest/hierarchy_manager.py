@@ -57,13 +57,13 @@ class HierarchyManager:
                 sha256.update(chunk)
         return sha256.hexdigest()
 
-    async def create_email_document(
+    def build_email_document(
         self,
         eml_path: Path,
         parsed_email: ParsedEmail,
         archive_result: Optional["ArchiveResult"] = None,
     ) -> Document:
-        """Create a root email document in the hierarchy.
+        """Build a root email Document without persisting to database.
 
         Args:
             eml_path: Path to the EML file.
@@ -71,7 +71,7 @@ class HierarchyManager:
             archive_result: Optional archive generation result with paths.
 
         Returns:
-            Created Document representing the email.
+            Document representing the email (not yet inserted).
         """
         file_hash = self.compute_file_hash(eml_path)
 
@@ -86,7 +86,6 @@ class HierarchyManager:
 
         if archive_result:
             archive_path = archive_result.archive_path
-            # URL-encode paths to handle filenames with spaces
             md_path_encoded = quote(archive_result.markdown_path, safe="/")
             orig_path_encoded = quote(archive_result.original_path, safe="/")
             if self.archive_base_url:
@@ -96,12 +95,11 @@ class HierarchyManager:
                 archive_browse_uri = f"/archive/{md_path_encoded}"
                 archive_download_uri = f"/archive/{orig_path_encoded}"
 
-        # Determine source title (email subject)
         source_title = parsed_email.metadata.subject or eml_path.stem
 
         doc = Document(
             parent_id=None,
-            root_id=None,  # Will be set to self after creation
+            root_id=None,
             depth=0,
             path=[],
             document_type=DocumentType.EMAIL,
@@ -119,16 +117,23 @@ class HierarchyManager:
             email_metadata=parsed_email.metadata,
         )
 
-        # Root document references itself
         doc.root_id = doc.id
         doc.path = [str(doc.id)]
 
-        # Save to database
-        await self.db.insert_document(doc)
-
         return doc
 
-    async def create_attachment_document(
+    async def create_email_document(
+        self,
+        eml_path: Path,
+        parsed_email: ParsedEmail,
+        archive_result: Optional["ArchiveResult"] = None,
+    ) -> Document:
+        """Build and persist a root email document (backward compat for repair.py)."""
+        doc = self.build_email_document(eml_path, parsed_email, archive_result)
+        await self.db.insert_document(doc)
+        return doc
+
+    def build_attachment_document(
         self,
         parent_doc: Document,
         attachment_path: Path,
@@ -137,7 +142,7 @@ class HierarchyManager:
         original_filename: str,
         archive_file_result: Optional["ContentFileResult"] = None,
     ) -> Document:
-        """Create an attachment document linked to parent email.
+        """Build an attachment Document without persisting to database.
 
         Args:
             parent_doc: Parent document (email or another attachment).
@@ -148,9 +153,8 @@ class HierarchyManager:
             archive_file_result: Optional archive file result with paths.
 
         Returns:
-            Created Document representing the attachment.
+            Document representing the attachment (not yet inserted).
         """
-        # Lazy import to avoid circular dependency
         from ..parsers.attachment_processor import AttachmentProcessor
 
         processor = AttachmentProcessor()
@@ -158,34 +162,23 @@ class HierarchyManager:
         file_hash = self.compute_file_hash(attachment_path)
         doc_type = processor.get_document_type(content_type)
 
-        # Generate stable IDs for citations
-        # For attachments, derive source_id from parent's source_id + attachment filename
-        # This ensures stable IDs regardless of temporary processing paths
         source_id = f"{parent_doc.source_id}/{original_filename}".lower()
         doc_id = compute_doc_id(source_id, file_hash)
 
-        # Build archive URIs
         archive_path = None
         archive_browse_uri = None
         archive_download_uri = None
-
-        # Determine file_path: use archive location if available (processed is cleaned up)
-        # Otherwise fall back to the attachment_path (which may not exist after cleanup)
         actual_file_path = str(attachment_path)
 
         if archive_file_result:
             archive_path = archive_file_result.archive_path
-            # Use archive path as the file reference (files are in Supabase Storage)
             actual_file_path = archive_file_result.download_uri or str(attachment_path)
             if archive_file_result.browse_uri:
-                # URIs from ContentFileResult are already storage-key-safe
-                # (sanitized by _sanitize_storage_key), don't re-encode
                 if self.archive_base_url:
                     archive_browse_uri = f"{self.archive_base_url}/{archive_file_result.browse_uri}"
                 else:
                     archive_browse_uri = f"/archive/{archive_file_result.browse_uri}"
             if archive_file_result.download_uri:
-                # URIs from ContentFileResult are already storage-key-safe
                 if self.archive_base_url:
                     archive_download_uri = f"{self.archive_base_url}/{archive_file_result.download_uri}"
                 else:
@@ -215,8 +208,23 @@ class HierarchyManager:
             ),
         )
 
-        await self.db.insert_document(doc)
+        return doc
 
+    async def create_attachment_document(
+        self,
+        parent_doc: Document,
+        attachment_path: Path,
+        content_type: str,
+        size_bytes: int,
+        original_filename: str,
+        archive_file_result: Optional["ContentFileResult"] = None,
+    ) -> Document:
+        """Build and persist an attachment document (backward compat for repair.py)."""
+        doc = self.build_attachment_document(
+            parent_doc, attachment_path, content_type, size_bytes,
+            original_filename, archive_file_result,
+        )
+        await self.db.insert_document(doc)
         return doc
 
     async def get_document_ancestry(self, document_id: UUID) -> List[Document]:

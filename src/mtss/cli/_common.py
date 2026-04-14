@@ -38,15 +38,11 @@ STALE_PROCESSING_THRESHOLD_MINUTES = 5
 
 
 def _handle_interrupt(signum, frame):
-    """Handle Ctrl+C gracefully."""
+    """Handle Ctrl+C gracefully. Signal-safe: only sets flag, no I/O."""
     global _shutdown_requested
     if _shutdown_requested:
-        # Second Ctrl+C - force exit
-        console.print("\n[red]Force exiting...[/red]")
         sys.exit(1)
     _shutdown_requested = True
-    console.print("\n[yellow]Graceful shutdown requested - completing in-progress files... (press Ctrl+C again to force exit)[/yellow]")
-    # Don't raise KeyboardInterrupt - let the loop finish gracefully
 
 
 def vprint(msg: str, file_ctx: str | None = None):

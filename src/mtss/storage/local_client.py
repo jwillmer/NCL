@@ -469,6 +469,23 @@ class LocalStorageClient:
             for topic in self._topics.values():
                 f.write(json.dumps(self._topic_to_dict(topic), default=str) + "\n")
 
+    async def persist_ingest_result(
+        self,
+        email_doc,
+        attachment_docs: list,
+        chunks: list,
+        topic_ids: list | None = None,
+        chunk_delta: int = 0,
+    ) -> None:
+        """Persist all documents + chunks atomically (buffer in memory, flush on close)."""
+        await self.insert_document(email_doc)
+        for doc in attachment_docs:
+            await self.insert_document(doc)
+        if chunks:
+            await self.insert_chunks(chunks)
+        if topic_ids and chunk_delta:
+            await self.increment_topic_counts(topic_ids, chunk_delta=chunk_delta, document_delta=1)
+
     async def close(self) -> None:
         """Flush and close local storage."""
         self.flush()

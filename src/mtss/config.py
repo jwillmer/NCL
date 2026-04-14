@@ -188,6 +188,11 @@ class Settings(BaseSettings):
         default=1000, validation_alias="ERROR_MESSAGE_MAX_LENGTH"
     )
 
+    # Per-file processing timeout (seconds) - prevents stalled API calls from hanging
+    per_file_timeout_seconds: int = Field(
+        default=300, validation_alias="PER_FILE_TIMEOUT_SECONDS"
+    )
+
     # Failure Report Configuration
     failure_reports_dir: Path = Field(
         default=Path("./data/reports"), validation_alias="FAILURE_REPORTS_DIR"

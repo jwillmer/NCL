@@ -7,10 +7,10 @@ Extracted from cli.py for better modularity.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..config import get_settings
@@ -22,9 +22,11 @@ from ..parsers.email_cleaner import (
 )
 from ..utils import compute_chunk_id, compute_doc_id, normalize_source_id
 from .attachment_handler import process_attachment
+from .helpers import noop_verbose
 
 if TYPE_CHECKING:
     from ..models.chunk import Chunk
+    from ..models.document import Document
     from ..storage.progress_tracker import ProgressTracker
     from ..storage.unsupported_file_logger import UnsupportedFileLogger
     from .components import IngestComponents
@@ -40,16 +42,225 @@ class EmailResult:
     attachment_count: int = 0
     skipped: bool = False
     skip_reason: str = ""
-    # Service usage counters
-    local_pages: int = 0
-    llamaparse_pages: int = 0
-    vision_images: int = 0
-    embedding_chunks: int = 0
-    llm_calls: int = 0  # context + topic extraction
 
 
-def _noop_verbose(msg: str, file_ctx: str | None = None) -> None:
-    """Default no-op verbose callback."""
+_noop_verbose = noop_verbose  # backward compat alias
+
+
+async def _resolve_existing_document(
+    source_id: str,
+    file_hash: str,
+    components: "IngestComponents",
+    version_manager: "VersionManager | None",
+    vprint,
+    file_ctx: str,
+) -> tuple[str, "UUID | None"]:
+    """Check if document already exists and determine action.
+
+    Returns:
+        (action, doc_id_to_cleanup) where action is:
+        - 'skip': document already processed, skip it
+        - 'cleanup_and_proceed': delete old document, then process
+        - 'proceed': no existing document, process normally
+    """
+    if version_manager:
+        decision = await version_manager.check_document(source_id, file_hash)
+
+        if decision.action == "skip":
+            if decision.existing_doc_id:
+                existing = await components.db.get_document_by_id(decision.existing_doc_id)
+                if existing and existing.status != ProcessingStatus.COMPLETED:
+                    vprint(f"Cleaning up partial document for retry", file_ctx)
+                    return ("cleanup_and_proceed", decision.existing_doc_id)
+            return ("skip", None)
+
+        if decision.action in ("reprocess", "update"):
+            vprint(f"{'Reprocessing' if decision.action == 'reprocess' else 'Updating'}: {decision.reason}", file_ctx)
+            if decision.existing_doc_id:
+                return ("cleanup_and_proceed", decision.existing_doc_id)
+            # No existing doc to clean up, fall through to orphan check
+
+    else:
+        # Legacy fallback: check by hash
+        existing = await components.db.get_document_by_hash(file_hash)
+        if existing:
+            if existing.status == ProcessingStatus.COMPLETED:
+                return ("skip", None)
+            vprint("Cleaning up partial document for retry", file_ctx)
+            return ("cleanup_and_proceed", existing.id)
+
+    # Orphan safety check: clean up any orphaned document with same doc_id
+    target_doc_id = compute_doc_id(source_id, file_hash)
+    orphaned = await components.db.get_document_by_doc_id(target_doc_id)
+    if orphaned:
+        if orphaned.status == ProcessingStatus.COMPLETED:
+            vprint("Skipping (found completed by doc_id)", file_ctx)
+            return ("skip", None)
+        vprint(f"Cleaning up orphaned document {target_doc_id}", file_ctx)
+        return ("cleanup_and_proceed", orphaned.id)
+
+    return ("proceed", None)
+
+
+async def _extract_topics(
+    components: "IngestComponents",
+    parsed_email,
+    body_text: str,
+    archive_result,
+    context_summary: str | None,
+    vprint,
+    file_ctx: str,
+) -> list[str]:
+    """Extract topic IDs from email content. Returns empty list on failure."""
+    if not components.topic_extractor or not components.topic_matcher:
+        return []
+
+    try:
+        # Prefer archived markdown content (banners/signatures already removed)
+        # Fall back to raw body_text if archive not available
+        topic_content = None
+        if archive_result and archive_result.markdown_content:
+            topic_content = archive_result.markdown_content
+            vprint(f"Using archived content for topics ({len(topic_content)} chars)", file_ctx)
+        elif body_text:
+            topic_content = body_text
+
+        if not topic_content:
+            return []
+
+        # Build topic extraction input from most relevant sources
+        topic_input_parts = []
+
+        # 1. Subject line - usually contains the core topic
+        subject = parsed_email.metadata.subject or ""
+        if subject:
+            topic_input_parts.append(f"Subject: {subject}")
+
+        # Check if content is markdown (archived) or raw email text
+        is_markdown = topic_content.strip().startswith("#")
+
+        if is_markdown:
+            # For markdown content, it's already clean
+            # Skip header to get to message content
+            msg_start = topic_content.find("## Message")
+            if msg_start == -1:
+                msg_start = topic_content.find("## Content")
+            if msg_start == -1:
+                msg_start = topic_content.find("---")
+                if msg_start != -1:
+                    msg_start = topic_content.find("\n", msg_start + 3)
+
+            message_content = topic_content[msg_start:] if msg_start > 0 else topic_content
+            topic_input_parts.append(f"Content:\n{message_content[:3000]}")
+        else:
+            # For raw email text, split into messages to find original problem
+            thread_messages = split_into_messages(topic_content)
+            if thread_messages:
+                # Get the original message (bottom of thread = last in list)
+                original_msg = thread_messages[-1] if len(thread_messages) > 1 else thread_messages[0]
+                # Clean boilerplate
+                original_msg = remove_boilerplate_from_message(original_msg)
+                if original_msg.strip():
+                    topic_input_parts.append(f"Original message:\n{original_msg[:2000]}")
+
+        # 3. Context summary if available (semantic-rich)
+        if context_summary:
+            topic_input_parts.append(f"Summary: {context_summary}")
+
+        topic_input = "\n\n".join(topic_input_parts)
+
+        if not topic_input.strip():
+            return []
+
+        topic_ids: list[str] = []
+        extracted_topics = await components.topic_extractor.extract_topics(topic_input)
+        if extracted_topics:
+            batch_ids = await components.topic_matcher.get_or_create_topics_batch(
+                [(t.name, t.description) for t in extracted_topics]
+            )
+            topic_ids.extend(str(tid) for tid in batch_ids)
+        if topic_ids:
+            vprint(f"Topics extracted: {len(topic_ids)}", file_ctx)
+        return topic_ids
+
+    except Exception as e:
+        vprint(f"Topic extraction failed (continuing): {e}", file_ctx)
+        return []
+
+
+def _create_body_chunks(
+    email_doc: "Document",
+    body_text: str,
+    context_summary: str | None,
+    vessel_ids: list[str],
+    vessel_types: list[str],
+    vessel_classes: list[str],
+    topic_ids: list[str],
+    components: "IngestComponents",
+) -> list["Chunk"]:
+    """Split email body into message chunks with enrichment metadata."""
+    from ..models.chunk import Chunk
+
+    chunks: list["Chunk"] = []
+    messages = split_into_messages(body_text)
+
+    char_offset = 0
+    for msg_idx, message in enumerate(messages):
+        # Clean boilerplate from this message
+        cleaned_message = remove_boilerplate_from_message(message)
+        if not cleaned_message.strip():
+            continue
+        # Skip very short messages (auto-replies, signatures only)
+        if len(cleaned_message.split()) < 20:
+            continue
+
+        # Find char positions in original body
+        msg_start = body_text.find(message[:50], char_offset)
+        if msg_start == -1:
+            msg_start = char_offset
+        msg_end = msg_start + len(message)
+        char_offset = msg_end
+
+        # Compute stable chunk_id
+        chunk_id = compute_chunk_id(email_doc.doc_id or "", msg_start, msg_end)
+
+        # Build embedding text with context (using cleaned message)
+        # Apply context summary to ALL chunks for better search relevance
+        embedding_text = cleaned_message
+        if context_summary:
+            embedding_text = components.context_generator.build_embedding_text(context_summary, cleaned_message)
+
+        # Build chunk metadata including vessel and topic info for filtering
+        chunk_metadata: dict = {"type": "email_body", "message_index": msg_idx}
+        if vessel_ids:
+            chunk_metadata["vessel_ids"] = vessel_ids
+        if vessel_types:
+            chunk_metadata["vessel_types"] = vessel_types
+        if vessel_classes:
+            chunk_metadata["vessel_classes"] = vessel_classes
+        if topic_ids:
+            chunk_metadata["topic_ids"] = topic_ids
+
+        chunks.append(
+            Chunk(
+                document_id=email_doc.id,
+                content=message,
+                chunk_index=msg_idx,
+                heading_path=["Email Body", f"Message {msg_idx + 1}"],
+                metadata=chunk_metadata,
+                chunk_id=chunk_id,
+                context_summary=context_summary,
+                embedding_text=embedding_text,
+                char_start=msg_start,
+                char_end=msg_end,
+                source_id=email_doc.source_id,
+                source_title=email_doc.source_title,
+                archive_browse_uri=email_doc.archive_browse_uri,
+                archive_download_uri=email_doc.archive_download_uri,
+            )
+        )
+
+    return chunks
 
 
 async def process_email(
@@ -89,71 +300,24 @@ async def process_email(
     file_ctx = eml_path.name  # Short filename for logging
     settings = get_settings()
 
-    # Check using version manager if available
     # Use hierarchy_manager's ingest_root to ensure consistent doc_id computation
     source_id = normalize_source_id(source_eml_path, components.hierarchy_manager.ingest_root)
 
-    if version_manager:
-        decision = await version_manager.check_document(source_id, file_hash)
-
-        if decision.action == "skip":
-            # Check if it's actually completed - partial failures need cleanup
-            if decision.existing_doc_id:
-                existing = await components.db.get_document_by_id(decision.existing_doc_id)
-                if existing and existing.status != ProcessingStatus.COMPLETED:
-                    vprint(f"Cleaning up partial document for retry: {eml_path}", file_ctx)
-                    components.db.delete_document_for_reprocess(decision.existing_doc_id)
-                else:
-                    vprint(f"Skipping (already processed): {eml_path}", file_ctx)
-                    result.skipped = True
-                    result.skip_reason = "already_processed"
-                    return result
-            else:
-                vprint(f"Skipping (already processed): {eml_path}", file_ctx)
-                result.skipped = True
-                result.skip_reason = "already_processed"
-                return result
-        elif decision.action == "reprocess":
-            vprint(f"Reprocessing: {decision.reason}", file_ctx)
-            # Delete old document (cascades to child docs and chunks)
-            if decision.existing_doc_id:
-                components.db.delete_document_for_reprocess(decision.existing_doc_id)
-        elif decision.action == "update":
-            vprint(f"Updating: {decision.reason}", file_ctx)
-            # Delete old document before inserting updated version
-            if decision.existing_doc_id:
-                components.db.delete_document_for_reprocess(decision.existing_doc_id)
-    else:
-        # Fallback to legacy check
-        existing = await components.db.get_document_by_hash(file_hash)
-        if existing:
-            if existing.status == ProcessingStatus.COMPLETED:
-                vprint(f"Skipping (already processed): {eml_path}", file_ctx)
-                result.skipped = True
-                result.skip_reason = "already_processed"
-                return result
-            else:
-                # Partial failure - clean up old document before retry
-                vprint(f"Cleaning up partial document for retry: {eml_path}", file_ctx)
-                components.db.delete_document_for_reprocess(existing.id)
-
-    # Final safety check: clean up any orphaned document with same doc_id
-    # This catches edge cases where version_manager didn't find it but it exists
-    target_doc_id = compute_doc_id(source_id, file_hash)
-    orphaned = await components.db.get_document_by_doc_id(target_doc_id)
-    if orphaned:
-        if orphaned.status == ProcessingStatus.COMPLETED:
-            vprint(f"Skipping (found completed by doc_id): {eml_path}", file_ctx)
-            result.skipped = True
-            result.skip_reason = "already_processed"
-            return result
-        vprint(f"Cleaning up orphaned document {target_doc_id}: {eml_path}", file_ctx)
-        components.db.delete_document_for_reprocess(orphaned.id)
+    # Step 1: Dedup check
+    action, cleanup_doc_id = await _resolve_existing_document(
+        source_id, file_hash, components, version_manager, vprint, file_ctx
+    )
+    if action == "skip":
+        result.skipped = True
+        result.skip_reason = "already_processed"
+        return result
+    if action == "cleanup_and_proceed" and cleanup_doc_id:
+        components.db.delete_document_for_reprocess(cleanup_doc_id)
 
     await tracker.mark_started(eml_path, file_hash)
     vprint(f"Processing: {eml_path}", file_ctx)
 
-    # Parse email
+    # Step 2: Parse email
     parsed_email = components.eml_parser.parse_file(eml_path)
     vprint(f"Parsed: \"{parsed_email.metadata.subject}\" - {len(parsed_email.attachments)} attachments", file_ctx)
 
@@ -176,30 +340,29 @@ async def process_email(
         except Exception as e:
             vprint(f"Archive generation failed: {e}", file_ctx)
 
-    # Create email document in hierarchy
-    email_doc = await components.hierarchy_manager.create_email_document(
+    # Build email document in memory (deferred DB insert for atomic persist)
+    email_doc = components.hierarchy_manager.build_email_document(
         eml_path, parsed_email, archive_result=archive_result
     )
+
+    # Get email body text (used for vessel matching, context, topics, and chunking)
+    email_chunks: list["Chunk"] = []
+    body_text = components.eml_parser.get_body_text(parsed_email)
 
     # Match vessels in email content
     vessel_ids: list[str] = []
     vessel_types: list[str] = []
     vessel_classes: list[str] = []
     if components.vessel_matcher:
-        body_text_for_matching = components.eml_parser.get_body_text(parsed_email)
         matched_vessels = components.vessel_matcher.find_vessels_in_email(
             subject=parsed_email.metadata.subject,
-            body=body_text_for_matching,
+            body=body_text,
         )
         vessel_ids = [str(v) for v in matched_vessels]
         if vessel_ids:
             vessel_types = components.vessel_matcher.get_types_for_ids(matched_vessels)
             vessel_classes = components.vessel_matcher.get_classes_for_ids(matched_vessels)
             vprint(f"Matched {len(vessel_ids)} vessel(s)", file_ctx)
-
-    # Create chunks from email body
-    email_chunks: list["Chunk"] = []
-    body_text = components.eml_parser.get_body_text(parsed_email)
 
     # Generate context summary for the email if context generator is available
     context_summary = None
@@ -212,192 +375,58 @@ async def process_email(
         except Exception as e:
             vprint(f"Context generation failed: {e}", file_ctx)
 
-    # Extract topics from email content for categorization and pre-filtering
-    # Strategy: Use archived markdown (cleaner) + subject + original message + context summary
-    # In email threads, the ORIGINAL message (at bottom) contains the problem description,
-    # while recent messages (at top) often just contain solutions/acknowledgments.
-    topic_ids: list[str] = []
-    if components.topic_extractor and components.topic_matcher:
-        try:
-            # Prefer archived markdown content (banners/signatures already removed)
-            # Fall back to raw body_text if archive not available
-            topic_content = None
-            if archive_result and archive_result.markdown_content:
-                topic_content = archive_result.markdown_content
-                vprint(f"Using archived content for topics ({len(topic_content)} chars)", file_ctx)
-            elif body_text:
-                topic_content = body_text
+    # Step 3: Topics (extracted)
+    topic_ids = await _extract_topics(
+        components, parsed_email, body_text, archive_result, context_summary, vprint, file_ctx
+    )
 
-            if topic_content:
-                # Build topic extraction input from most relevant sources
-                topic_input_parts = []
-
-                # 1. Subject line - usually contains the core topic
-                subject = parsed_email.metadata.subject or ""
-                if subject:
-                    topic_input_parts.append(f"Subject: {subject}")
-
-                # Check if content is markdown (archived) or raw email text
-                is_markdown = topic_content.strip().startswith("#")
-
-                if is_markdown:
-                    # For markdown content, it's already clean
-                    # Skip header to get to message content
-                    msg_start = topic_content.find("## Message")
-                    if msg_start == -1:
-                        msg_start = topic_content.find("## Content")
-                    if msg_start == -1:
-                        msg_start = topic_content.find("---")
-                        if msg_start != -1:
-                            msg_start = topic_content.find("\n", msg_start + 3)
-
-                    message_content = topic_content[msg_start:] if msg_start > 0 else topic_content
-                    topic_input_parts.append(f"Content:\n{message_content[:3000]}")
-                else:
-                    # For raw email text, split into messages to find original problem
-                    thread_messages = split_into_messages(topic_content)
-                    if thread_messages:
-                        # Get the original message (bottom of thread = last in list)
-                        original_msg = thread_messages[-1] if len(thread_messages) > 1 else thread_messages[0]
-                        # Clean boilerplate
-                        original_msg = remove_boilerplate_from_message(original_msg)
-                        if original_msg.strip():
-                            topic_input_parts.append(f"Original message:\n{original_msg[:2000]}")
-
-                # 3. Context summary if available (semantic-rich)
-                if context_summary:
-                    topic_input_parts.append(f"Summary: {context_summary}")
-
-                topic_input = "\n\n".join(topic_input_parts)
-
-                if topic_input.strip():
-                    extracted_topics = await components.topic_extractor.extract_topics(topic_input)
-                    if extracted_topics:
-                        batch_ids = await components.topic_matcher.get_or_create_topics_batch(
-                            [(t.name, t.description) for t in extracted_topics]
-                        )
-                        topic_ids.extend(str(tid) for tid in batch_ids)
-                    if topic_ids:
-                        vprint(f"Topics extracted: {len(topic_ids)}", file_ctx)
-        except Exception as e:
-            vprint(f"Topic extraction failed (continuing): {e}", file_ctx)
-            # Don't fail ingest on topic extraction failure
-
+    # Step 4: Body chunks (extracted)
     if body_text:
-        # Split email thread into individual messages for better embedding quality
-        # Each message becomes a separate chunk to improve semantic search relevance
-        messages = split_into_messages(body_text)
-        vprint(f"Email body: {len(messages)} message(s) -> chunks", file_ctx)
+        body_chunks_list = _create_body_chunks(
+            email_doc, body_text, context_summary,
+            vessel_ids, vessel_types, vessel_classes, topic_ids, components,
+        )
+        vprint(f"Email body: {len(body_chunks_list)} chunk(s)", file_ctx)
+        email_chunks.extend(body_chunks_list)
 
-        char_offset = 0
-        for msg_idx, message in enumerate(messages):
-            # Clean boilerplate from this message
-            cleaned_message = remove_boilerplate_from_message(message)
-            if not cleaned_message.strip():
-                continue
-
-            # Skip very short messages (likely auto-replies, signatures only)
-            if len(cleaned_message.split()) < 20:
-                continue
-
-            # Find char positions in original body
-            msg_start = body_text.find(message[:50], char_offset)
-            if msg_start == -1:
-                msg_start = char_offset
-            msg_end = msg_start + len(message)
-            char_offset = msg_end
-
-            # Compute stable chunk_id
-            chunk_id = compute_chunk_id(email_doc.doc_id or "", msg_start, msg_end)
-
-            # Compute date prefix for temporal search relevance
-            date_prefix = ""
-            if email_doc.email_metadata and getattr(email_doc.email_metadata, 'date_start', None):
-                date_prefix = f"[Date: {email_doc.email_metadata.date_start.strftime('%Y-%m-%d')}] "
-
-            # Build embedding text with context (using cleaned message)
-            # Apply context summary to ALL chunks for better search relevance
-            embedding_text = cleaned_message
-            if context_summary:
-                embedding_text = components.context_generator.build_embedding_text(context_summary, cleaned_message)
-
-            if date_prefix:
-                embedding_text = date_prefix + embedding_text
-
-            # Build chunk metadata including vessel and topic info for filtering
-            chunk_metadata: dict = {"type": "email_body", "message_index": msg_idx}
-            if vessel_ids:
-                chunk_metadata["vessel_ids"] = vessel_ids
-            if vessel_types:
-                chunk_metadata["vessel_types"] = vessel_types
-            if vessel_classes:
-                chunk_metadata["vessel_classes"] = vessel_classes
-            if topic_ids:
-                chunk_metadata["topic_ids"] = topic_ids
-
-            from ..models.chunk import Chunk
-
-            email_chunks.append(
-                Chunk(
-                    document_id=email_doc.id,
-                    content=message,  # Store original message content
-                    chunk_index=msg_idx,
-                    heading_path=["Email Body", f"Message {msg_idx + 1}"],
-                    metadata=chunk_metadata,
-                    chunk_id=chunk_id,
-                    context_summary=context_summary,  # Apply to all chunks
-                    embedding_text=embedding_text,  # Cleaned for better embeddings
-                    char_start=msg_start,
-                    char_end=msg_end,
-                    source_id=email_doc.source_id,
-                    source_title=email_doc.source_title,
-                    archive_browse_uri=email_doc.archive_browse_uri,
-                    archive_download_uri=email_doc.archive_download_uri,
-                )
-            )
-
-    # Process attachments in parallel with concurrency limit
-
+    # Process attachments with progress updates
     attachment_chunk_count = 0
-    _att_sem = asyncio.Semaphore(3)
+    attachment_docs: list["Document"] = []
+    # Build lookup dict for archive file results (avoids O(N^2) scan)
+    archive_file_map: dict[str, object] = {}
+    if archive_result and archive_result.attachment_files:
+        for fr in archive_result.attachment_files:
+            key = fr.original_path.rsplit("/", 1)[-1]
+            archive_file_map[key] = fr
 
-    async def _process_one_attachment(attachment):
-        async with _att_sem:
-            afr = None
-            if archive_result and archive_result.attachment_files:
-                safe_name = _sanitize_storage_key(attachment.filename)
-                for file_result in archive_result.attachment_files:
-                    if file_result.original_path.endswith(f"/{safe_name}"):
-                        afr = file_result
-                        break
+    for i, attachment in enumerate(parsed_email.attachments):
+        safe_name = _sanitize_storage_key(attachment.filename)
+        archive_file_result = archive_file_map.get(safe_name)
 
-            return await process_attachment(
-                attachment=attachment,
-                email_doc=email_doc,
-                source_eml_path=source_eml_path,
-                file_ctx=file_ctx,
-                components=components,
-                unsupported_logger=unsupported_logger,
-                archive_file_result=afr,
-                vessel_ids=vessel_ids,
-                vessel_types=vessel_types,
-                vessel_classes=vessel_classes,
-                force_reparse=force_reparse,
-                lenient=lenient,
-                on_verbose=on_verbose,
-                issue_tracker=issue_tracker,
-                email_context_summary=context_summary,
-            )
+        attachment_chunks = await process_attachment(
+            attachment=attachment,
+            email_doc=email_doc,
+            source_eml_path=source_eml_path,
+            file_ctx=file_ctx,
+            components=components,
+            unsupported_logger=unsupported_logger,
+            archive_file_result=archive_file_result,
+            vessel_ids=vessel_ids,
+            vessel_types=vessel_types,
+            vessel_classes=vessel_classes,
+            force_reparse=force_reparse,
+            lenient=lenient,
+            on_verbose=on_verbose,
+            issue_tracker=issue_tracker,
+            email_context_summary=context_summary,
+            collect_docs=attachment_docs,
+        )
+        attachment_chunk_count += len(attachment_chunks)
+        email_chunks.extend(attachment_chunks)
 
-    if parsed_email.attachments:
-        att_tasks = [_process_one_attachment(att) for att in parsed_email.attachments]
-        att_results = await asyncio.gather(*att_tasks)
-        for att_chunks in att_results:
-            attachment_chunk_count += len(att_chunks)
-            email_chunks.extend(att_chunks)
-
+        # Update progress after each attachment
         if on_progress:
-            on_progress(attachment_count, max(1, attachment_count), file_ctx)
+            on_progress(i + 1, max(1, attachment_count), file_ctx)
 
     # Summary of attachments processed
     if parsed_email.attachments:
@@ -422,20 +451,18 @@ async def process_email(
     if email_chunks:
         vprint(f"Generating embeddings for {len(email_chunks)} chunks...", file_ctx)
         email_chunks = await components.embeddings.embed_chunks(email_chunks)
-        await components.db.insert_chunks(email_chunks)
-        vprint(f"Inserted {len(email_chunks)} chunks to database", file_ctx)
 
-        # Update topic counts for accurate pre-filtering
-        if topic_ids:
-            from uuid import UUID
-            await components.db.increment_topic_counts(
-                [UUID(tid) for tid in topic_ids],
-                chunk_delta=len(email_chunks),
-                document_delta=1,
-            )
-
-    # Mark email as completed
-    await components.db.update_document_status(email_doc.id, ProcessingStatus.COMPLETED)
+    # Atomic persist: all documents + chunks + topic counts in one operation
+    email_doc.status = ProcessingStatus.COMPLETED
+    topic_uuids = [UUID(tid) for tid in topic_ids] if topic_ids else None
+    await components.db.persist_ingest_result(
+        email_doc=email_doc,
+        attachment_docs=attachment_docs,
+        chunks=email_chunks,
+        topic_ids=topic_uuids,
+        chunk_delta=len(email_chunks),
+    )
+    vprint(f"Persisted {len(email_chunks)} chunks + {len(attachment_docs)} attachment docs", file_ctx)
     await tracker.mark_completed(eml_path)
 
     # Clean up attachment folder after successful processing
