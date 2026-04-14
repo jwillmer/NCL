@@ -57,6 +57,8 @@ logs/
 Thumbs.db
 /frontend/node_modules
 /data/processed
+/data/test-subset
+/data/test-output
 /runtime/node_modules
 nul
 /data/reports

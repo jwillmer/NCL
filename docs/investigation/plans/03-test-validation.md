@@ -1,6 +1,6 @@
 ---
 purpose: Step-by-step execution plan for test subset validation after all implementation plans are complete
-status: pending
+status: phases-1-4-complete
 date: 2026-04-13
 depends_on: [02-implementation.md, 01-critical-fixes.md]
 execute_after: All phases from Plan 02 (Implementation) and all fixes from Plan 01 are complete
@@ -161,6 +161,13 @@ uv run mtss estimate --source ./data/test-subset
 
 **Expected:** 14 EMLs, estimated cost <$1, lists attachment counts by type.
 If cost is significantly higher, investigate before proceeding.
+
+**Result (2026-04-13):**
+- 14 EMLs scanned, 5 PDFs (6 pages), 32 images (16 meaningful, 16 skipped)
+- LlamaParse: 6 pages → $0.04
+- Vision API: 16 images → $0.16
+- Embeddings: ~9 chunks → $0.00
+- **Total: $0.20** (well under $1 threshold)
 
 ## Phase 4: Local-Only Ingest (~5-15 min)
 
@@ -343,7 +350,7 @@ Update this document with pass/fail for each check.
 ### Step 8.3: Decision gate
 If ALL checks pass:
 - [ ] Proceed to full ingest of 6,289 emails
-- [ ] Use local-only mode: `uv run mtss ingest --local-only --output ./data/full-ingest --lenient`
+- [ ] Use local-only mode: `uv run mtss ingest --local-only --output-dir ./data/full-ingest --lenient`
 - [ ] Estimated cost: ~$6-10
 - [ ] Estimated time: ~53 minutes
 
@@ -369,3 +376,69 @@ If ANY critical checks fail:
 | Local output | Valid JSONL with embeddings | Yes |
 | Config | Embedding dims=512, chunk size=1024 | Yes |
 | Quality wins | No <20-word chunks, dates in embeddings, attachment context | Yes |
+
+---
+
+## Execution Summary (2026-04-13)
+
+### Phases 1-4: Automated Validation Results
+
+| Metric | Result | Status |
+|--------|--------|--------|
+| Pytest suite | 322/322 pass | PASS |
+| Documents ingested | 35 (14 emails + 21 attachments) | PASS |
+| Chunks created | 87 | PASS |
+| Topics extracted | 27 | PASS |
+| Embedding dimensions | 512 | PASS |
+| Date in embedding_text | 71/87 (82%) | PASS |
+| Short chunks (<5 words) | 0 | PASS |
+| Failed files | 0/14 | PASS |
+| Estimated cost (subset) | $0.20 | PASS |
+| JSONL validity | All files valid JSON | PASS |
+| Archive folders | 14 | PASS |
+
+### Bugs Found and Fixed During Validation
+
+| Bug | File | Root Cause | Fix |
+|-----|------|------------|-----|
+| `.env` overrides config.py with old values | `.env`, `.env.template`, `docs/architecture.md` | Plan 02 updated config.py defaults but not .env/template/docs | Updated all 3 to match: dims=512, chunk=1024, overlap=100 |
+| Image filter falsely rejects large Outlook images | `src/mtss/image_filter.py` | `image\d{3}` pattern had no size override | Split into hard/soft skip; soft skip only filters <100KB |
+| Topic extraction silently fails for all emails | `src/mtss/ingest/pipeline.py:230` | `.metadata.get("subject")` called on Pydantic model (not a dict) | Changed to `.metadata.subject or ""` |
+| Rich console crashes on Windows | `src/mtss/cli/_common.py` | Braille spinner chars (U+2807) not in cp1252 | Force UTF-8 stdout/stderr on Windows |
+| Unicode arrow in log message | `src/mtss/cli/ingest_cmd.py:203` | `→` (U+2192) not in cp1252 | Replaced with ASCII `->` |
+| PDF pagination artifacts stored as chunks | `src/mtss/parsers/chunker.py` | No min-word filter in DocumentChunker | Added `>= 5 words` filter on splits |
+
+### CLI Flag Correction
+
+The original plan used `--output` in commands (lines 169, 346). The actual CLI flag is `--output-dir` / `-o`. Corrected in Step 8.3.
+
+---
+
+## Next Steps (Phases 5-8: Interactive Validation)
+
+Phases 1-4 (automated) are complete. The remaining phases require user interaction:
+
+### Phase 5: Database Import
+Requires Supabase access. Run:
+```bash
+uv run mtss ingest --source ./data/test-subset --lenient --verbose
+```
+Then verify: `uv run mtss stats`
+
+### Phase 6: Query Validation
+Start the API server and chat UI:
+```bash
+uv run mtss serve          # API on :8000
+# Open http://localhost:5173  (chat UI)
+```
+Run the 7 test queries from Phase 6 above and verify results manually.
+
+### Phase 7: Regression Checks
+Verify citation integrity, no `[C:...]` markers, no double-encoding in URIs.
+
+### Phase 8: Decision Gate
+If all checks pass, proceed to full production ingest:
+```bash
+uv run mtss ingest --local-only --output-dir ./data/full-ingest --lenient
+```
+Estimated cost: ~$6-10 | Estimated time: ~53 minutes

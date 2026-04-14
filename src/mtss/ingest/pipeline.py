@@ -227,7 +227,7 @@ async def process_email(
                 topic_input_parts = []
 
                 # 1. Subject line - usually contains the core topic
-                subject = parsed_email.metadata.get("subject", "")
+                subject = parsed_email.metadata.subject or ""
                 if subject:
                     topic_input_parts.append(f"Subject: {subject}")
 

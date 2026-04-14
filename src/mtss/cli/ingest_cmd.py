@@ -200,7 +200,7 @@ async def _ingest(
 
         resolved_output = (output_dir or source_dir.parent / "output").resolve()
         resolved_output.mkdir(parents=True, exist_ok=True)
-        console.print(f"[green]Local-only mode: output → {resolved_output}[/green]")
+        console.print(f"[green]Local-only mode: output -> {resolved_output}[/green]")
 
         db = LocalStorageClient(output_dir=resolved_output)
         tracker = LocalProgressTracker(output_dir=resolved_output)

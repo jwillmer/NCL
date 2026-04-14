@@ -16,6 +16,15 @@ from rich.table import Table
 
 from ..ingest.helpers import IssueTracker
 
+# Force UTF-8 output on Windows to avoid cp1252 codec errors with Rich's
+# Unicode characters (spinners, arrows, box-drawing, Braille patterns).
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 console = Console()
 
 # Module-level verbose flag

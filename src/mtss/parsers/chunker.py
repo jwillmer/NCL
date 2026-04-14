@@ -303,6 +303,10 @@ class DocumentChunker:
         # Track position in original text for finding chunk locations
         search_start = 0
 
+        # Drop trivially short splits (PDF pagination artifacts, stray headers)
+        _MIN_SPLIT_WORDS = 5
+        splits = [s for s in splits if len(s.split()) >= _MIN_SPLIT_WORDS]
+
         for idx, content in enumerate(splits):
             # Extract heading context from markdown content
             heading_path = self._extract_heading_path(content) if is_markdown else []

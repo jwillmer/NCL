@@ -82,9 +82,9 @@ Uses Pydantic Settings for type-safe configuration from environment variables.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `EMBEDDING_MODEL` | text-embedding-3-small | OpenAI embedding model |
-| `EMBEDDING_DIMENSIONS` | 1536 | Vector dimensions |
+| `EMBEDDING_DIMENSIONS` | 512 | Vector dimensions |
 | `LLM_MODEL` | gpt-4o-mini | Answer generation model |
-| `CHUNK_SIZE_TOKENS` | 512 | Max tokens per chunk |
+| `CHUNK_SIZE_TOKENS` | 1024 | Max tokens per chunk |
 | `ENABLE_OCR` | true | Enable OCR for images/PDFs |
 | `ENABLE_PICTURE_DESCRIPTION` | true | Enable AI image descriptions |
 | `RERANK_ENABLED` | true | Enable two-stage retrieval |
