@@ -334,3 +334,109 @@ class TestTopicMatcher:
         assert id1 == id2
         # Should only call DB once
         assert mock_db.get_topic_by_name.call_count == 1
+
+    # --- Batch topic creation tests ---
+
+    @pytest.mark.asyncio
+    async def test_batch_empty_list(self, matcher):
+        """Should return empty list for empty input."""
+        result = await matcher.get_or_create_topics_batch([])
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_batch_all_cached(self, matcher, mock_db, mock_embeddings):
+        """Should skip embedding when all topics are cached."""
+        topic_id = uuid4()
+        matcher._name_cache["cargo damage"] = topic_id
+
+        result = await matcher.get_or_create_topics_batch([("Cargo Damage", None)])
+
+        assert result == [topic_id]
+        mock_embeddings.generate_embeddings_batch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_all_new(self, matcher, mock_db, mock_embeddings):
+        """Should batch-embed all new topics in one call."""
+        topic1 = Topic(id=uuid4(), name="cargo damage", display_name="Cargo Damage")
+        topic2 = Topic(id=uuid4(), name="engine failure", display_name="Engine Failure")
+        mock_db.insert_topic.side_effect = [topic1, topic2]
+        mock_embeddings.generate_embeddings_batch = AsyncMock(
+            return_value=[[0.1] * 1536, [0.2] * 1536]
+        )
+
+        result = await matcher.get_or_create_topics_batch([
+            ("Cargo Damage", "desc1"),
+            ("Engine Failure", "desc2"),
+        ])
+
+        assert len(result) == 2
+        assert result[0] == topic1.id
+        assert result[1] == topic2.id
+        # Single batch call, not two individual calls
+        mock_embeddings.generate_embeddings_batch.assert_called_once_with(
+            ["Cargo Damage", "Engine Failure"]
+        )
+        assert mock_db.insert_topic.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_batch_mixed_cached_and_new(self, matcher, mock_db, mock_embeddings):
+        """Should only embed topics not in cache."""
+        cached_id = uuid4()
+        matcher._name_cache["cargo damage"] = cached_id
+
+        new_topic = Topic(id=uuid4(), name="engine failure", display_name="Engine Failure")
+        mock_db.insert_topic.return_value = new_topic
+        mock_embeddings.generate_embeddings_batch = AsyncMock(
+            return_value=[[0.2] * 1536]
+        )
+
+        result = await matcher.get_or_create_topics_batch([
+            ("Cargo Damage", None),
+            ("Engine Failure", "desc"),
+        ])
+
+        assert result[0] == cached_id
+        assert result[1] == new_topic.id
+        # Only one topic needed embedding
+        mock_embeddings.generate_embeddings_batch.assert_called_once_with(["Engine Failure"])
+
+    @pytest.mark.asyncio
+    async def test_batch_similar_merge(self, matcher, mock_db, mock_embeddings):
+        """Should merge with existing similar topic."""
+        existing_id = uuid4()
+        mock_db.find_similar_topics.return_value = [
+            {"id": existing_id, "name": "cargo damage", "similarity": 0.95}
+        ]
+        mock_embeddings.generate_embeddings_batch = AsyncMock(
+            return_value=[[0.1] * 1536]
+        )
+
+        result = await matcher.get_or_create_topics_batch([("Damage to Cargo", None)])
+
+        assert result == [existing_id]
+        mock_db.insert_topic.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_preserves_order(self, matcher, mock_db, mock_embeddings):
+        """Should return UUIDs in same order as input topics."""
+        cached_id = uuid4()
+        matcher._name_cache["topic a"] = cached_id
+
+        db_topic = Topic(id=uuid4(), name="topic b", display_name="Topic B")
+        mock_db.get_topic_by_name.side_effect = [db_topic, None]
+
+        new_topic = Topic(id=uuid4(), name="topic c", display_name="Topic C")
+        mock_db.insert_topic.return_value = new_topic
+        mock_embeddings.generate_embeddings_batch = AsyncMock(
+            return_value=[[0.3] * 1536]
+        )
+
+        result = await matcher.get_or_create_topics_batch([
+            ("Topic A", None),   # cached
+            ("Topic B", None),   # DB exact match
+            ("Topic C", None),   # new
+        ])
+
+        assert result[0] == cached_id
+        assert result[1] == db_topic.id
+        assert result[2] == new_topic.id

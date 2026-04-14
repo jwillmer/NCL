@@ -149,6 +149,8 @@ async def _vessels_import(csv_file: Optional[Path], clear: bool):
                 name = row.get("NAME", "").strip()
                 vessel_type = row.get("TYPE", "").strip()
                 vessel_class = row.get("CLASS", "").strip()
+                aliases_str = row.get("ALIASES", "").strip()
+                aliases = [a.strip() for a in aliases_str.split(",") if a.strip()] if aliases_str else []
 
                 if not name:
                     continue  # Skip rows without vessel name
@@ -161,6 +163,7 @@ async def _vessels_import(csv_file: Optional[Path], clear: bool):
                     name=name,
                     vessel_type=vessel_type,
                     vessel_class=vessel_class,
+                    aliases=aliases,
                 )
                 vessels_to_import.append(vessel)
 
@@ -357,17 +360,17 @@ async def _vessels_list():
 
         table = Table(title=f"Vessel Registry ({len(vessels)} vessels)")
         table.add_column("Name", style="cyan")
-        table.add_column("IMO", style="green")
         table.add_column("Type", style="yellow")
-        table.add_column("DWT", justify="right")
+        table.add_column("Class", style="green")
+        table.add_column("Aliases", style="dim")
 
         for vessel in vessels:
-            dwt_str = f"{vessel.dwt:,}" if vessel.dwt else "-"
+            aliases_str = ", ".join(vessel.aliases) if vessel.aliases else "-"
             table.add_row(
                 vessel.name,
-                vessel.imo or "-",
                 vessel.vessel_type or "-",
-                dwt_str,
+                vessel.vessel_class or "-",
+                aliases_str,
             )
 
         console.print(table)

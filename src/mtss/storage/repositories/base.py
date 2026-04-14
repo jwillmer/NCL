@@ -154,6 +154,7 @@ class BaseRepository:
             name=row["name"],
             vessel_type=row.get("vessel_type") or "",
             vessel_class=row.get("vessel_class") or "",
+            aliases=row.get("aliases") or [],
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
         )

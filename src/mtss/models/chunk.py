@@ -100,6 +100,9 @@ class RetrievalResult:
     archive_download_uri: Optional[str] = None
     image_uri: Optional[str] = None  # For image chunks - path to display inline
 
+    # Context summary (LLM-generated document summary)
+    context_summary: Optional[str] = None
+
     # Additional context
     document_type: Optional[str] = None
     email_subject: Optional[str] = None
@@ -126,6 +129,7 @@ class RetrievalResult:
             "archive_browse_uri": self.archive_browse_uri,
             "archive_download_uri": self.archive_download_uri,
             "image_uri": self.image_uri,
+            "context_summary": self.context_summary,
             "document_type": self.document_type,
             "email_subject": self.email_subject,
             "email_initiator": self.email_initiator,

@@ -65,7 +65,10 @@ Example response:
 
         for result in results:
             header = self._build_citation_header(result)
-            block = f"{header}\n{result.text}"
+            text = result.text
+            if result.context_summary:
+                text = f"[Context: {result.context_summary}]\n{text}"
+            block = f"{header}\n{text}"
             context_blocks.append(block)
 
         return "\n\n---\n\n".join(context_blocks)

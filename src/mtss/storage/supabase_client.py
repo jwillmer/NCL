@@ -166,9 +166,10 @@ class SupabaseClient:
         match_threshold: float = 0.7,
         match_count: int = 10,
         metadata_filter: Optional[Dict[str, Any]] = None,
+        query_text: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         return await self._search.search_similar_chunks(
-            query_embedding, match_threshold, match_count, metadata_filter
+            query_embedding, match_threshold, match_count, metadata_filter, query_text
         )
 
     # ==================== Vessel Operations ====================

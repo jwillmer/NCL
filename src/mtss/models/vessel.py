@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from typing import List
+
 from pydantic import BaseModel, Field
 
 
@@ -15,6 +17,7 @@ class Vessel(BaseModel):
     name: str
     vessel_type: str  # VLCC, SUEZMAX, AFRAMAX
     vessel_class: str  # Canopus Class, Plato Class, etc.
+    aliases: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -305,6 +305,121 @@ class TestTopicFilter:
         desc = topic_filter._describe_vessel_filter({"vessel_ids": ["uuid"]})
         assert "selected vessel" in desc
 
+
+class TestTopicLoosening:
+    """Tests for topic loosening (retry at lower threshold)."""
+
+    @pytest.fixture
+    def mock_extractor(self):
+        extractor = AsyncMock()
+        return extractor
+
+    @pytest.fixture
+    def mock_matcher(self):
+        matcher = AsyncMock()
+        matcher.find_related_topics = AsyncMock(return_value=[])
+        return matcher
+
+    @pytest.fixture
+    def mock_db(self):
+        db = AsyncMock()
+        return db
+
+    @pytest.fixture
+    def topic_filter(self, mock_extractor, mock_matcher, mock_db):
+        return TopicFilter(mock_extractor, mock_matcher, mock_db)
+
+    @pytest.mark.asyncio
+    async def test_loosening_triggers_when_few_chunks(
+        self, topic_filter, mock_extractor, mock_matcher, mock_db
+    ):
+        """Should retry at lower threshold when initial match has < 3 chunks."""
+        topic_strict = Topic(id=uuid4(), name="cargo damage", display_name="Cargo Damage")
+        topic_loose = Topic(id=uuid4(), name="cargo issues", display_name="Cargo Issues")
+
+        mock_extractor.extract_topics_from_query.return_value = [
+            ExtractedTopic(name="Cargo Damage")
+        ]
+        # First call (strict): returns topic with 2 chunks
+        # Second call (loose): returns different topic with 15 chunks
+        mock_matcher.find_topics_by_names.side_effect = [
+            [("Cargo Damage", topic_strict)],
+            [("Cargo Damage", topic_loose)],
+        ]
+        # Counts: strict=2, loose_total=15, loose_filtered=15
+        mock_db.get_chunks_count_for_topic.side_effect = [2, 15]
+
+        result = await topic_filter.analyze_query("Cargo damage?")
+
+        assert result.should_skip_rag is False
+        assert result.total_chunk_count == 15
+        # find_topics_by_names called twice (strict then loose)
+        assert mock_matcher.find_topics_by_names.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_loosening_skipped_when_enough_chunks(
+        self, topic_filter, mock_extractor, mock_matcher, mock_db
+    ):
+        """Should NOT retry when initial match has >= 3 chunks."""
+        topic = Topic(id=uuid4(), name="cargo damage", display_name="Cargo Damage")
+
+        mock_extractor.extract_topics_from_query.return_value = [
+            ExtractedTopic(name="Cargo Damage")
+        ]
+        mock_matcher.find_topics_by_names.return_value = [("Cargo Damage", topic)]
+        mock_db.get_chunks_count_for_topic.return_value = 10
+
+        result = await topic_filter.analyze_query("Cargo damage?")
+
+        assert result.should_skip_rag is False
+        assert result.total_chunk_count == 10
+        # Only one call — no retry
+        assert mock_matcher.find_topics_by_names.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_loosening_no_improvement_keeps_original(
+        self, topic_filter, mock_extractor, mock_matcher, mock_db
+    ):
+        """Should keep original results when loose match doesn't improve."""
+        topic = Topic(id=uuid4(), name="cargo damage", display_name="Cargo Damage")
+
+        mock_extractor.extract_topics_from_query.return_value = [
+            ExtractedTopic(name="Cargo Damage")
+        ]
+        # Both calls return same topic with 1 chunk
+        mock_matcher.find_topics_by_names.side_effect = [
+            [("Cargo Damage", topic)],
+            [("Cargo Damage", topic)],
+        ]
+        mock_db.get_chunks_count_for_topic.side_effect = [1, 1]
+
+        result = await topic_filter.analyze_query("Cargo damage?")
+
+        # Original result kept (1 chunk, still proceeds)
+        assert result.total_chunk_count == 1
+
+    @pytest.mark.asyncio
+    async def test_loosening_error_uses_original(
+        self, topic_filter, mock_extractor, mock_matcher, mock_db
+    ):
+        """Should use original results when loosening throws an error."""
+        topic = Topic(id=uuid4(), name="cargo damage", display_name="Cargo Damage")
+
+        mock_extractor.extract_topics_from_query.return_value = [
+            ExtractedTopic(name="Cargo Damage")
+        ]
+        # First call succeeds, second throws
+        mock_matcher.find_topics_by_names.side_effect = [
+            [("Cargo Damage", topic)],
+            Exception("DB connection failed"),
+        ]
+        mock_db.get_chunks_count_for_topic.return_value = 1
+
+        result = await topic_filter.analyze_query("Cargo damage?")
+
+        # Should not crash, should use original result
+        assert result.total_chunk_count == 1
+
     def test_describe_vessel_filter_type(self, topic_filter):
         """Should describe vessel type filter."""
         desc = topic_filter._describe_vessel_filter({"vessel_types": ["VLCC"]})

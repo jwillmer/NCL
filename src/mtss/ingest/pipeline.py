@@ -266,11 +266,11 @@ async def process_email(
 
                 if topic_input.strip():
                     extracted_topics = await components.topic_extractor.extract_topics(topic_input)
-                    for topic in extracted_topics:
-                        topic_id = await components.topic_matcher.get_or_create_topic(
-                            topic.name, topic.description
+                    if extracted_topics:
+                        batch_ids = await components.topic_matcher.get_or_create_topics_batch(
+                            [(t.name, t.description) for t in extracted_topics]
                         )
-                        topic_ids.append(str(topic_id))
+                        topic_ids.extend(str(tid) for tid in batch_ids)
                     if topic_ids:
                         vprint(f"Topics extracted: {len(topic_ids)}", file_ctx)
         except Exception as e:

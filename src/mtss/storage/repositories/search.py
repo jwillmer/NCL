@@ -17,14 +17,16 @@ class SearchRepository(BaseRepository):
         match_threshold: float = 0.7,
         match_count: int = 10,
         metadata_filter: Optional[Dict[str, Any]] = None,
+        query_text: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search for similar chunks using vector similarity.
+        """Search for similar chunks using vector similarity with optional BM25 hybrid scoring.
 
         Args:
-            query_embedding: Query embedding vector (1536 dimensions).
+            query_embedding: Query embedding vector.
             match_threshold: Minimum similarity score (0-1).
             match_count: Maximum number of results.
             metadata_filter: Optional JSONB filter (e.g., {"vessel_ids": ["uuid"]}).
+            query_text: Optional query text for hybrid BM25 scoring.
 
         Returns:
             List of matching chunks with document context.
@@ -40,12 +42,13 @@ class SearchRepository(BaseRepository):
                 await conn.execute("SET LOCAL hnsw.ef_search = 100")
                 rows = await conn.fetch(
                     """
-                    SELECT * FROM match_chunks($1, $2, $3, $4::jsonb)
+                    SELECT * FROM match_chunks($1, $2, $3, $4::jsonb, $5)
                     """,
                     query_embedding,
                     match_threshold,
                     match_count,
                     filter_json,
+                    query_text,
                 )
 
         return [dict(row) for row in rows]

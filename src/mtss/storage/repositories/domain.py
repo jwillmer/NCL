@@ -33,6 +33,7 @@ class DomainRepository(BaseRepository):
             "name": vessel.name,
             "vessel_type": vessel.vessel_type,
             "vessel_class": vessel.vessel_class,
+            "aliases": vessel.aliases,
         }
         self.client.table("vessels").insert(data).execute()
         return vessel
@@ -51,6 +52,7 @@ class DomainRepository(BaseRepository):
             "name": vessel.name,
             "vessel_type": vessel.vessel_type,
             "vessel_class": vessel.vessel_class,
+            "aliases": vessel.aliases,
         }
         self.client.table("vessels").upsert(data, on_conflict="name").execute()
         return vessel

@@ -20,7 +20,7 @@ class Reranker:
     """Reranks search results using cross-encoder model via LiteLLM.
 
     Supports multiple providers:
-    - Cohere: cohere/rerank-english-v3.0
+    - Cohere: cohere/rerank-v3.5
     - Azure AI: azure_ai/cohere-rerank-v3.5
     - AWS Bedrock: bedrock/rerank
     - Infinity (self-hosted): infinity/<model>

@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional
 from uuid import UUID
 
+from ..config import get_settings
+
 from ..models.topic import TopicSummary
 
 if TYPE_CHECKING:
@@ -204,6 +206,8 @@ class TopicFilter:
         Returns:
             TopicFilterResult with skip decision and context
         """
+        settings = get_settings()
+
         # Step 1: Extract topics from query (with error handling)
         try:
             extracted = await self.extractor.extract_topics_from_query(query)
@@ -250,6 +254,48 @@ class TopicFilter:
                 )
             else:
                 unmatched_names.append(original_name)
+
+        # Topic loosening: retry at lower threshold if results are sparse
+        total_chunks_initial = sum(t.chunk_count for t in matched_topics)
+        if total_chunks_initial < settings.topic_loosening_min_chunks and detected_names:
+            try:
+                loose_results = await self.matcher.find_topics_by_names(
+                    detected_names, threshold=settings.topic_match_threshold_loose
+                )
+                loose_matched: List[MatchedTopic] = []
+                loose_unmatched: List[str] = []
+                for original_name, topic in loose_results:
+                    if topic:
+                        count = await self.db.get_chunks_count_for_topic(topic.id)
+                        filtered = count
+                        if vessel_filter:
+                            filtered = await self.db.get_chunks_count_for_topic(
+                                topic.id, vessel_filter
+                            )
+                        loose_matched.append(
+                            MatchedTopic(
+                                id=topic.id,
+                                name=topic.name,
+                                display_name=topic.display_name,
+                                chunk_count=count,
+                                filtered_count=filtered,
+                            )
+                        )
+                    else:
+                        loose_unmatched.append(original_name)
+
+                loose_total = sum(t.chunk_count for t in loose_matched)
+                if loose_total > total_chunks_initial:
+                    logger.info(
+                        "Topic loosening improved results: %d -> %d chunks (threshold %.2f)",
+                        total_chunks_initial,
+                        loose_total,
+                        settings.topic_match_threshold_loose,
+                    )
+                    matched_topics = loose_matched
+                    unmatched_names = loose_unmatched
+            except Exception as e:
+                logger.warning("Topic loosening failed, using original results: %s", e)
 
         # No matches at all → early return, ask user
         if not matched_topics:

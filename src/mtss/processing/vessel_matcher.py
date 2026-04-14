@@ -27,13 +27,18 @@ class VesselMatcher:
         self._build_lookup(vessels)
 
     def _build_lookup(self, vessels: List[Vessel]) -> None:
-        """Build case-insensitive lookup from names to IDs."""
+        """Build case-insensitive lookup from names and aliases to IDs."""
         for vessel in vessels:
             # Add primary name (lowercased)
             name_lower = vessel.name.lower().strip()
             if name_lower:
                 self.lookup[name_lower] = vessel.id
                 self.vessels[vessel.id] = vessel
+            # Add aliases (primary names take priority)
+            for alias in vessel.aliases:
+                alias_lower = alias.lower().strip()
+                if alias_lower and alias_lower not in self.lookup:
+                    self.lookup[alias_lower] = vessel.id
 
     def find_vessels(self, text: str) -> Set[UUID]:
         """Find all vessel IDs mentioned in text.

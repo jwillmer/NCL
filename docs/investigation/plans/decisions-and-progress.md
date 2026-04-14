@@ -2,7 +2,7 @@
 purpose: Track all decisions made and progress across investigation documents for session continuity
 status: active
 date: 2026-04-13
-last_updated: 2026-04-14T01:00:00
+last_updated: 2026-04-14T02:00:00
 ---
 
 # Decisions & Progress Tracker
@@ -173,8 +173,14 @@ This document captures every decision made during the ingest pipeline investigat
 |-----|----------|----------|--------|
 | Reranker silently disabled | `src/mtss/api/agent.py:461` — `top_k=settings.rerank_top_n` (5) means retriever gets 5 candidates, skips reranking | P0 | **Fixed** (d710f5f) |
 | DATA_SOURCE_DIR mismatch | `.env` pointed to `./data/source`, files at `./data/emails` | P0 | **Fixed** |
-| Image pre-filter not in pipeline | `_is_meaningful_image()` exists in estimator but not used in actual ingest | P1 | Not fixed |
+| Image pre-filter not in pipeline | `_is_meaningful_image()` exists in estimator but not used in actual ingest | P1 | **Fixed** (302c23b) |
 | Estimator underestimates by 24% | Misses LLM calls, undercounts image processing | P2 | Documented |
+| `.env` overrides config.py defaults | `.env` had old values (dims=1536, chunk=512) overriding Plan 02 config.py changes | P1 | **Fixed** (6a9f9b8) |
+| Image filter rejects large Outlook images | `image\d{3}` pattern had no size override — falsely filtered 243KB image002.png | P1 | **Fixed** (6a9f9b8) |
+| Topic extraction silently fails | `pipeline.py:230` called `.metadata.get("subject")` on Pydantic model (not dict) | P1 | **Fixed** (6a9f9b8) |
+| Rich console crashes on Windows | Braille spinner chars (U+2807) not in cp1252 | P2 | **Fixed** (6a9f9b8) |
+| Unicode arrow in log message | `→` (U+2192) in ingest_cmd.py not in cp1252 | P2 | **Fixed** (6a9f9b8) |
+| PDF pagination artifacts stored as chunks | No min-word filter in DocumentChunker — page numbers became chunks | P2 | **Fixed** (6a9f9b8) |
 
 ## Implementation Order (Planned)
 
@@ -183,8 +189,8 @@ See `plans/02-implementation.md` for the full merged ingest plan.
 
 1. ~~**Plan 01: Critical fixes & search quick wins**~~ -- **DONE** (d710f5f, 879b010). Reranker bug fixed, enriched rerank, max_tokens 2000, rerank_top_n 8, retrieval_top_k 40, ef_search 100, parallel embed+topic, score floor 0.2, completeness transparency. Also fixed pre-existing test_topic_filter assertion.
 2. ~~**Plan 02: Implementation Phases 0-5**~~ -- **DONE** (302c23b). Local-only ingest mode, tiered parsers, image pre-filtering, LocalStorageClient, parallel attachments, quality wins, config changes.
-3. **Plan 03: Test subset validation** (`03-test-validation.md`) -- run 15-doc ingest, validate via UI **(NEXT)**
-9. **Remaining optimizations** -- 06c P7 batch topic embeddings; 07a P3-P5 query-time improvements; 07b remaining proposals; 06b Phase 2 items
+3. ~~**Plan 03: Test subset validation**~~ -- **DONE** (6a9f9b8). Phases 1-4 pass: 322 tests, 35 docs ingested, 87 chunks, 27 topics, 512 dims, 0 failures. 6 bugs found+fixed (`.env` overrides, image filter, topic extraction, Rich console, unicode arrow, PDF pagination). Phases 5-8 (interactive: DB import, query validation, regression checks) pending user action.
+4. ~~**Plan 04: Remaining optimizations**~~ -- **DONE**. Phase A: batch topic embeddings, vessel aliases + bug fix. Phase B: rerank v3.5, topic loosening, context summary in search results, hybrid search/BM25 (344 tests, 0 failures). Sibling expansion dropped (low value with 1024-token chunks, replaced with context_summary return).
 10. **Full ingest** -- local-only, all 6,289 emails (~$6-10 estimated cost)
 11. **Production import** -- when production system is ready
 
@@ -201,6 +207,14 @@ See `plans/02-implementation.md` for the full merged ingest plan.
 | `src/mtss/storage/repositories/search.py` | HNSW ef_search=100 via SET LOCAL in transaction | 2026-04-13 |
 | `tests/test_reranker.py` | Tests for enriched context, score floor, all-below-keeps-one | 2026-04-13 |
 | `tests/test_topic_filter.py` | Fix assertion: unmatched topic correctly skips RAG | 2026-04-13 |
+| `.env.template` | Updated defaults: dims=512, chunk=1024, overlap=100 | 2026-04-14 |
+| `docs/architecture.md` | Updated embedding dimensions reference 1536→512 | 2026-04-14 |
+| `src/mtss/image_filter.py` | Split hard/soft skip; soft skip only filters <100KB | 2026-04-14 |
+| `src/mtss/ingest/pipeline.py` | Fix `.metadata.get()` → `.metadata.subject` on Pydantic model | 2026-04-14 |
+| `src/mtss/cli/_common.py` | Force UTF-8 stdout/stderr on Windows | 2026-04-14 |
+| `src/mtss/cli/ingest_cmd.py` | Replace `→` with ASCII `->` | 2026-04-14 |
+| `src/mtss/parsers/chunker.py` | Add >= 5 words min filter on chunk splits | 2026-04-14 |
+| `tests/test_image_filter.py` | New: tests for size override logic | 2026-04-14 |
 
 ## Plan Documents Index
 
@@ -212,7 +226,8 @@ See `plans/02-implementation.md` for the full merged ingest plan.
 |------|---------|--------|
 | `01-critical-fixes.md` | Critical search/retrieval bug fixes + quick wins | **Completed** (d710f5f) |
 | `02-implementation.md` | Local-only ingest + cost optimizations (Phases 0-5) | **Completed** (302c23b) |
-| `03-test-validation.md` | Test validation (execute after implementation) | **Ready** |
+| `03-test-validation.md` | Test validation (execute after implementation) | **Phases 1-4 Done** (6a9f9b8) |
+| `04-remaining-optimizations.md` | Remaining pipeline + query-time optimizations | **Completed** |
 | `decisions-and-progress.md` | This document | **Active** |
 
 ### Reference Documents (`reference/`)

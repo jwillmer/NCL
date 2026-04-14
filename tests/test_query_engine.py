@@ -42,6 +42,7 @@ def _make_db_row(
     line_to=None,
     archive_browse_uri=None,
     archive_download_uri=None,
+    context_summary=None,
 ):
     """Build a dict that looks like a row returned by search_similar_chunks."""
     return {
@@ -65,6 +66,7 @@ def _make_db_row(
         "line_to": line_to,
         "archive_browse_uri": archive_browse_uri,
         "archive_download_uri": archive_download_uri,
+        "context_summary": context_summary,
     }
 
 
@@ -89,8 +91,9 @@ def mock_settings():
     settings.rag_llm_model = "gpt-4o"
     settings.chunk_display_max_chars = 2000
     settings.rerank_enabled = True
-    settings.rerank_model = "cohere/rerank-english-v3.0"
+    settings.rerank_model = "cohere/rerank-v3.5"
     settings.rerank_top_n = 3
+    settings.hybrid_search_enabled = True
     return settings
 
 
@@ -425,3 +428,69 @@ def test_retrieval_result_serialization():
     assert restored.page_number == original.page_number
     assert restored.email_subject == original.email_subject
     assert restored.section_path == original.section_path
+
+
+# ---------------------------------------------------------------------------
+# 13. test_context_summary_in_retrieval_result
+# ---------------------------------------------------------------------------
+
+
+async def test_context_summary_in_retrieval_result(patches):
+    """context_summary should be captured from DB row into RetrievalResult."""
+    rows = [
+        _make_db_row(
+            content="Engine failure at 14:30 UTC.",
+            context_summary="Email about VLCC engine incident.",
+            chunk_id="ctx_chunk_01",
+        ),
+    ]
+    results = _convert_to_retrieval_results(rows)
+
+    assert len(results) == 1
+    assert results[0].context_summary == "Email about VLCC engine incident."
+
+
+async def test_context_summary_none_when_missing(patches):
+    """context_summary should be None when not in DB row."""
+    rows = [_make_db_row(chunk_id="no_ctx")]
+    results = _convert_to_retrieval_results(rows)
+
+    assert results[0].context_summary is None
+
+
+# ---------------------------------------------------------------------------
+# 14. test_context_summary_serialization
+# ---------------------------------------------------------------------------
+
+
+def test_context_summary_serialization():
+    """context_summary should round-trip through to_dict/from_dict."""
+    original = RetrievalResult(
+        text="Test",
+        score=0.9,
+        chunk_id="abc",
+        doc_id="doc",
+        source_id="src",
+        source_title="Title",
+        section_path=[],
+        context_summary="Document context here.",
+    )
+    data = original.to_dict()
+    assert data["context_summary"] == "Document context here."
+
+    restored = RetrievalResult.from_dict(data)
+    assert restored.context_summary == "Document context here."
+
+
+# ---------------------------------------------------------------------------
+# 15. test_hybrid_search_passes_query_text
+# ---------------------------------------------------------------------------
+
+
+async def test_hybrid_search_passes_query_text(patches):
+    """retrieve() should pass query_text to search_similar_chunks when hybrid enabled."""
+    engine = RAGQueryEngine()
+    await engine.search_only("cargo damage")
+
+    call_kwargs = patches.db.search_similar_chunks.call_args.kwargs
+    assert call_kwargs.get("query_text") == "cargo damage"

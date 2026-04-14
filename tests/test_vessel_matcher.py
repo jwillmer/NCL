@@ -243,3 +243,108 @@ class TestVesselMatcherEdgeCases:
             subject="Test Ship mentioned", body=None
         )
         assert len(result) == 1
+
+
+class TestVesselAliases:
+    """Tests for vessel alias matching."""
+
+    @pytest.fixture
+    def vessels_with_aliases(self):
+        from mtss.models.vessel import Vessel
+
+        return [
+            Vessel(
+                id=uuid4(),
+                name="MARAN CANOPUS",
+                vessel_type="VLCC",
+                vessel_class="Canopus Class",
+                aliases=["CANOPUS", "M/V MARAN CANOPUS"],
+            ),
+            Vessel(
+                id=uuid4(),
+                name="MT Ocean Queen",
+                vessel_type="SUEZMAX",
+                vessel_class="Ocean Class",
+                aliases=[],
+            ),
+        ]
+
+    @pytest.fixture
+    def alias_matcher(self, vessels_with_aliases):
+        from mtss.processing.vessel_matcher import VesselMatcher
+
+        return VesselMatcher(vessels_with_aliases)
+
+    @pytest.mark.unit
+    def test_finds_vessel_by_alias(self, alias_matcher, vessels_with_aliases):
+        """Should match vessel by alias name."""
+        result = alias_matcher.find_vessels("The CANOPUS departed port today.")
+        assert vessels_with_aliases[0].id in result
+
+    @pytest.mark.unit
+    def test_finds_vessel_by_formal_alias(self, alias_matcher, vessels_with_aliases):
+        """Should match vessel by formal M/V prefix alias."""
+        result = alias_matcher.find_vessels("Report on M/V MARAN CANOPUS voyage.")
+        assert vessels_with_aliases[0].id in result
+
+    @pytest.mark.unit
+    def test_alias_case_insensitive(self, alias_matcher, vessels_with_aliases):
+        """Should match aliases case-insensitively."""
+        result = alias_matcher.find_vessels("The canopus is at dock.")
+        assert vessels_with_aliases[0].id in result
+
+    @pytest.mark.unit
+    def test_primary_name_still_works(self, alias_matcher, vessels_with_aliases):
+        """Should still match primary name when aliases exist."""
+        result = alias_matcher.find_vessels("MARAN CANOPUS status update.")
+        assert vessels_with_aliases[0].id in result
+
+    @pytest.mark.unit
+    def test_primary_name_takes_priority_over_alias(self):
+        """Primary name should win when alias collides with another vessel's name."""
+        from mtss.models.vessel import Vessel
+        from mtss.processing.vessel_matcher import VesselMatcher
+
+        vessel_a = Vessel(
+            id=uuid4(),
+            name="ALPHA",
+            vessel_type="VLCC",
+            vessel_class="A Class",
+            aliases=["BETA"],  # alias collides with vessel B's primary name
+        )
+        vessel_b = Vessel(
+            id=uuid4(),
+            name="BETA",
+            vessel_type="VLCC",
+            vessel_class="B Class",
+        )
+        matcher = VesselMatcher([vessel_a, vessel_b])
+
+        result = matcher.find_vessels("Report on BETA.")
+        # BETA's primary name should win over ALPHA's alias
+        assert vessel_b.id in result
+        assert vessel_a.id not in result
+
+    @pytest.mark.unit
+    def test_name_count_includes_aliases(self, alias_matcher):
+        """name_count should include primary names + aliases."""
+        # 2 primary names + 2 aliases = 4
+        assert alias_matcher.name_count == 4
+
+    @pytest.mark.unit
+    def test_vessel_count_unchanged_by_aliases(self, alias_matcher):
+        """vessel_count should count unique vessels, not names."""
+        assert alias_matcher.vessel_count == 2
+
+    @pytest.mark.unit
+    def test_empty_aliases_ignored(self):
+        """Vessels with empty aliases should work the same as before."""
+        from mtss.models.vessel import Vessel
+        from mtss.processing.vessel_matcher import VesselMatcher
+
+        vessels = [
+            Vessel(name="TEST SHIP", vessel_type="VLCC", vessel_class="Test", aliases=[]),
+        ]
+        matcher = VesselMatcher(vessels)
+        assert matcher.name_count == 1
+        assert matcher.find_vessels("TEST SHIP here") != set()

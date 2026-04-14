@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     # Reranker Configuration
     rerank_enabled: bool = Field(default=True, validation_alias="RERANK_ENABLED")
     rerank_model: str = Field(
-        default="cohere/rerank-english-v3.0", validation_alias="RERANK_MODEL"
+        default="cohere/rerank-v3.5", validation_alias="RERANK_MODEL"
     )
     rerank_top_n: int = Field(default=8, validation_alias="RERANK_TOP_N")
     rerank_score_floor: float = Field(default=0.2, validation_alias="RERANK_SCORE_FLOOR")
@@ -150,6 +150,19 @@ class Settings(BaseSettings):
 
     # Retrieval Configuration
     retrieval_top_k: int = Field(default=40, validation_alias="RETRIEVAL_TOP_K")
+
+    # Hybrid Search (vector + BM25)
+    hybrid_search_enabled: bool = Field(
+        default=True, validation_alias="HYBRID_SEARCH_ENABLED"
+    )
+
+    # Topic Loosening (query-time)
+    topic_match_threshold_loose: float = Field(
+        default=0.55, ge=0.0, le=1.0, validation_alias="TOPIC_MATCH_THRESHOLD_LOOSE"
+    )
+    topic_loosening_min_chunks: int = Field(
+        default=3, ge=1, le=50, validation_alias="TOPIC_LOOSENING_MIN_CHUNKS"
+    )
 
     # LlamaParse Configuration (for legacy formats like .doc, .xls, .ppt)
     llama_cloud_api_key: str | None = Field(

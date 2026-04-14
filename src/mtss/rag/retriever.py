@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, Dict, List
 
+from ..config import get_settings
 from ..models.chunk import RetrievalResult
 from ..processing.embeddings import EmbeddingGenerator
 from ..storage.supabase_client import SupabaseClient
@@ -62,11 +63,13 @@ class Retriever:
         if query_embedding is None:
             query_embedding = await self.embeddings.generate_embedding(query)
 
+        settings = get_settings()
         results = await self.db.search_similar_chunks(
             query_embedding=query_embedding,
             match_threshold=similarity_threshold,
             match_count=top_k,
             metadata_filter=metadata_filter,
+            query_text=query if settings.hybrid_search_enabled else None,
         )
 
         if not results:
@@ -118,6 +121,7 @@ def _convert_to_retrieval_results(
                 archive_browse_uri=result.get("archive_browse_uri"),
                 archive_download_uri=result.get("archive_download_uri"),
                 image_uri=image_uri,
+                context_summary=result.get("context_summary"),
                 document_type=result.get("document_type"),
                 email_subject=result.get("email_subject"),
                 email_initiator=result.get("email_initiator"),

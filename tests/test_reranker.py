@@ -95,7 +95,7 @@ def mock_settings():
     """Mock settings for testing."""
     settings = MagicMock()
     settings.rerank_enabled = True
-    settings.rerank_model = "cohere/rerank-english-v3.0"
+    settings.rerank_model = "cohere/rerank-v3.5"
     settings.rerank_top_n = 3
     settings.rerank_score_floor = 0.2
     settings.cohere_api_key = "test-api-key"
@@ -133,7 +133,7 @@ class TestRerankerInit:
                 reranker = Reranker()
 
                 assert reranker.enabled is True
-                assert reranker.model == "cohere/rerank-english-v3.0"
+                assert reranker.model == "cohere/rerank-v3.5"
                 assert reranker.top_n == 3
 
     def test_init_with_disabled_reranking(self, mock_settings):

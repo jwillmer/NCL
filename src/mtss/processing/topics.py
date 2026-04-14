@@ -368,11 +368,90 @@ class TopicMatcher:
         self._name_cache[normalized] = created.id
         return created.id
 
-    async def find_topic_by_name(self, name: str) -> Optional[Topic]:
+    async def get_or_create_topics_batch(
+        self, topics: List[Tuple[str, Optional[str]]]
+    ) -> List[UUID]:
+        """Batch version of get_or_create_topic.
+
+        Reduces embedding API calls by batching all uncached topics into
+        a single generate_embeddings_batch() call.
+
+        Args:
+            topics: List of (name, description) tuples.
+
+        Returns:
+            List of topic UUIDs in the same order as input.
+        """
+        if not topics:
+            return []
+
+        results: List[Optional[UUID]] = [None] * len(topics)
+        needs_embedding: List[Tuple[int, str, Optional[str]]] = []  # (index, name, desc)
+
+        # Pass 1: Check cache and DB exact match
+        for i, (name, description) in enumerate(topics):
+            normalized = self._normalize_name(name)
+
+            if normalized in self._name_cache:
+                results[i] = self._name_cache[normalized]
+                continue
+
+            existing = await self.db.get_topic_by_name(normalized)
+            if existing:
+                self._name_cache[normalized] = existing.id
+                results[i] = existing.id
+                continue
+
+            needs_embedding.append((i, name, description))
+
+        if not needs_embedding:
+            return results  # type: ignore[return-value]
+
+        # Pass 2: Batch embed all uncached topics in one API call
+        names_to_embed = [name for _, name, _ in needs_embedding]
+        embeddings = await self.embeddings.generate_embeddings_batch(names_to_embed)
+
+        # Pass 3: Similarity check per topic with pre-computed embeddings
+        for (i, name, description), embedding in zip(needs_embedding, embeddings):
+            normalized = self._normalize_name(name)
+
+            # Re-check cache (earlier topic in this batch may have created it)
+            if normalized in self._name_cache:
+                results[i] = self._name_cache[normalized]
+                continue
+
+            similar = await self.db.find_similar_topics(
+                embedding, threshold=self.SIMILARITY_THRESHOLD, limit=3
+            )
+
+            if similar:
+                top_match = similar[0]
+                if top_match["similarity"] >= self.SIMILARITY_THRESHOLD:
+                    self._name_cache[normalized] = top_match["id"]
+                    results[i] = top_match["id"]
+                    continue
+
+            # Create new topic
+            topic = Topic(
+                name=normalized,
+                display_name=name.strip(),
+                description=description,
+                embedding=embedding,
+            )
+            created = await self.db.insert_topic(topic)
+            self._name_cache[normalized] = created.id
+            results[i] = created.id
+
+        return results  # type: ignore[return-value]
+
+    async def find_topic_by_name(
+        self, name: str, threshold: float | None = None
+    ) -> Optional[Topic]:
         """Find single topic by name using embedding similarity.
 
         Args:
             name: Topic name to search for
+            threshold: Override similarity threshold (default: QUERY_SIMILARITY_THRESHOLD)
 
         Returns:
             Matching topic or None
@@ -384,10 +463,11 @@ class TopicMatcher:
         if existing:
             return existing
 
-        # Try embedding similarity (use lenient threshold for query matching)
+        # Try embedding similarity
+        effective_threshold = threshold if threshold is not None else self.QUERY_SIMILARITY_THRESHOLD
         embedding = await self.embeddings.generate_embedding(name)
         similar = await self.db.find_similar_topics(
-            embedding, threshold=self.QUERY_SIMILARITY_THRESHOLD, limit=1
+            embedding, threshold=effective_threshold, limit=1
         )
 
         if similar:
@@ -396,12 +476,13 @@ class TopicMatcher:
         return None
 
     async def find_topics_by_names(
-        self, names: List[str]
+        self, names: List[str], threshold: float | None = None
     ) -> List[Tuple[str, Optional[Topic]]]:
         """Find multiple topics by name (for multi-topic queries).
 
         Args:
             names: List of topic names to search for
+            threshold: Override similarity threshold for all lookups
 
         Returns:
             List of (original_name, matched_topic) tuples.
@@ -409,7 +490,7 @@ class TopicMatcher:
         """
         results = []
         for name in names:
-            topic = await self.find_topic_by_name(name)
+            topic = await self.find_topic_by_name(name, threshold=threshold)
             results.append((name, topic))
         return results
 
