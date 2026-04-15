@@ -680,7 +680,7 @@ class DomainRepository(BaseRepository):
         counts: Dict[str, int] = {}
 
         # Delete in order respecting foreign keys
-        # conversations has FK to vessels
+        # conversations has FK to vessels — delete first
         result = (
             self.client.table("conversations")
             .delete()
@@ -760,5 +760,23 @@ class DomainRepository(BaseRepository):
             .execute()
         )
         counts["documents"] = len(result.data) if result.data else 0
+
+        # vessels — no FK dependencies remain after conversations deleted
+        result = (
+            self.client.table("vessels")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        counts["vessels"] = len(result.data) if result.data else 0
+
+        # topics — no FK dependencies
+        result = (
+            self.client.table("topics")
+            .delete()
+            .neq("id", "00000000-0000-0000-0000-000000000000")
+            .execute()
+        )
+        counts["topics"] = len(result.data) if result.data else 0
 
         return counts
