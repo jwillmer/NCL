@@ -153,6 +153,9 @@ User question: {query}"""
             if "gpt-5" not in self.llm_model:
                 call_params["temperature"] = 0.3
 
+            from ..cli._common import _service_counter
+            _service_counter.add("llm_topics")
+
             response = await acompletion(**call_params)
 
             result = response.choices[0].message.content

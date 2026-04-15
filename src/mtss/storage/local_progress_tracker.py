@@ -37,6 +37,12 @@ class LocalProgressTracker:
         with open(self._log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, default=str) + "\n")
 
+    def compact(self):
+        """Rewrite processing_log.jsonl with one entry per file (removes duplicates)."""
+        with open(self._log_file, "w", encoding="utf-8") as f:
+            for entry in self._entries.values():
+                f.write(json.dumps(entry, default=str) + "\n")
+
     def compute_file_hash(self, file_path: Path) -> str:
         """Compute SHA-256 hash of file content."""
         h = hashlib.sha256()

@@ -12,6 +12,15 @@ from typing import Any, Dict
 from uuid import UUID
 
 
+def _to_iso(val: Any) -> str | None:
+    """Convert datetime or string to ISO format string."""
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return val
+    return val.isoformat()
+
+
 def doc_to_dict(doc: Any) -> Dict[str, Any]:
     """Convert Document model to dictionary for JSONL serialization."""
     email_meta = getattr(doc, "email_metadata", None)
@@ -36,15 +45,15 @@ def doc_to_dict(doc: Any) -> Dict[str, Any]:
         "archive_download_uri": doc.archive_download_uri,
         "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
         "error_message": getattr(doc, "error_message", None),
-        "processed_at": doc.processed_at.isoformat() if getattr(doc, "processed_at", None) else None,
-        "created_at": doc.created_at.isoformat() if getattr(doc, "created_at", None) else None,
-        "updated_at": doc.updated_at.isoformat() if getattr(doc, "updated_at", None) else None,
+        "processed_at": _to_iso(getattr(doc, "processed_at", None)),
+        "created_at": _to_iso(getattr(doc, "created_at", None)),
+        "updated_at": _to_iso(getattr(doc, "updated_at", None)),
         # Email metadata (flattened)
         "email_subject": email_meta.subject if email_meta else None,
         "email_participants": email_meta.participants if email_meta else None,
         "email_initiator": email_meta.initiator if email_meta else None,
-        "email_date_start": email_meta.date_start.isoformat() if email_meta and email_meta.date_start else None,
-        "email_date_end": email_meta.date_end.isoformat() if email_meta and email_meta.date_end else None,
+        "email_date_start": _to_iso(email_meta.date_start) if email_meta else None,
+        "email_date_end": _to_iso(email_meta.date_end) if email_meta else None,
         "email_message_count": email_meta.message_count if email_meta else None,
         # Attachment metadata (flattened)
         "attachment_content_type": att_meta.content_type if att_meta else None,
@@ -88,8 +97,8 @@ def topic_to_dict(topic: Any) -> Dict[str, Any]:
         "embedding": getattr(topic, "embedding", None),
         "chunk_count": getattr(topic, "chunk_count", 0),
         "document_count": getattr(topic, "document_count", 0),
-        "created_at": topic.created_at.isoformat() if getattr(topic, "created_at", None) else None,
-        "updated_at": topic.updated_at.isoformat() if getattr(topic, "updated_at", None) else None,
+        "created_at": _to_iso(getattr(topic, "created_at", None)),
+        "updated_at": _to_iso(getattr(topic, "updated_at", None)),
     }
 
 

@@ -25,6 +25,7 @@ from .ingest_reporting import write_run_summary as _write_run_summary
 from ._common import (
     STALE_PROCESSING_THRESHOLD_MINUTES,
     _issue_tracker,
+    _service_counter,
     _show_stats,
     console,
     vprint,
@@ -222,8 +223,6 @@ async def _ingest(
         vprint(f"Loaded {components.vessel_matcher.vessel_count} vessels ({components.vessel_matcher.name_count} names)")
     else:
         vprint("No vessels in registry - vessel tagging disabled")
-    vprint("Topic extraction enabled")
-
     # Keep reference for lane classifier (needs eml_parser)
     eml_parser = components.eml_parser
 
@@ -267,8 +266,9 @@ async def _ingest(
 
         processed_count = 0
 
-        # Reset issues list for this run
+        # Reset trackers for this run
         _issue_tracker.clear()
+        _service_counter.reset()
 
         # Classify files into fast/slow queues
         # Fast: no attachments or only images (no LlamaParse needed)
@@ -448,7 +448,7 @@ async def _ingest(
         _issue_tracker.show_summary()
 
         # Write run summary
-        _write_run_summary(resolved_output, run_start, run_start_time, len(files), processed_count, stats)
+        _write_run_summary(resolved_output, run_start, run_start_time, len(files), processed_count, stats, _service_counter)
 
         # Finalize report with stats and cleanup old reports
         report_writer.update_stats(len(files), processed_count)
@@ -456,6 +456,10 @@ async def _ingest(
         console.print(f"\nReport: {report_writer.get_path()}")
 
     finally:
+        try:
+            tracker.compact()
+        except Exception:
+            pass
         db.flush()
         db.write_manifest()
         console.print(f"[green]Manifest written to {resolved_output / 'manifest.json'}[/green]")

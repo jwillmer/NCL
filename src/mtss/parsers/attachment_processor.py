@@ -216,6 +216,10 @@ class AttachmentProcessor:
         logger.info(f"Processing {file_path.name} with {parser.name} parser")
         text = await parser.parse(file_path)
 
+        if parser.name != "llamaparse":
+            from ..cli._common import _service_counter
+            _service_counter.add("local_parse")
+
         if not text or not text.strip():
             logger.warning(f"No text extracted from {file_path.name}")
             return []

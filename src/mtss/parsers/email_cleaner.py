@@ -115,6 +115,9 @@ async def extract_content_bounds(
         model = settings.get_model(settings.email_cleaner_model)
 
     try:
+        from ..cli._common import _service_counter
+        _service_counter.add("llm_cleaner")
+
         response = await acompletion(
             model=model,
             messages=[

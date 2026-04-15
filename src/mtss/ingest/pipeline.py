@@ -333,6 +333,9 @@ Date range: {date_start} to {date_end}
 {sanitized_body}"""
 
     try:
+        from ..cli._common import _service_counter
+        _service_counter.add("llm_digest")
+
         response = await acompletion(
             model=digest_model,
             messages=[{"role": "user", "content": prompt}],

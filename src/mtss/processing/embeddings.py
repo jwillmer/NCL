@@ -176,6 +176,9 @@ class EmbeddingGenerator:
         if not chunks:
             return chunks
 
+        from ..cli._common import _service_counter
+        _service_counter.add("embedding", len(chunks))
+
         # Use embedding_text if available (contains cleaned/enriched content),
         # otherwise fall back to raw content
         texts = [chunk.embedding_text or chunk.content for chunk in chunks]

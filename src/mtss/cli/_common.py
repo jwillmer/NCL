@@ -15,6 +15,7 @@ from rich.progress import (
 from rich.table import Table
 
 from ..ingest.helpers import IssueTracker
+from ..processing.service_counter import ServiceCounter
 
 # Force UTF-8 output on Windows to avoid cp1252 codec errors with Rich's
 # Unicode characters (spinners, arrows, box-drawing, Braille patterns).
@@ -56,6 +57,9 @@ def vprint(msg: str, file_ctx: str | None = None):
 
 # Module-level issue tracker instance (replaces _processing_issues list)
 _issue_tracker = IssueTracker(console)
+
+# Module-level service call counter for ingest runs
+_service_counter = ServiceCounter()
 
 
 def track_issue(file_ctx: str, attachment: str, error: str):

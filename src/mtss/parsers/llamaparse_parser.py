@@ -128,6 +128,9 @@ class LlamaParseParser(BaseParser):
                 if not markdown_text or not markdown_text.strip():
                     raise ValueError(f"LlamaParse produced no content for {file_path}")
 
+                from ..cli._common import _service_counter
+                _service_counter.add("llamaparse")
+
                 logger.info(
                     f"LlamaParse extracted {len(markdown_text)} chars from {file_path.name}"
                 )

@@ -21,6 +21,7 @@ def write_run_summary(
     files_attempted: int,
     processed_count: int,
     stats: dict,
+    service_counter=None,
 ):
     """Write run summary to run_history.jsonl and print to console."""
     from rich.table import Table
@@ -71,6 +72,7 @@ def write_run_summary(
     vision_images = total_docs.get("attachment_image", 0)
 
     # Build summary
+    service_data = service_counter.to_dict() if service_counter else None
     summary = {
         "timestamp": now,
         "elapsed_seconds": round(elapsed, 1),
@@ -88,6 +90,8 @@ def write_run_summary(
             "skipped_events": events_by_reason,
         },
     }
+    if service_data:
+        summary["services"].update(service_data)
 
     # Append to run_history.jsonl
     history_path = output_dir / "run_history.jsonl"
@@ -108,11 +112,38 @@ def write_run_summary(
     table.add_row("Documents", f"+{processed_count}", str(doc_count))
     table.add_row("Chunks", "", str(chunk_count))
     table.add_row("Topics", "", str(topic_count))
-    table.add_section()
-    table.add_row("Vision API (images)", "", str(vision_images))
-    for dt, count in sorted(total_docs.items()):
-        if dt != "email" and dt != "attachment_image":
-            table.add_row(f"  {dt}", "", str(count))
+
+    # Service call breakdown
+    svc = service_data.get("service_calls", {}) if service_data else {}
+    if svc:
+        table.add_section()
+        # Display order: local first, then paid services
+        display_order = [
+            ("local_parse", "Parsed locally (free)"),
+            ("llamaparse", "LlamaParse"),
+            ("embedding", "Embeddings"),
+            ("vision", "Vision API"),
+            ("llm_context", "LLM context gen"),
+            ("llm_topics", "LLM topic extraction"),
+            ("llm_digest", "LLM thread digest"),
+            ("llm_cleaner", "LLM email cleaner"),
+        ]
+        for key, label in display_order:
+            count = svc.get(key, 0)
+            if count:
+                table.add_row(label, str(count), "")
+        # Show any unlisted services
+        shown = {k for k, _ in display_order}
+        for key, count in sorted(svc.items()):
+            if key not in shown and count:
+                table.add_row(key, str(count), "")
+    else:
+        table.add_section()
+        table.add_row("Vision API (images)", "", str(vision_images))
+        for dt, count in sorted(total_docs.items()):
+            if dt != "email" and dt != "attachment_image":
+                table.add_row(f"  {dt}", "", str(count))
+
     if events_by_reason:
         skipped = sum(events_by_reason.values())
         table.add_row("Skipped (non-content)", "", str(skipped))

@@ -72,6 +72,8 @@ Document:
                 response = await litellm.acompletion(
                     model=model, messages=messages, temperature=0.3
                 )
+                from ..cli._common import _service_counter
+                _service_counter.add("llm_context")
                 return response.choices[0].message.content
             except Exception as e:
                 last_error = e

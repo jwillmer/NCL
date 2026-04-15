@@ -190,6 +190,9 @@ class ImageProcessor:
 
     async def _call_vision(self, system_prompt: str, image_path: Path, user_text: str) -> str:
         """Make a vision API call and return the raw JSON content string."""
+        from ..cli._common import _service_counter
+        _service_counter.add("vision")
+
         message = self._create_image_message(image_path, user_text)
         response = await acompletion(
             model=self.model,
