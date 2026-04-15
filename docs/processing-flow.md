@@ -92,75 +92,60 @@ data/
          │
          ▼
 ┌──────────────────────────────────────┐
-│ 3. Check hash - already processed?   │
-├──────────────────────────────────────┤
-│ YES (Completed) ──▶ Skip file        │
-│ NO  (New/Failed) ──▶ Continue        │
+│ 3. Version/dedup check               │
+│    • Compute doc_id from path + hash │
+│    • Skip/reprocess/update/insert    │
 └────────┬─────────────────────────────┘
          │
          ▼
 ┌──────────────────────────────────────┐
-│ 4. Parse EML file                    │
-│    • Extract body text (multi-charset│
-│      decode with fallback)           │
-│    • Save attachments to temp folder │
+│ 4. Parse EML + Generate Archive      │
+│    • Extract body, attachments       │
+│    • Create browsable .md archive    │
 └────────┬─────────────────────────────┘
          │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
-┌────────┐  ┌─────────────────────────────┐
-│ BODY   │  │ ATTACHMENTS                 │
-└───┬────┘  └─────────────┬───────────────┘
+         ▼
+┌──────────────────────────────────────┐
+│ 5. Enrich email                      │
+│    • Vessel matching (subject+body)  │
+│    • Context summary (LLM)           │
+│    • Topic extraction (LLM)          │
+└────────┬─────────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────────┐
+│ 6. Clean + chunk email body          │
+│    • LLM boundary detection          │
+│    • Split into messages             │
+│    • Boilerplate removal per message │
+└────────┬─────────────────────────────┘
+         │
+    ┌────┴────────────────┐
     │                     │
     ▼                     ▼
-┌────────────────┐  ┌─────────────────────────────────────────┐
-│Match vessels in│  │ 5. Preprocess each attachment           │
-│subject + body  │  │                                         │
-└───┬────────────┘  │    ┌─────────────────────────────────┐  │
-    │               │    │ File Type?                      │  │
-    ▼               │    ├─────────────────────────────────┤  │
-┌────────────────┐  │    │                                 │  │
-│Create body     │  │    │ ZIP ──────▶ Extract contents    │  │
-│chunks with     │  │    │            (recurse to preproc) │  │
-│vessel_ids      │  │    │                                 │  │
-└───┬────────────┘  │    │ Image ───▶ Classify via Vision  │  │
-    │               │    │            Logo/Banner? Skip    │  │
-    │               │    │            Meaningful? Describe │  │
-    │               │    │                                 │  │
-    │               │    │ Document ▶ Find parser          │  │
-    │               │    │            Found? LlamaParse    │  │
-    │               │    │            None? Log unsupported│  │
-    │               │    └─────────────────────────────────┘  │
-    │               └─────────────┬───────────────────────────┘
-    │                             │
-    │    ┌────────────────────────┤
-    │    │                        │
-    │    ▼                        ▼
-    │ ┌──────────────┐    ┌───────────────────┐
-    │ │Image chunk   │    │Document chunks    │
-    │ │(description) │    │(LangChain split)  │
-    │ │+ vessel_ids  │    │+ vessel_ids       │
-    │ └──────┬───────┘    └─────────┬─────────┘
-    │        │                      │
-    └────────┴──────────┬───────────┘
-                        │
-                        ▼
+┌─────────────────┐  ┌──────────────────────────┐
+│ Thread Digest   │  │ Process Attachments      │
+│ (LLM summary   │  │ (concurrent)             │
+│  of full thread │  │                          │
+│  — parallel)    │  │ ZIP → extract, recurse   │
+│                 │  │ Image → classify/describe│
+│                 │  │ Document → parse, chunk  │
+└────────┬────────┘  └──────────┬───────────────┘
+         │                      │
+         └──────────┬───────────┘
+                    │
+                    ▼
          ┌──────────────────────────────┐
-         │ 6. Generate embeddings       │
-         │    (with retry + backoff)    │
+         │ 7. Generate embeddings       │
+         │    (batch, retry + backoff)  │
          └──────────────┬───────────────┘
                         │
                         ▼
          ┌──────────────────────────────┐
-         │ 7. Store in Supabase         │
-         │    • Insert chunks           │
-         │    • vessel_ids in metadata  │
-         └──────────────┬───────────────┘
-                        │
-                        ▼
-         ┌──────────────────────────────┐
-         │ 8. Mark document COMPLETED   │
+         │ 8. Atomic persist            │
+         │    • Single DB transaction   │
+         │    • Docs + chunks + topics  │
+         │    • Rollback on failure     │
          └──────────────────────────────┘
 ```
 

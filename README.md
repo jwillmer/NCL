@@ -268,9 +268,12 @@ uv run MTSS clean --verbose
 ## Architecture Overview
 
 ```
-EML Files → Parsing → Chunking → Embedding → Storage
-                                                ↓
-User Query → Embedding → Vector Search → Reranking → LLM → Answer
+EML Files → Parse → Archive → Enrich (vessels, context, topics)
+         → Clean → Chunk Body ──┬── Thread Digest (parallel)
+                                ├── Process Attachments (parallel)
+                                └── Embed → Atomic Persist
+                                                    ↓
+User Query → Topic Filter → Embed → Hybrid Search → Rerank → LLM → Answer
 ```
 
 ## Web Interface

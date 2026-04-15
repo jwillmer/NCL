@@ -211,6 +211,29 @@ This document describes each step in the ingest processing pipeline, explains wh
 
 ---
 
+### Step 11b: Generate Thread Digest
+
+**What it does:** For multi-message email threads (2+ messages), generates an LLM summary capturing the full conversation narrative.
+
+**Why:** Individual message chunks work for specific lookups, but broad queries ("any engine issues last month?") and resolution queries ("how was X fixed?") benefit from a single chunk that captures the full thread arc: problem → investigation → resolution.
+
+**Key operations:**
+- Check message count (skip single-message emails)
+- Sanitize input via `sanitize_input()` before LLM call
+- LLM generates 200-400 word summary
+- Creates one `Chunk` with `metadata.type = "thread_digest"`
+- Runs as `asyncio.create_task` in parallel with attachment processing
+- Graceful degradation: returns None on LLM failure (non-critical)
+
+**Tested by:**
+- `test_ingest_processing.py::TestThreadDigest::test_returns_none_for_single_message`
+- `test_ingest_processing.py::TestThreadDigest::test_generates_digest_for_multi_message`
+- `test_ingest_processing.py::TestThreadDigest::test_returns_none_on_llm_failure`
+- `test_ingest_processing.py::TestThreadDigest::test_returns_none_on_empty_response`
+- `test_ingest_processing.py::TestThreadDigest::test_digest_without_context_summary`
+
+---
+
 ### Step 12: Create Attachment Documents
 
 **What it does:** Inserts child document records for each attachment.

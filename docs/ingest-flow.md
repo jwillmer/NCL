@@ -147,7 +147,8 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 7: CHUNK EMAIL BODY                                                     │
 │                                                                              │
-│ - split_into_messages(body_text) → individual messages                      │
+│ - clean_email_body() → LLM boundary detection + regex boilerplate removal   │
+│ - split_into_messages(cleaned_body) → individual messages                   │
 │ - For each message:                                                         │
 │   - remove_boilerplate_from_message()                                       │
 │   - Compute chunk_id from doc_id + char positions                           │
@@ -155,42 +156,44 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 │   - Create Chunk with vessel_ids and topic_ids in metadata                  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 8: PROCESS ATTACHMENTS (for each attachment)                            │
-│                                                                              │
-│ 8a. Preprocess:                                                             │
-│     - Check if ZIP → route to ZIP handler                                   │
-│     - Check if image → classify content vs decorative                       │
-│     - Otherwise → route to document parser                                  │
-│                                                                              │
-│ 8b. Create child document in hierarchy                                      │
-│                                                                              │
-│ 8c. Parse/Extract content:                                                  │
-│     ┌────────────┬──────────────────────────────────────────┐               │
-│     │ Type       │ Handler                                   │               │
-│     ├────────────┼──────────────────────────────────────────┤               │
-│     │ ZIP        │ extract_zip() → recursive processing     │               │
-│     │ Image      │ Vision model describes → create chunk    │               │
-│     │ Document   │ LlamaParse/TextParser → chunk            │               │
-│     └────────────┴──────────────────────────────────────────┘               │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                     │
-                                     ▼
+          ┌─────────────────────┴─────────────────────┐
+          │                                           │
+          ▼                                           ▼
+┌───────────────────────────┐  ┌──────────────────────────────────────────────┐
+│ STEP 7b: THREAD DIGEST    │  │ STEP 8: PROCESS ATTACHMENTS (concurrent)    │
+│ (runs in parallel)        │  │                                              │
+│                           │  │ 8a. Route by type:                           │
+│ For multi-message threads │  │     - ZIP → extract, recurse                 │
+│ (2+ messages):            │  │     - Image → classify, describe if content  │
+│ - Sanitize input          │  │     - Document → LlamaParse/local parser     │
+│ - LLM summarizes thread   │  │                                              │
+│ - Creates one digest      │  │ 8b. Create child document in hierarchy       │
+│   chunk (type=            │  │                                              │
+│   thread_digest)          │  │ 8c. Chunk parsed content with metadata       │
+│ - Tagged with same        │  │                                              │
+│   vessel/topic metadata   │  │                                              │
+└─────────┬─────────────────┘  └──────────────────────┬───────────────────────┘
+          │                                           │
+          └─────────────────────┬─────────────────────┘
+                                │
+                                ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 9: GENERATE EMBEDDINGS                                                  │
 │                                                                              │
-│ - embeddings.embed_chunks(all_chunks)                                       │
+│ - embeddings.embed_chunks(all_chunks including digest)                      │
 │ - Batches to OpenAI API via LiteLLM                                         │
 │ - Truncates to token limit if needed                                        │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 10: STORE TO DATABASE                                                   │
+│ STEP 10: ATOMIC PERSIST                                                      │
 │                                                                              │
-│ - db.insert_chunks(chunks_with_embeddings)                                  │
-│ - db.update_document_status(doc_id, COMPLETED)                              │
+│ - Single asyncpg transaction:                                               │
+│   - Insert email document + attachment documents                            │
+│   - Insert all chunks with embeddings                                       │
+│   - Update topic counts                                                     │
+│ - Rollback on any failure (no partial state)                                │
 │ - tracker.mark_completed(eml_path)                                          │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
