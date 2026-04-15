@@ -149,7 +149,7 @@ async def _vessels_import(csv_file: Optional[Path], clear: bool):
                 name = row.get("NAME", "").strip()
                 vessel_type = row.get("TYPE", "").strip()
                 vessel_class = row.get("CLASS", "").strip()
-                aliases_str = row.get("ALIASES", "").strip()
+                aliases_str = (row.get("ALIASES") or "").strip()
                 aliases = [a.strip() for a in aliases_str.split(",") if a.strip()] if aliases_str else []
 
                 if not name:
