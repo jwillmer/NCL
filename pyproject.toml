@@ -14,7 +14,7 @@ dependencies = [
     "pgvector>=0.2.0",
     "asyncpg>=0.29.0",
     # LLM and embeddings
-    "litellm>=1.0.0",
+    "litellm>=1.83.0",
     "openai>=1.0.0",
     "httpx>=0.25.0",
     # Utilities
