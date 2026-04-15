@@ -123,6 +123,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains"
             )
+        # Content Security Policy
+        csp = "; ".join([
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self'",
+            "connect-src 'self' https://*.supabase.co https://openrouter.ai https://cloud.langfuse.com",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+        ])
+        response.headers["Content-Security-Policy"] = csp
         return response
 
 
@@ -225,11 +238,7 @@ def create_app() -> FastAPI:
 
     # CORS middleware - allow requests from frontend and runtime
     # In production, this should be restricted appropriately
-    origins = settings.cors_origins.split(",") if settings.cors_origins else []
-    # Allow frontend (Vite dev server on 5173)
-    for origin in ["http://localhost:5173"]:
-        if origin not in origins:
-            origins.append(origin)
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,

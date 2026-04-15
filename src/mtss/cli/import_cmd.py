@@ -131,6 +131,8 @@ def _dict_to_document(d: Dict[str, Any]) -> "Document":
         status=ProcessingStatus(d.get("status", "completed")),
         error_message=d.get("error_message"),
         processed_at=datetime.fromisoformat(d["processed_at"]) if d.get("processed_at") else None,
+        created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.utcnow(),
+        updated_at=datetime.fromisoformat(d["updated_at"]) if d.get("updated_at") else datetime.utcnow(),
     )
 
 
@@ -174,6 +176,8 @@ def _dict_to_topic(d: Dict[str, Any]) -> "Topic":
         embedding=d.get("embedding"),
         chunk_count=d.get("chunk_count", 0),
         document_count=d.get("document_count", 0),
+        created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.utcnow(),
+        updated_at=datetime.fromisoformat(d["updated_at"]) if d.get("updated_at") else datetime.utcnow(),
     )
 
 

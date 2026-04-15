@@ -194,7 +194,7 @@ async def create_conversation(
         )
 
     row = result.data[0]
-    logger.info("Created conversation %s for user %s", row["id"], user.email or user.sub)
+    logger.info("conversation.create user=%s thread=%s", user.sub, row["thread_id"])
 
     return ConversationResponse(
         id=row["id"],
@@ -358,7 +358,7 @@ async def update_conversation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
     row = result.data[0]
-    logger.info("Updated conversation %s for user %s", thread_id, user.email or user.sub)
+    logger.info("conversation.update user=%s thread=%s", user.sub, thread_id)
 
     return ConversationResponse(
         id=row["id"],
@@ -410,7 +410,7 @@ async def delete_conversation(
     # Delete the conversation metadata
     client.client.table("conversations").delete().eq("thread_id", thread_id_str).execute()
 
-    logger.info("Deleted conversation %s for user %s", thread_id, user.email or user.sub)
+    logger.info("conversation.delete user=%s thread=%s", user.sub, thread_id)
 
 
 @router.post("/{thread_id}/touch", response_model=ConversationResponse)

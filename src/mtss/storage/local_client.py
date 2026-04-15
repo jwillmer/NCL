@@ -132,6 +132,8 @@ class LocalStorageClient:
             "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
             "error_message": getattr(doc, "error_message", None),
             "processed_at": doc.processed_at.isoformat() if getattr(doc, "processed_at", None) else None,
+            "created_at": doc.created_at.isoformat() if getattr(doc, "created_at", None) else None,
+            "updated_at": doc.updated_at.isoformat() if getattr(doc, "updated_at", None) else None,
             # Email metadata
             "email_subject": email_meta.subject if email_meta else None,
             "email_participants": email_meta.participants if email_meta else None,
@@ -179,7 +181,8 @@ class LocalStorageClient:
             "embedding": getattr(topic, "embedding", None),
             "chunk_count": getattr(topic, "chunk_count", 0),
             "document_count": getattr(topic, "document_count", 0),
-            "created_at": str(getattr(topic, "created_at", "")),
+            "created_at": topic.created_at.isoformat() if getattr(topic, "created_at", None) else None,
+            "updated_at": topic.updated_at.isoformat() if getattr(topic, "updated_at", None) else None,
         }
 
     @staticmethod

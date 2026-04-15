@@ -635,3 +635,119 @@ def local_bucket_storage(tmp_path):
     from tests.local_storage import LocalBucketStorage
 
     return LocalBucketStorage(tmp_path / "bucket")
+
+
+# ==================== API Test Fixtures ====================
+
+
+@pytest.fixture
+def test_user():
+    """Authenticated user for API tests."""
+    from mtss.api.middleware.auth import UserPayload
+
+    return UserPayload(
+        sub="test-user-id",
+        email="test@example.com",
+        role="authenticated",
+        aud="authenticated",
+    )
+
+
+@pytest.fixture
+def mock_supabase_rest_client():
+    """Fluent chain mock for supabase-py REST client.
+
+    Supports: client.table("x").select("*").eq("k", "v").execute()
+    Every chained method returns the same mock so any chain works.
+    """
+    mock_client = MagicMock()
+    mock_table = MagicMock()
+    mock_client.table.return_value = mock_table
+    # Every fluent method returns self
+    for method in (
+        "select", "insert", "update", "upsert", "delete",
+        "eq", "neq", "gt", "lt", "gte", "lte",
+        "order", "range", "limit", "offset",
+        "text_search", "maybe_single", "single",
+        "is_", "in_",
+    ):
+        getattr(mock_table, method).return_value = mock_table
+    # Default execute returns empty
+    mock_result = MagicMock()
+    mock_result.data = []
+    mock_result.count = 0
+    mock_table.execute.return_value = mock_result
+    return mock_client
+
+
+@pytest.fixture
+def app(comprehensive_mock_settings, test_user, mock_supabase_rest_client):
+    """FastAPI test app with mocked auth, lifespan, and DB."""
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch
+
+    from mtss.api.middleware.auth import SupabaseJWTBearer, get_current_user
+
+    @asynccontextmanager
+    async def test_lifespan(app):
+        app.state.checkpointer = AsyncMock()
+        app.state.agent_graph = MagicMock()
+        yield
+
+    def patched_supabase_init(self):
+        self.client = mock_supabase_rest_client
+        self.db_url = "postgresql://test:test@localhost/test"
+        self._docs = MagicMock()
+        self._search = MagicMock()
+        self._domain = MagicMock()
+        self._pool = None  # Must be after _docs/_search/_domain (property setter)
+        self._docs.get_chunk_by_id = MagicMock(return_value=None)
+        self._domain.get_vessel_summaries = AsyncMock(return_value=[])
+        self._domain.get_unique_vessel_types = AsyncMock(return_value=[])
+        self._domain.get_unique_vessel_classes = AsyncMock(return_value=[])
+        self.close = AsyncMock()
+
+    async def mock_jwt_call(self_bearer, request):
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            return test_user
+        return None
+
+    # Add CORS and langfuse settings
+    comprehensive_mock_settings.cors_origins = "http://localhost:5173"
+    comprehensive_mock_settings.langfuse_enabled = False
+
+    with (
+        patch("mtss.api.main.get_settings", return_value=comprehensive_mock_settings),
+        patch("mtss.config.get_settings", return_value=comprehensive_mock_settings),
+        patch("mtss.api.middleware.auth.get_settings", return_value=comprehensive_mock_settings),
+        patch("mtss.api.main.lifespan", test_lifespan),
+        patch.object(SupabaseJWTBearer, "__call__", mock_jwt_call),
+        patch("mtss.storage.supabase_client.get_settings", return_value=comprehensive_mock_settings),
+        patch("mtss.storage.supabase_client.create_client", return_value=mock_supabase_rest_client),
+        patch("mtss.storage.supabase_client.SupabaseClient.__init__", patched_supabase_init),
+        patch("mtss.api.conversations.SupabaseClient.__init__", patched_supabase_init),
+    ):
+        from mtss.api.main import create_app
+
+        test_app = create_app()
+        test_app.dependency_overrides[get_current_user] = lambda: test_user
+        # Store mock for per-test configuration
+        test_app.state.mock_supabase_rest_client = mock_supabase_rest_client
+        yield test_app
+
+
+@pytest.fixture
+async def client(app):
+    """Async HTTP client bound to test app."""
+    from httpx import ASGITransport, AsyncClient
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest.fixture
+def auth_headers():
+    """Authorization headers for authenticated requests."""
+    return {"Authorization": "Bearer test-token"}
