@@ -16,6 +16,7 @@ dependencies = [
     # LLM and embeddings
     "litellm>=1.0.0",
     "openai>=1.0.0",
+    "httpx>=0.25.0",
     # Utilities
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
@@ -28,7 +29,6 @@ dependencies = [
     "aiofiles>=23.0.0",
     "anyio>=4.0.0",
     "hf-xet>=1.2.0",
-    "openai-agents>=0.6.4",
     # Local document parsing
     "html2text>=2024.2.26",
     "openpyxl>=3.1.0",

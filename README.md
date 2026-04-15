@@ -6,7 +6,7 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 
 - **Email Parsing:** Conversation-aware parsing with participant tracking
 - **Multi-Format Support:** PDF, DOCX, PPTX, XLSX, CSV, HTML, images, ZIP archives, legacy formats (DOC, XLS, PPT)
-- **Image Understanding:** AI-powered image classification and descriptions via OpenAI Vision, with local heuristic pre-filtering
+- **Image Understanding:** AI-powered image classification and descriptions via LiteLLM Vision, with local heuristic pre-filtering
 - **Tiered Document Parsing:** Local parsers for simple PDFs (PyMuPDF4LLM), DOCX (python-docx), XLSX (openpyxl), CSV, and HTML; LlamaParse for complex PDFs and legacy formats
 - **Local-Only Ingest:** `--local-only` mode writes to JSONL files instead of Supabase — no cloud database required
 - **Contextual Chunking:** LLM-generated document summaries prepended to chunks (35-67% retrieval improvement)
@@ -60,8 +60,7 @@ cp .env.template .env
 
 # 2. Configure your credentials in .env
 #    - SUPABASE_URL, SUPABASE_KEY, SUPABASE_DB_URL (not needed for --local-only)
-#    - OPENAI_API_KEY
-#    - COHERE_API_KEY (for reranking)
+#    - OPENROUTER_API_KEY
 #    - LLAMA_CLOUD_API_KEY (only needed for complex PDFs and legacy formats)
 #
 # Optional new settings:
@@ -523,11 +522,11 @@ POST /feedback
 - **Agent Framework:** LangGraph with AG-UI protocol integration
 - **Observability:** Langfuse (backend + browser SDK)
 - **Document Processing:** Local parsers (PyMuPDF4LLM, python-docx, openpyxl) + LlamaParse fallback for complex/legacy formats
-- **Image Processing:** Local heuristic filtering + OpenAI Vision API (classification + description)
+- **Image Processing:** Local heuristic filtering + LiteLLM Vision via OpenRouter (classification + description)
 - **Text Chunking:** LangChain text splitters with tiktoken (1024 token chunks, 100 token overlap)
-- **Embeddings:** OpenAI text-embedding-3-small (512 dimensions)
-- **LLM:** GPT-4o via LangChain
-- **Reranking:** Cohere via LiteLLM
+- **Embeddings:** text-embedding-3-small via OpenRouter (512 dimensions)
+- **LLM:** OpenRouter (configurable model)
+- **Reranking:** OpenRouter rerank API
 - **Database:** Supabase (PostgreSQL + pgvector)
 - **Authentication:** Supabase Auth
 

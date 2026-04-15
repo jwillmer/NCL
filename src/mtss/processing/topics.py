@@ -150,7 +150,7 @@ User question: {query}"""
                 "metadata": get_langfuse_metadata(),
             }
             # Only add temperature for models that support it
-            if not self.llm_model.startswith("gpt-5"):
+            if "gpt-5" not in self.llm_model:
                 call_params["temperature"] = 0.3
 
             response = await acompletion(**call_params)
@@ -247,7 +247,7 @@ User question: {query}"""
                 "metadata": get_langfuse_metadata(),
             }
             # Only add temperature for models that support it
-            if not self.llm_model.startswith("gpt-5"):
+            if "gpt-5" not in self.llm_model:
                 call_params["temperature"] = 0.1
 
             response = await acompletion(**call_params)

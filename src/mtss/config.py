@@ -36,18 +36,21 @@ class Settings(BaseSettings):
         default=None, validation_alias="SUPABASE_JWT_SECRET"
     )
 
-    # OpenAI Configuration
-    openai_api_key: str = Field(..., validation_alias="OPENAI_API_KEY")
+    # OpenRouter Configuration
+    openrouter_api_key: str = Field(..., validation_alias="OPENROUTER_API_KEY")
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1", validation_alias="OPENROUTER_BASE_URL"
+    )
 
     # Model Configuration
     embedding_model: str = Field(
-        default="text-embedding-3-small", validation_alias="EMBEDDING_MODEL"
+        default="openrouter/openai/text-embedding-3-small", validation_alias="EMBEDDING_MODEL"
     )
     embedding_dimensions: int = Field(default=512, validation_alias="EMBEDDING_DIMENSIONS")
     embedding_max_tokens: int = Field(default=8000, validation_alias="EMBEDDING_MAX_TOKENS")
 
     # Default LLM model (fallback when specific model not set)
-    llm_model: str = Field(default="gpt-4o-mini", validation_alias="LLM_MODEL")
+    llm_model: str = Field(default="openrouter/openai/gpt-4o-mini", validation_alias="LLM_MODEL")
 
     # Dedicated models per functionality (None = fallback to llm_model)
     context_llm_model: str | None = Field(
@@ -57,10 +60,10 @@ class Settings(BaseSettings):
         default=None, validation_alias="CONTEXT_LLM_FALLBACK"
     )
     email_cleaner_model: str | None = Field(
-        default="gpt-5-nano", validation_alias="EMAIL_CLEANER_MODEL"
+        default="openrouter/openai/gpt-5-nano", validation_alias="EMAIL_CLEANER_MODEL"
     )
     image_llm_model: str | None = Field(
-        default="gpt-4.1-nano", validation_alias="IMAGE_LLM_MODEL"
+        default="openrouter/openai/gpt-4.1-nano", validation_alias="IMAGE_LLM_MODEL"
     )
     rag_llm_model: str | None = Field(
         default=None, validation_alias="RAG_LLM_MODEL"
@@ -135,7 +138,7 @@ class Settings(BaseSettings):
         default=8, validation_alias="MAX_CONCURRENT_FILES"
     )
     max_concurrent_llamaparse: int = Field(
-        default=4, validation_alias="MAX_CONCURRENT_LLAMAPARSE"
+        default=5, validation_alias="MAX_CONCURRENT_LLAMAPARSE"
     )
     enable_ocr: bool = Field(default=True, validation_alias="ENABLE_OCR")
     enable_picture_description: bool = Field(
@@ -149,7 +152,6 @@ class Settings(BaseSettings):
     )
     rerank_top_n: int = Field(default=8, validation_alias="RERANK_TOP_N")
     rerank_score_floor: float = Field(default=0.2, validation_alias="RERANK_SCORE_FLOOR")
-    cohere_api_key: str | None = Field(default=None, validation_alias="COHERE_API_KEY")
 
     # Retrieval Configuration
     retrieval_top_k: int = Field(default=40, validation_alias="RETRIEVAL_TOP_K")
@@ -183,7 +185,7 @@ class Settings(BaseSettings):
     zip_max_depth: int = Field(default=3, validation_alias="ZIP_MAX_DEPTH")
     zip_max_total_size_mb: int = Field(default=500, validation_alias="ZIP_MAX_TOTAL_SIZE_MB")
 
-    # Embedding batch size (OpenAI allows up to 2048)
+    # Embedding batch size
     embedding_batch_size: int = Field(default=100, validation_alias="EMBEDDING_BATCH_SIZE")
 
     # Error truncation length for database storage

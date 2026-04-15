@@ -283,7 +283,12 @@ async def chat_node(
 ) -> Command[Literal["search_node", "__end__"]]:
     """Main chat node - routes to search tool or returns final response."""
     settings = get_settings()
-    model = ChatOpenAI(model=settings.llm_model)
+    model_name = settings.llm_model.removeprefix("openrouter/")
+    model = ChatOpenAI(
+        model=model_name,
+        base_url=settings.openrouter_base_url,
+        api_key=settings.openrouter_api_key,
+    )
     model_with_tools = model.bind_tools([SEARCH_TOOL], parallel_tool_calls=False)
 
     # Build system prompt with vessel context if a vessel filter is active

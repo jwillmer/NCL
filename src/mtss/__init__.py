@@ -17,13 +17,11 @@ def _init_api_keys() -> None:
 
     settings = get_settings()
 
-    # Set OpenAI API key for LiteLLM
-    if settings.openai_api_key:
-        os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
-
-    # Set Cohere API key for reranking
-    if settings.cohere_api_key:
-        os.environ.setdefault("COHERE_API_KEY", settings.cohere_api_key)
+    # Set OpenRouter API key and base URL for LiteLLM
+    if settings.openrouter_api_key:
+        os.environ.setdefault("OPENROUTER_API_KEY", settings.openrouter_api_key)
+    if settings.openrouter_base_url:
+        os.environ.setdefault("OPENROUTER_API_BASE", settings.openrouter_base_url)
 
 
 def init() -> None:

@@ -50,7 +50,7 @@ src/mtss/
 │   ├── lane_classifier.py       # Fast/slow lane classification
 │   ├── estimator.py, helpers.py
 ├── processing/                  # Shared processing infrastructure
-│   ├── embeddings.py            # OpenAI embeddings via LiteLLM
+│   ├── embeddings.py            # Embeddings via LiteLLM (OpenRouter)
 │   ├── topics.py                # Topic extraction + matching
 │   ├── vessel_matcher.py        # Vessel name matching
 │   └── image_processor.py       # Image processing
@@ -81,14 +81,14 @@ Uses Pydantic Settings for type-safe configuration from environment variables.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `EMBEDDING_MODEL` | text-embedding-3-small | OpenAI embedding model |
+| `EMBEDDING_MODEL` | openrouter/openai/text-embedding-3-small | Embedding model via OpenRouter |
 | `EMBEDDING_DIMENSIONS` | 512 | Vector dimensions |
-| `LLM_MODEL` | gpt-4o-mini | Answer generation model |
+| `LLM_MODEL` | openrouter/openai/gpt-4o-mini | Answer generation model |
 | `CHUNK_SIZE_TOKENS` | 1024 | Max tokens per chunk |
 | `ENABLE_OCR` | true | Enable OCR for images/PDFs |
 | `ENABLE_PICTURE_DESCRIPTION` | true | Enable AI image descriptions |
 | `RERANK_ENABLED` | true | Enable two-stage retrieval |
-| `RERANK_MODEL` | cohere/rerank-english-v3.0 | Cross-encoder model |
+| `RERANK_MODEL` | cohere/rerank-v3.5 | Cross-encoder model via OpenRouter |
 
 ### 2. EML Parser (`parsers/eml_parser.py`)
 
@@ -130,7 +130,7 @@ Processes attachments using LlamaParse for document understanding.
 
 **Chunking:**
 - Uses `HybridChunker` from docling-core
-- OpenAI tokenizer for accurate token counting
+- tiktoken tokenizer for accurate token counting
 - Preserves heading hierarchy
 - Merges undersized peer chunks
 
@@ -158,10 +158,10 @@ Email (depth=0, root_id=self)
 
 ### 5. Embedding Generator (`processing/embeddings.py`)
 
-Generates vector embeddings using OpenAI's API via LiteLLM.
+Generates vector embeddings via LiteLLM (OpenRouter).
 
 **Features:**
-- Model: `text-embedding-3-small` (1536 dimensions)
+- Model: `text-embedding-3-small` via OpenRouter (configurable dimensions)
 - Batch processing (100 texts per API call)
 - Async operation for performance
 - Cost estimation (~$0.001 per email)
@@ -176,11 +176,9 @@ Implements two-stage retrieval for improved accuracy.
 
 **Improvement:** 20-35% accuracy gain over vector search alone
 
-**Supported Providers (via LiteLLM):**
-- Cohere: `cohere/rerank-english-v3.0`
-- Azure AI: `azure_ai/cohere-rerank-v3.5`
-- AWS Bedrock: `bedrock/rerank`
-- Infinity (self-hosted): `infinity/<model>`
+**Provider:** OpenRouter rerank API (direct HTTP)
+- Default model: `cohere/rerank-v3.5`
+- Browse models: https://openrouter.ai/models?type=rerank
 
 ### 7. Supabase Client (`storage/supabase_client.py`)
 
@@ -313,9 +311,9 @@ $$ LANGUAGE sql;
 | Chunking | docling-core HybridChunker | Semantic chunking |
 | OCR | EasyOCR | Text extraction from images |
 | Image Description | SmolVLM | AI image understanding |
-| Embeddings | OpenAI text-embedding-3-small | Vector generation |
-| LLM | GPT-4o-mini via LiteLLM | Answer generation |
-| Reranking | Cohere via LiteLLM | Result refinement |
+| Embeddings | text-embedding-3-small via OpenRouter | Vector generation |
+| LLM | OpenRouter via LiteLLM | Answer generation |
+| Reranking | OpenRouter rerank API | Result refinement |
 | Database | Supabase (PostgreSQL) | Data persistence |
 | Vector Search | pgvector | Similarity search |
 | Async | asyncio + asyncpg | Non-blocking I/O |

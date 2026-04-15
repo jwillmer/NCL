@@ -128,7 +128,7 @@ def patches(mock_settings):
         m.reranker.enabled = True
         m.reranker.top_n = 3
         # By default, rerank_results returns its input sliced to top_n
-        m.reranker.rerank_results = MagicMock(
+        m.reranker.rerank_results = AsyncMock(
             side_effect=lambda query, results, top_n=None: results[: top_n or 3]
         )
 

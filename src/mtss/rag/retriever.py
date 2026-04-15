@@ -82,7 +82,7 @@ class Retriever:
         if use_rerank and self.reranker.enabled and len(retrieval_results) > effective_top_n:
             if on_progress:
                 await on_progress("Reranking results...")
-            retrieval_results = self.reranker.rerank_results(
+            retrieval_results = await self.reranker.rerank_results(
                 query=query, results=retrieval_results, top_n=rerank_top_n
             )
 

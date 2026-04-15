@@ -79,7 +79,7 @@ class EmbeddingGenerator:
         self.batch_size = settings.embedding_batch_size
 
         # Initialize tokenizer for truncation
-        if self.model.startswith("text-embedding-"):
+        if "text-embedding-" in self.model:
             self._encoding = tiktoken.get_encoding("cl100k_base")
         else:
             try:

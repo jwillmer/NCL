@@ -1,6 +1,6 @@
 """Tests for the Reranker class."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -98,29 +98,33 @@ def mock_settings():
     settings.rerank_model = "cohere/rerank-v3.5"
     settings.rerank_top_n = 3
     settings.rerank_score_floor = 0.2
-    settings.cohere_api_key = "test-api-key"
+    settings.openrouter_api_key = "test-openrouter-key"
+    settings.openrouter_base_url = "https://openrouter.ai/api/v1"
     return settings
 
 
+def _mock_async_client(results_data):
+    """Create a mock httpx.AsyncClient that returns rerank results."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"results": results_data}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
+
+
 @pytest.fixture
-def mock_rerank_response():
-    """Mock response from LiteLLM rerank."""
-    response = MagicMock()
+def mock_rerank_response_data():
+    """Mock response data from OpenRouter rerank API."""
     # Simulate reranker reordering: originally [0,1,2,3,4], reranked to [2,0,1]
-    result1 = MagicMock()
-    result1.index = 2  # attachment.pdf - highest rerank score
-    result1.relevance_score = 0.95
-
-    result2 = MagicMock()
-    result2.index = 0  # email1.eml - second highest
-    result2.relevance_score = 0.88
-
-    result3 = MagicMock()
-    result3.index = 1  # email2.eml - third highest
-    result3.relevance_score = 0.72
-
-    response.results = [result1, result2, result3]
-    return response
+    return [
+        {"index": 2, "relevance_score": 0.95},  # attachment.pdf - highest
+        {"index": 0, "relevance_score": 0.88},  # email1.eml - second
+        {"index": 1, "relevance_score": 0.72},  # email2.eml - third
+    ]
 
 
 class TestRerankerInit:
@@ -129,12 +133,11 @@ class TestRerankerInit:
     def test_init_with_enabled_reranking(self, mock_settings):
         """Test initialization with reranking enabled."""
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch.dict("os.environ", {}, clear=False):
-                reranker = Reranker()
+            reranker = Reranker()
 
-                assert reranker.enabled is True
-                assert reranker.model == "cohere/rerank-v3.5"
-                assert reranker.top_n == 3
+            assert reranker.enabled is True
+            assert reranker.model == "cohere/rerank-v3.5"
+            assert reranker.top_n == 3
 
     def test_init_with_disabled_reranking(self, mock_settings):
         """Test initialization with reranking disabled."""
@@ -145,70 +148,51 @@ class TestRerankerInit:
 
             assert reranker.enabled is False
 
-    def test_init_does_not_set_cohere_api_key(self, mock_settings):
-        """Test that Reranker no longer sets API key (done at module init)."""
+    def test_init_stores_api_credentials(self, mock_settings):
+        """Test that Reranker stores OpenRouter API credentials from settings."""
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch.dict("os.environ", {}, clear=False) as env:
-                # Clear any existing key
-                env.pop("COHERE_API_KEY", None)
-                Reranker()
-                # Reranker should NOT set the key - it's done in mtss.__init__
-                assert "COHERE_API_KEY" not in env or env.get("COHERE_API_KEY") != "test-api-key"
-
-    def test_init_without_cohere_api_key(self, mock_settings):
-        """Test initialization without Cohere API key."""
-        mock_settings.cohere_api_key = None
-
-        with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch.dict("os.environ", {"COHERE_API_KEY": ""}, clear=False):
-                # Should not raise an error
-                reranker = Reranker()
-                assert reranker.enabled is True
+            reranker = Reranker()
+            assert reranker._api_key == "test-openrouter-key"
+            assert reranker._base_url == "https://openrouter.ai/api/v1"
 
 
 class TestRerankerRerankResults:
     """Tests for Reranker.rerank_results method."""
 
-    def test_rerank_results_success(
-        self, mock_settings, sample_results, mock_rerank_response
+    @pytest.mark.asyncio
+    async def test_rerank_results_success(
+        self, mock_settings, sample_results, mock_rerank_response_data
     ):
         """Test successful reranking of results."""
+        mock_client = _mock_async_client(mock_rerank_response_data)
+
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch(
-                "mtss.rag.reranker.rerank", return_value=mock_rerank_response
-            ):
+            with patch("mtss.rag.reranker.httpx.AsyncClient", return_value=mock_client):
                 reranker = Reranker()
-                results = reranker.rerank_results(
+                results = await reranker.rerank_results(
                     query="What is the project budget?",
                     results=sample_results,
                 )
 
-                # Should return top_n results (3)
                 assert len(results) == 3
-
-                # Results should be reordered by rerank score
                 assert results[0].file_path == "/path/to/attachment.pdf"
                 assert results[1].file_path == "/path/to/email1.eml"
                 assert results[2].file_path == "/path/to/email2.eml"
-
-                # Rerank scores should be populated
                 assert results[0].rerank_score == 0.95
                 assert results[1].rerank_score == 0.88
                 assert results[2].rerank_score == 0.72
 
-    def test_rerank_results_with_custom_top_n(
-        self, mock_settings, sample_results, mock_rerank_response
+    @pytest.mark.asyncio
+    async def test_rerank_results_with_custom_top_n(
+        self, mock_settings, sample_results, mock_rerank_response_data
     ):
         """Test reranking with custom top_n parameter."""
-        # Modify mock response to return 2 results
-        mock_rerank_response.results = mock_rerank_response.results[:2]
+        mock_client = _mock_async_client(mock_rerank_response_data[:2])
 
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch(
-                "mtss.rag.reranker.rerank", return_value=mock_rerank_response
-            ):
+            with patch("mtss.rag.reranker.httpx.AsyncClient", return_value=mock_client):
                 reranker = Reranker()
-                results = reranker.rerank_results(
+                results = await reranker.rerank_results(
                     query="What is the project budget?",
                     results=sample_results,
                     top_n=2,
@@ -216,115 +200,110 @@ class TestRerankerRerankResults:
 
                 assert len(results) == 2
 
-    def test_rerank_results_disabled(self, mock_settings, sample_results):
+    @pytest.mark.asyncio
+    async def test_rerank_results_disabled(self, mock_settings, sample_results):
         """Test that disabled reranker returns truncated original results."""
         mock_settings.rerank_enabled = False
 
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
             reranker = Reranker()
-            results = reranker.rerank_results(
+            results = await reranker.rerank_results(
                 query="What is the project budget?",
                 results=sample_results,
             )
 
-            # Should return first top_n results without reranking
             assert len(results) == 3
             assert results[0].file_path == "/path/to/email1.eml"
             assert results[1].file_path == "/path/to/email2.eml"
             assert results[2].file_path == "/path/to/attachment.pdf"
-
-            # Rerank scores should not be set
             assert results[0].rerank_score is None
 
-    def test_rerank_results_empty_sources(self, mock_settings):
+    @pytest.mark.asyncio
+    async def test_rerank_results_empty_sources(self, mock_settings):
         """Test reranking with empty source list."""
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
             reranker = Reranker()
-            results = reranker.rerank_results(
+            results = await reranker.rerank_results(
                 query="What is the project budget?",
                 results=[],
             )
 
             assert results == []
 
-    def test_rerank_results_fewer_than_top_n(self, mock_settings, sample_results):
+    @pytest.mark.asyncio
+    async def test_rerank_results_fewer_than_top_n(self, mock_settings, sample_results):
         """Test reranking when sources fewer than top_n."""
-        mock_settings.rerank_top_n = 10  # More than available sources
+        mock_settings.rerank_top_n = 10
 
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
             reranker = Reranker()
-            results = reranker.rerank_results(
+            results = await reranker.rerank_results(
                 query="What is the project budget?",
-                results=sample_results[:2],  # Only 2 results
+                results=sample_results[:2],
             )
 
-            # Should return all results without calling rerank API
             assert len(results) == 2
             assert results[0].rerank_score is None
 
-    def test_rerank_results_extracts_text(
-        self, mock_settings, sample_results, mock_rerank_response
+    @pytest.mark.asyncio
+    async def test_rerank_results_extracts_text(
+        self, mock_settings, sample_results, mock_rerank_response_data
     ):
         """Test that reranker extracts enriched text for documents."""
+        mock_client = _mock_async_client(mock_rerank_response_data)
+
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch(
-                "mtss.rag.reranker.rerank", return_value=mock_rerank_response
-            ) as mock_rerank_fn:
+            with patch("mtss.rag.reranker.httpx.AsyncClient", return_value=mock_client):
                 reranker = Reranker()
-                reranker.rerank_results(
+                await reranker.rerank_results(
                     query="What is the project budget?",
                     results=sample_results,
                 )
 
-                # Verify rerank was called with enriched documents
-                call_kwargs = mock_rerank_fn.call_args.kwargs
-                assert call_kwargs["query"] == "What is the project budget?"
-                assert len(call_kwargs["documents"]) == 5
-                # First result: email_subject="Project Update", source_title="Project Update" (same, no dup)
-                assert call_kwargs["documents"][0].startswith("Project Update\n")
-                assert "The project deadline has been moved to next Friday." in call_kwargs["documents"][0]
-                # Third result: email_subject="Project Update", source_title="Budget Report" (different)
-                assert "Project Update | Budget Report" in call_kwargs["documents"][2]
+                # Verify the async client's post was called with enriched documents
+                call_kwargs = mock_client.post.call_args.kwargs
+                json_body = call_kwargs["json"]
+                assert json_body["query"] == "What is the project budget?"
+                assert len(json_body["documents"]) == 5
+                assert json_body["documents"][0].startswith("Project Update\n")
+                assert "The project deadline has been moved to next Friday." in json_body["documents"][0]
+                assert "Project Update | Budget Report" in json_body["documents"][2]
 
-
-    def test_rerank_score_floor(self, mock_settings, sample_results):
+    @pytest.mark.asyncio
+    async def test_rerank_score_floor(self, mock_settings, sample_results):
         """Test that low-scoring results are filtered out."""
-        mock_response = MagicMock()
-        # All results score below 0.2 except one
         results_data = [
-            MagicMock(index=0, relevance_score=0.05),
-            MagicMock(index=1, relevance_score=0.45),
-            MagicMock(index=2, relevance_score=0.10),
+            {"index": 0, "relevance_score": 0.05},
+            {"index": 1, "relevance_score": 0.45},
+            {"index": 2, "relevance_score": 0.10},
         ]
-        mock_response.results = results_data
+        mock_client = _mock_async_client(results_data)
 
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch("mtss.rag.reranker.rerank", return_value=mock_response):
+            with patch("mtss.rag.reranker.httpx.AsyncClient", return_value=mock_client):
                 reranker = Reranker()
-                results = reranker.rerank_results(
+                results = await reranker.rerank_results(
                     query="test", results=sample_results,
                 )
-                # Only result with score >= 0.2 should remain
                 assert len(results) == 1
                 assert results[0].rerank_score == 0.45
 
-    def test_rerank_score_floor_all_below_keeps_one(self, mock_settings, sample_results):
+    @pytest.mark.asyncio
+    async def test_rerank_score_floor_all_below_keeps_one(self, mock_settings, sample_results):
         """Test that at least one result is kept even when all scores are below floor."""
-        mock_response = MagicMock()
         results_data = [
-            MagicMock(index=0, relevance_score=0.05),
-            MagicMock(index=1, relevance_score=0.10),
-            MagicMock(index=2, relevance_score=0.15),
+            {"index": 0, "relevance_score": 0.05},
+            {"index": 1, "relevance_score": 0.10},
+            {"index": 2, "relevance_score": 0.15},
         ]
-        mock_response.results = results_data
+        mock_client = _mock_async_client(results_data)
 
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch("mtss.rag.reranker.rerank", return_value=mock_response):
+            with patch("mtss.rag.reranker.httpx.AsyncClient", return_value=mock_client):
                 reranker = Reranker()
-                results = reranker.rerank_results(
+                results = await reranker.rerank_results(
                     query="test", results=sample_results,
                 )
-                # All below floor, but at least 1 should remain (the first/highest)
                 assert len(results) == 1
                 assert results[0].rerank_score == 0.05
 
@@ -332,21 +311,21 @@ class TestRerankerRerankResults:
 class TestRerankerIntegration:
     """Integration-style tests for Reranker."""
 
-    def test_rerank_preserves_metadata(
-        self, mock_settings, sample_results, mock_rerank_response
+    @pytest.mark.asyncio
+    async def test_rerank_preserves_metadata(
+        self, mock_settings, sample_results, mock_rerank_response_data
     ):
         """Test that reranking preserves all result metadata."""
+        mock_client = _mock_async_client(mock_rerank_response_data)
+
         with patch("mtss.rag.reranker.get_settings", return_value=mock_settings):
-            with patch(
-                "mtss.rag.reranker.rerank", return_value=mock_rerank_response
-            ):
+            with patch("mtss.rag.reranker.httpx.AsyncClient", return_value=mock_client):
                 reranker = Reranker()
-                results = reranker.rerank_results(
+                results = await reranker.rerank_results(
                     query="What is the project budget?",
                     results=sample_results,
                 )
 
-                # Check that the top result (attachment.pdf) has all metadata
                 top_result = results[0]
                 assert top_result.document_type == "attachment_pdf"
                 assert top_result.email_subject == "Project Update"
@@ -354,5 +333,5 @@ class TestRerankerIntegration:
                 assert "alice@example.com" in top_result.email_participants
                 assert top_result.email_date == "2024-01-15"
                 assert top_result.section_path == ["Budget Overview"]
-                assert top_result.score == 0.78  # Original score preserved
-                assert top_result.rerank_score == 0.95  # New rerank score added
+                assert top_result.score == 0.78
+                assert top_result.rerank_score == 0.95

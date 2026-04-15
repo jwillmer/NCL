@@ -240,7 +240,7 @@ class DocumentChunker:
 
         # Get tiktoken encoding for the embedding model
         model_name = settings.embedding_model
-        if model_name.startswith("text-embedding-"):
+        if "text-embedding-" in model_name:
             self._encoding = tiktoken.get_encoding("cl100k_base")
         else:
             try:

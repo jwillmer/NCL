@@ -1,4 +1,4 @@
-"""Image processor using OpenAI Agents SDK for classification and description."""
+"""Image processor using LiteLLM for classification and description."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal, Optional
 
-from agents import Agent, Runner
+from litellm import acompletion
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
@@ -74,10 +74,51 @@ class ImageAnalysisResult(BaseModel):
         return self.classification != ImageClassification.MEANINGFUL
 
 
-class ImageProcessor:
-    """Process images using OpenAI Agents SDK with structured outputs.
+_CLASSIFIER_PROMPT = """\
+You are an image classifier for email attachments.
+Your job is to determine if an image contains meaningful content or is just decoration.
 
-    Uses the Agents SDK with Pydantic models to guarantee valid responses for:
+Classify images as:
+- logo: Company logos, brand marks, product logos
+- banner: Email header/footer banners, promotional banners, decorative strips
+- signature: Email signature images, contact cards, vCard images
+- icon: Social media icons, small UI icons, button icons
+- meaningful: Screenshots, diagrams, charts, photos of documents, whiteboard photos, \
+or any image with substantive information
+
+For meaningful images, provide a detailed description. For non-meaningful images, \
+skip the description.
+
+Respond with valid JSON matching this schema:
+{
+  "classification": "logo" | "banner" | "signature" | "icon" | "meaningful",
+  "description": "string or null (only for meaningful images)",
+  "reasoning": "brief explanation of why this classification was chosen"
+}"""
+
+_DESCRIBER_PROMPT = """\
+You are an image analyst. Describe the image in detail for indexing and search purposes.
+
+Include:
+- Any visible text (transcribe it accurately)
+- Diagrams, charts, or visual elements
+- The overall context and purpose of the image
+- Key information that would be useful for search and retrieval
+
+Be thorough but concise.
+
+Respond with valid JSON matching this schema:
+{
+  "description": "detailed description of the image content",
+  "contains_text": true | false,
+  "image_type": "screenshot" | "diagram" | "chart" | "photo" | "document" | etc.
+}"""
+
+
+class ImageProcessor:
+    """Process images using LiteLLM with JSON mode for structured outputs.
+
+    Uses acompletion() with response_format=json_object and Pydantic parsing for:
     - Classification (logo/banner/signature vs meaningful content)
     - Description generation
     """
@@ -97,45 +138,9 @@ class ImageProcessor:
     MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 
     def __init__(self):
-        """Initialize the image processor with agents."""
-        self.settings = get_settings()
-
-        # Get model for image processing
-        image_model = self.settings.get_model(self.settings.image_llm_model)
-
-        # Agent for classifying email images
-        self._classifier_agent = Agent(
-            name="Image Classifier",
-            instructions="""You are an image classifier for email attachments.
-Your job is to determine if an image contains meaningful content or is just decoration.
-
-Classify images as:
-- logo: Company logos, brand marks, product logos
-- banner: Email header/footer banners, promotional banners, decorative strips
-- signature: Email signature images, contact cards, vCard images
-- icon: Social media icons, small UI icons, button icons
-- meaningful: Screenshots, diagrams, charts, photos of documents, whiteboard photos, or any image with substantive information
-
-For meaningful images, provide a detailed description. For non-meaningful images, skip the description.""",
-            model=image_model,
-            output_type=ImageClassifyResponse,
-        )
-
-        # Agent for describing images (no classification)
-        self._describer_agent = Agent(
-            name="Image Describer",
-            instructions="""You are an image analyst. Describe the image in detail for indexing and search purposes.
-
-Include:
-- Any visible text (transcribe it accurately)
-- Diagrams, charts, or visual elements
-- The overall context and purpose of the image
-- Key information that would be useful for search and retrieval
-
-Be thorough but concise.""",
-            model=image_model,
-            output_type=ImageDescribeResponse,
-        )
+        """Initialize the image processor."""
+        settings = get_settings()
+        self.model = settings.get_model(settings.image_llm_model)
 
     def is_supported(self, content_type: Optional[str]) -> bool:
         """Check if the image type is supported for Vision API."""
@@ -169,29 +174,33 @@ Be thorough but concise.""",
         return mime_map.get(ext, "image/png")
 
     def _create_image_message(self, image_path: Path, text_prompt: str) -> dict:
-        """Create a message with image input for the Responses API.
-
-        The OpenAI Responses API (used by Agents SDK) expects:
-        - type: "input_text" for text content
-        - type: "input_image" with "image_url" for images
-        """
+        """Create a message with image input for the Chat Completions API."""
         base64_image = self._encode_image(image_path)
         mime_type = self._get_mime_type(image_path)
         return {
             "role": "user",
             "content": [
-                {"type": "input_text", "text": text_prompt},
+                {"type": "text", "text": text_prompt},
                 {
-                    "type": "input_image",
-                    "image_url": f"data:{mime_type};base64,{base64_image}",
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_type};base64,{base64_image}"},
                 },
             ],
         }
 
+    async def _call_vision(self, system_prompt: str, image_path: Path, user_text: str) -> str:
+        """Make a vision API call and return the raw JSON content string."""
+        message = self._create_image_message(image_path, user_text)
+        response = await acompletion(
+            model=self.model,
+            messages=[{"role": "system", "content": system_prompt}, message],
+            response_format={"type": "json_object"},
+            drop_params=True,
+        )
+        return response.choices[0].message.content
+
     async def classify_and_describe(self, image_path: Path) -> ImageAnalysisResult:
         """Classify an email image and describe if meaningful.
-
-        Uses OpenAI Agents SDK with structured outputs.
 
         Args:
             image_path: Path to the image file.
@@ -206,19 +215,10 @@ Be thorough but concise.""",
             )
 
         try:
-            # Create message with image in Responses API format
-            message = self._create_image_message(
-                image_path, "Analyze this image from an email."
+            content = await self._call_vision(
+                _CLASSIFIER_PROMPT, image_path, "Analyze this image from an email."
             )
-
-            # Run the classifier agent with image input
-            result = await Runner.run(
-                self._classifier_agent,
-                [message],
-            )
-
-            # Get the structured output
-            parsed = result.final_output_as(ImageClassifyResponse)
+            parsed = ImageClassifyResponse.model_validate_json(content)
 
             classification = ImageClassification(parsed.classification)
             skip_reason = None
@@ -234,7 +234,7 @@ Be thorough but concise.""",
             )
 
         except Exception as e:
-            logger.warning(f"Failed to classify image {image_path}: {e}")
+            logger.warning("Failed to classify image %s: %s", image_path, e)
             # On error, assume meaningful to avoid losing content
             return ImageAnalysisResult(
                 classification=ImageClassification.MEANINGFUL,
@@ -244,8 +244,6 @@ Be thorough but concise.""",
 
     async def describe_only(self, image_path: Path) -> Optional[str]:
         """Describe an image without classification.
-
-        Uses OpenAI Agents SDK with structured outputs.
 
         Args:
             image_path: Path to the image file.
@@ -257,19 +255,10 @@ Be thorough but concise.""",
             return None
 
         try:
-            # Create message with image in Responses API format
-            message = self._create_image_message(
-                image_path, "Describe this image in detail."
+            content = await self._call_vision(
+                _DESCRIBER_PROMPT, image_path, "Describe this image in detail."
             )
-
-            # Run the describer agent with image input
-            result = await Runner.run(
-                self._describer_agent,
-                [message],
-            )
-
-            # Get the structured output
-            parsed = result.final_output_as(ImageDescribeResponse)
+            parsed = ImageDescribeResponse.model_validate_json(content)
 
             # Enrich description with metadata
             prefix = f"[{parsed.image_type}]"
@@ -279,5 +268,5 @@ Be thorough but concise.""",
             return f"{prefix}\n{parsed.description}"
 
         except Exception as e:
-            logger.warning(f"Failed to describe image {image_path}: {e}")
+            logger.warning("Failed to describe image %s: %s", image_path, e)
             return None
