@@ -52,7 +52,7 @@ class TestTopicExtractor:
     @pytest.fixture
     def extractor(self):
         """Create a TopicExtractor instance."""
-        return TopicExtractor(llm_model="gpt-4o-mini")
+        return TopicExtractor(llm_model="gpt-5-nano")
 
     @pytest.mark.asyncio
     async def test_extract_topics_returns_list(self, extractor):
@@ -163,7 +163,7 @@ class TestTopicExtractorIntegration:
         mock_embeddings.generate_embedding = AsyncMock(return_value=[0.1] * 1536)
 
         # Create components
-        extractor = TopicExtractor(llm_model="gpt-4o-mini")
+        extractor = TopicExtractor(llm_model="gpt-5-nano")
         matcher = TopicMatcher(mock_db, mock_embeddings)
 
         # Mock LLM responses

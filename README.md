@@ -64,7 +64,7 @@ cp .env.template .env
 #    - LLAMA_CLOUD_API_KEY (only needed for complex PDFs and legacy formats)
 #
 # Optional new settings:
-#    - CONTEXT_LLM_MODEL=gpt-4o-mini (for contextual chunking)
+#    - CONTEXT_LLM_MODEL=gpt-5-nano (for contextual chunking)
 #    - ARCHIVE_BUCKET=archive (Supabase Storage bucket for browsable archive)
 #    - ARCHIVE_BASE_URL= (custom base URL for archive links)
 #    - CURRENT_INGEST_VERSION=1 (increment when upgrading processing logic)
@@ -524,7 +524,7 @@ POST /feedback
 - **Document Processing:** Local parsers (PyMuPDF4LLM, python-docx, openpyxl) + LlamaParse fallback for complex/legacy formats
 - **Image Processing:** Local heuristic filtering + LiteLLM Vision via OpenRouter (classification + description)
 - **Text Chunking:** LangChain text splitters with tiktoken (1024 token chunks, 100 token overlap)
-- **Embeddings:** text-embedding-3-small via OpenRouter (512 dimensions)
+- **Embeddings:** text-embedding-3-small via OpenRouter (1536 dimensions)
 - **LLM:** OpenRouter (configurable model)
 - **Reranking:** OpenRouter rerank API
 - **Database:** Supabase (PostgreSQL + pgvector)

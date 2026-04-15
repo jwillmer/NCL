@@ -22,6 +22,7 @@ from ..parsers.email_cleaner import (
     remove_boilerplate_from_message,
     split_into_messages,
 )
+from ..processing.topics import sanitize_input
 from ..utils import compute_chunk_id, compute_doc_id, normalize_source_id
 from .attachment_handler import process_attachment
 from .helpers import noop_verbose
@@ -279,6 +280,108 @@ def _create_body_chunks(
     return chunks
 
 
+async def _generate_thread_digest(
+    cleaned_body: str,
+    email_doc: "Document",
+    context_summary: str | None,
+    vessel_ids: list[str],
+    vessel_types: list[str],
+    vessel_classes: list[str],
+    topic_ids: list[str],
+    components: "IngestComponents",
+    vprint,
+    file_ctx: str,
+) -> "Chunk | None":
+    """Generate a single digest chunk summarizing a multi-message email thread.
+
+    Returns None for single-message emails or on LLM failure (non-critical).
+    """
+    from litellm import acompletion
+
+    from ..models.chunk import Chunk
+
+    messages = split_into_messages(cleaned_body)
+    if len(messages) < 2:
+        return None
+
+    settings = get_settings()
+    digest_model = settings.get_model(settings.thread_digest_model)
+
+    # Build metadata from email
+    subject = ""
+    date_start = ""
+    date_end = ""
+    if email_doc.email_metadata:
+        subject = email_doc.email_metadata.subject or ""
+        if email_doc.email_metadata.date_start:
+            date_start = email_doc.email_metadata.date_start.strftime("%Y-%m-%d")
+        if email_doc.email_metadata.date_end:
+            date_end = email_doc.email_metadata.date_end.strftime("%Y-%m-%d")
+
+    sanitized_body = sanitize_input(cleaned_body, max_length=6000)
+
+    prompt = f"""Summarize this email thread concisely. Include:
+- What was discussed or reported
+- Any actions taken or decisions made
+- Outcome or current status (if apparent)
+
+Keep maritime/technical terminology. Stay factual. 200-400 words.
+
+Subject: {subject}
+Date range: {date_start} to {date_end}
+
+{sanitized_body}"""
+
+    try:
+        response = await acompletion(
+            model=digest_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600,
+            drop_params=True,
+        )
+        digest_text = response.choices[0].message.content
+        if not digest_text or not digest_text.strip():
+            vprint("Thread digest returned empty", file_ctx)
+            return None
+        digest_text = digest_text.strip()
+    except Exception as e:
+        vprint(f"Thread digest LLM failed: {e}", file_ctx)
+        return None
+
+    # Build embedding text with context summary (same pattern as body chunks)
+    embedding_text = digest_text
+    if context_summary and components.context_generator:
+        embedding_text = components.context_generator.build_embedding_text(
+            context_summary, digest_text
+        )
+
+    chunk_metadata: dict = {"type": "thread_digest", "message_count": len(messages)}
+    if vessel_ids:
+        chunk_metadata["vessel_ids"] = vessel_ids
+    if vessel_types:
+        chunk_metadata["vessel_types"] = vessel_types
+    if vessel_classes:
+        chunk_metadata["vessel_classes"] = vessel_classes
+    if topic_ids:
+        chunk_metadata["topic_ids"] = topic_ids
+
+    return Chunk(
+        document_id=email_doc.id,
+        content=digest_text,
+        chunk_index=-1,
+        heading_path=["Email Thread", "Digest"],
+        section_title="Thread Digest",
+        metadata=chunk_metadata,
+        chunk_id=compute_chunk_id(email_doc.doc_id or "", -1, -1),
+        context_summary=context_summary,
+        embedding_text=embedding_text,
+        source_id=email_doc.source_id,
+        source_title=email_doc.source_title,
+        archive_browse_uri=email_doc.archive_browse_uri,
+        archive_download_uri=email_doc.archive_download_uri,
+    )
+
+
 async def process_email(
     eml_path: Path,
     components: "IngestComponents",
@@ -397,6 +500,7 @@ async def process_email(
     )
 
     # Step 4: Body chunks (extracted)
+    digest_task = None
     if body_text:
         # Clean email body using LLM boundary detection + regex boilerplate removal
         settings = get_settings()
@@ -417,6 +521,16 @@ async def process_email(
             )
         vprint(f"Email body: {len(body_chunks_list)} chunk(s)", file_ctx)
         email_chunks.extend(body_chunks_list)
+
+        # Start thread digest generation (runs in parallel with attachments)
+        if cleaned_body:
+            digest_task = asyncio.create_task(
+                _generate_thread_digest(
+                    cleaned_body, email_doc, context_summary,
+                    vessel_ids, vessel_types, vessel_classes, topic_ids,
+                    components, vprint, file_ctx,
+                )
+            )
 
     # Process attachments with progress updates
     attachment_chunk_count = 0
@@ -473,6 +587,16 @@ async def process_email(
         else:
             attachment_chunk_count += len(att_result)
             email_chunks.extend(att_result)
+
+    # Collect thread digest result
+    if digest_task:
+        try:
+            digest_chunk = await digest_task
+            if digest_chunk:
+                email_chunks.append(digest_chunk)
+                vprint("Thread digest generated", file_ctx)
+        except Exception as e:
+            vprint(f"Thread digest failed (continuing): {e}", file_ctx)
 
     # Summary of attachments processed
     if parsed_email.attachments:

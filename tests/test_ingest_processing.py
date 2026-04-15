@@ -613,3 +613,168 @@ class TestAttachmentProcessor:
 
         result = attachment_processor._sanitize_zip_member_path("../traversal/file.txt")
         assert ".." not in result
+
+
+class TestThreadDigest:
+    """Tests for _generate_thread_digest function."""
+
+    @pytest.fixture
+    def multi_message_body(self):
+        """Email body with multiple messages for digest testing."""
+        return (
+            "Thanks for confirming the turbocharger bearing replacement.\n"
+            "The engine is running normally now.\n"
+            "\n"
+            "On 2024-01-02 10:30, engineer@vessel.com wrote:\n"
+            "\n"
+            "We replaced the turbocharger bearings and flushed the lube oil system.\n"
+            "Vibration levels are back to normal range.\n"
+            "\n"
+            "On 2024-01-01 08:15, captain@vessel.com wrote:\n"
+            "\n"
+            "Main engine turbocharger showing excessive vibration during operations.\n"
+            "Requesting technical support for diagnosis and repair guidance."
+        )
+
+    @pytest.fixture
+    def single_message_body(self):
+        """Email body with a single message."""
+        return "This is a single message email about engine maintenance."
+
+    @pytest.fixture
+    def mock_components(self):
+        """Mock IngestComponents with context_generator."""
+        components = MagicMock()
+        components.context_generator = MagicMock()
+        components.context_generator.build_embedding_text = MagicMock(
+            side_effect=lambda ctx, content: f"{ctx}\n\n{content}"
+        )
+        return components
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_returns_none_for_single_message(
+        self, single_message_body, sample_document, mock_components
+    ):
+        """Single-message emails should not produce a digest."""
+        with patch("mtss.ingest.pipeline.get_settings") as mock_settings:
+            mock_settings.return_value.get_model.return_value = "gpt-5-nano"
+            mock_settings.return_value.thread_digest_model = "gpt-5-nano"
+
+            from mtss.ingest.pipeline import _generate_thread_digest
+
+            result = await _generate_thread_digest(
+                single_message_body, sample_document, "context",
+                [], [], [], [], mock_components,
+                lambda msg, ctx: None, "test.eml",
+            )
+            assert result is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_generates_digest_for_multi_message(
+        self, multi_message_body, sample_document, mock_components
+    ):
+        """Multi-message emails should produce a digest chunk."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "Thread discusses turbocharger vibration on the main engine. "
+            "The vessel captain reported excessive vibration. Engineering team "
+            "replaced bearings and flushed lube oil. Issue resolved."
+        )
+
+        with patch("mtss.ingest.pipeline.get_settings") as mock_settings:
+            mock_settings.return_value.get_model.return_value = "gpt-5-nano"
+            mock_settings.return_value.thread_digest_model = "gpt-5-nano"
+
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response) as mock_llm:
+                from mtss.ingest.pipeline import _generate_thread_digest
+
+                result = await _generate_thread_digest(
+                    multi_message_body, sample_document, "Test context summary",
+                    ["vessel-1"], ["VLCC"], ["Maran Class"], ["topic-1"],
+                    mock_components, lambda msg, ctx: None, "test.eml",
+                )
+
+                assert result is not None
+                assert result.chunk_index == -1
+                assert result.metadata["type"] == "thread_digest"
+                assert result.metadata["message_count"] == 3
+                assert result.metadata["vessel_ids"] == ["vessel-1"]
+                assert result.metadata["topic_ids"] == ["topic-1"]
+                assert result.section_title == "Thread Digest"
+                assert result.embedding_text.startswith("Test context summary")
+                assert result.source_id == sample_document.source_id
+                mock_llm.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_returns_none_on_llm_failure(
+        self, multi_message_body, sample_document, mock_components
+    ):
+        """LLM failure should return None, not raise."""
+        with patch("mtss.ingest.pipeline.get_settings") as mock_settings:
+            mock_settings.return_value.get_model.return_value = "gpt-5-nano"
+            mock_settings.return_value.thread_digest_model = "gpt-5-nano"
+
+            with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=Exception("LLM error")):
+                from mtss.ingest.pipeline import _generate_thread_digest
+
+                result = await _generate_thread_digest(
+                    multi_message_body, sample_document, None,
+                    [], [], [], [], mock_components,
+                    lambda msg, ctx: None, "test.eml",
+                )
+                assert result is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_returns_none_on_empty_response(
+        self, multi_message_body, sample_document, mock_components
+    ):
+        """Empty LLM response should return None."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "   "
+
+        with patch("mtss.ingest.pipeline.get_settings") as mock_settings:
+            mock_settings.return_value.get_model.return_value = "gpt-5-nano"
+            mock_settings.return_value.thread_digest_model = "gpt-5-nano"
+
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+                from mtss.ingest.pipeline import _generate_thread_digest
+
+                result = await _generate_thread_digest(
+                    multi_message_body, sample_document, None,
+                    [], [], [], [], mock_components,
+                    lambda msg, ctx: None, "test.eml",
+                )
+                assert result is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_digest_without_context_summary(
+        self, multi_message_body, sample_document, mock_components
+    ):
+        """Digest without context_summary should use raw digest text as embedding_text."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Digest summary text."
+
+        with patch("mtss.ingest.pipeline.get_settings") as mock_settings:
+            mock_settings.return_value.get_model.return_value = "gpt-5-nano"
+            mock_settings.return_value.thread_digest_model = "gpt-5-nano"
+
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+                from mtss.ingest.pipeline import _generate_thread_digest
+
+                result = await _generate_thread_digest(
+                    multi_message_body, sample_document, None,
+                    [], [], [], [], mock_components,
+                    lambda msg, ctx: None, "test.eml",
+                )
+
+                assert result is not None
+                assert result.embedding_text == "Digest summary text."
+                assert result.context_summary is None

@@ -46,11 +46,11 @@ class Settings(BaseSettings):
     embedding_model: str = Field(
         default="openrouter/openai/text-embedding-3-small", validation_alias="EMBEDDING_MODEL"
     )
-    embedding_dimensions: int = Field(default=512, validation_alias="EMBEDDING_DIMENSIONS")
+    embedding_dimensions: int = Field(default=1536, validation_alias="EMBEDDING_DIMENSIONS")
     embedding_max_tokens: int = Field(default=8000, validation_alias="EMBEDDING_MAX_TOKENS")
 
     # Default LLM model (fallback when specific model not set)
-    llm_model: str = Field(default="openrouter/openai/gpt-4o-mini", validation_alias="LLM_MODEL")
+    llm_model: str = Field(default="openrouter/openai/gpt-5-nano", validation_alias="LLM_MODEL")
 
     # Dedicated models per functionality (None = fallback to llm_model)
     context_llm_model: str | None = Field(
@@ -62,8 +62,11 @@ class Settings(BaseSettings):
     email_cleaner_model: str | None = Field(
         default="openrouter/openai/gpt-5-nano", validation_alias="EMAIL_CLEANER_MODEL"
     )
+    thread_digest_model: str | None = Field(
+        default=None, validation_alias="THREAD_DIGEST_MODEL"
+    )
     image_llm_model: str | None = Field(
-        default="openrouter/openai/gpt-4.1-nano", validation_alias="IMAGE_LLM_MODEL"
+        default="openrouter/openai/gpt-5-nano", validation_alias="IMAGE_LLM_MODEL"
     )
     rag_llm_model: str | None = Field(
         default=None, validation_alias="RAG_LLM_MODEL"

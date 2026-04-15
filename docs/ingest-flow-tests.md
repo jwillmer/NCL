@@ -181,7 +181,7 @@ This document describes each step in the ingest processing pipeline, explains wh
 
 **Key operations:**
 - Build prompt with document metadata and content preview
-- Call LLM (gpt-4o-mini) for summary generation
+- Call LLM (configurable via CONTEXT_LLM_MODEL) for summary generation
 - Fall back to metadata-based context on failure
 
 **Tested by:**

@@ -88,7 +88,7 @@ def _make_db_rows(n=3):
 def mock_settings():
     settings = MagicMock()
     settings.get_model = MagicMock(side_effect=lambda x: x)
-    settings.rag_llm_model = "gpt-4o"
+    settings.rag_llm_model = "gpt-5-mini"
     settings.chunk_display_max_chars = 2000
     settings.rerank_enabled = True
     settings.rerank_model = "cohere/rerank-v3.5"

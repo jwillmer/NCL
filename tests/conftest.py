@@ -163,8 +163,8 @@ def comprehensive_mock_settings():
     settings.chunk_size_tokens = 512
     settings.chunk_overlap_tokens = 50
     # Context generation settings
-    settings.context_llm_model = "gpt-4o-mini"
-    settings.context_llm_fallback = "gpt-4o"
+    settings.context_llm_model = "gpt-5-nano"
+    settings.context_llm_fallback = "gpt-5-mini"
     settings.get_model = MagicMock(side_effect=lambda x: x)
     # Directory settings
     settings.data_source_dir = Path("./data/emails")

@@ -109,13 +109,12 @@ email.eml
 
 ### 5. Semantic Chunking with Structure Preservation
 
-MTSS uses HybridChunker for intelligent text segmentation.
+MTSS uses token-aware text splitters (LangChain + tiktoken) for intelligent segmentation.
 
 **Features:**
-- OpenAI tokenizer for accurate token counting
-- Heading hierarchy preservation
-- Merge undersized peer chunks
-- Configurable chunk size (default: 512 tokens)
+- Token-accurate splitting aligned with the embedding model
+- Markdown-aware splitting with heading hierarchy preservation
+- Configurable via `CHUNK_SIZE_TOKENS` and `CHUNK_OVERLAP_TOKENS`
 
 **Heading Path Example:**
 ```
@@ -123,6 +122,8 @@ heading_path: ["Chapter 1", "Section 1.2", "Subsection 1.2.3"]
 ```
 
 This allows queries like "What does Section 1.2 say about X?"
+
+**Thread Digest Chunks:** For multi-message threads (2+ messages), an additional digest chunk summarizes the full conversation (what happened, actions taken, outcome). Runs in parallel with attachment processing. Tagged with the same vessel/topic metadata. Improves retrieval for broad and resolution queries.
 
 ### 6. Two-Stage Retrieval with Reranking
 
@@ -605,11 +606,11 @@ OPENAI_API_KEY=sk-...
 # Optional - Models
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIMENSIONS=1536
-LLM_MODEL=gpt-4o-mini
+LLM_MODEL=gpt-5-nano
 
 # Optional - Chunking
-CHUNK_SIZE_TOKENS=512
-CHUNK_OVERLAP_TOKENS=50
+CHUNK_SIZE_TOKENS=1024
+CHUNK_OVERLAP_TOKENS=100
 
 # Optional - Paths (source = user data, processed = MTSS-generated)
 DATA_SOURCE_DIR=./data/source          # EML files (supports subdirectories)

@@ -82,8 +82,9 @@ Uses Pydantic Settings for type-safe configuration from environment variables.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `EMBEDDING_MODEL` | openrouter/openai/text-embedding-3-small | Embedding model via OpenRouter |
-| `EMBEDDING_DIMENSIONS` | 512 | Vector dimensions |
-| `LLM_MODEL` | openrouter/openai/gpt-4o-mini | Answer generation model |
+| `EMBEDDING_DIMENSIONS` | 1536 | Vector dimensions |
+| `LLM_MODEL` | openrouter/openai/gpt-5-nano | Default LLM model |
+| `THREAD_DIGEST_MODEL` | (fallback to LLM_MODEL) | Thread digest summarization model |
 | `CHUNK_SIZE_TOKENS` | 1024 | Max tokens per chunk |
 | `ENABLE_OCR` | true | Enable OCR for images/PDFs |
 | `ENABLE_PICTURE_DESCRIPTION` | true | Enable AI image descriptions |
