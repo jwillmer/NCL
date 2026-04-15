@@ -101,21 +101,13 @@ def register(app: typer.Typer, vessels_app: typer.Typer, topics_app: typer.Typer
 
 async def _vessels_import(csv_file: Optional[Path], clear: bool):
     """Async implementation of vessels import command."""
-    import csv
-
-    from ..config import get_settings
-    from ..models.vessel import Vessel
+    from ..models.vessel import load_vessels_from_csv
     from ..storage.supabase_client import SupabaseClient
 
-    settings = get_settings()
-
-    # Default CSV path
-    if csv_file is None:
-        csv_file = settings.data_dir / "vessel-list.csv"
-
-    if not csv_file.exists():
-        console.print(f"[red]CSV file not found: {csv_file}[/red]")
-        raise typer.Exit(1)
+    vessels_to_import = load_vessels_from_csv(csv_file)
+    if not vessels_to_import:
+        console.print("[yellow]No vessels found in CSV file[/yellow]")
+        return
 
     db = SupabaseClient()
 
@@ -124,52 +116,6 @@ async def _vessels_import(csv_file: Optional[Path], clear: bool):
         if clear:
             deleted = await db.delete_all_vessels()
             console.print(f"[yellow]Cleared {deleted} existing vessels[/yellow]")
-
-        # Read CSV file
-        vessels_to_import: list[Vessel] = []
-        with open(csv_file, "r", encoding="utf-8") as f:
-            # Detect delimiter (semicolon or comma)
-            sample = f.read(1024)
-            f.seek(0)
-            delimiter = ";" if ";" in sample else ","
-
-            reader = csv.DictReader(f, delimiter=delimiter)
-
-            # Validate required columns are present
-            required_columns = {"NAME", "TYPE", "CLASS"}
-            if reader.fieldnames:
-                actual_columns = set(reader.fieldnames)
-                missing = required_columns - actual_columns
-                if missing:
-                    console.print(f"[red]Missing required columns: {', '.join(missing)}[/red]")
-                    console.print("[dim]Required columns: NAME, TYPE, CLASS[/dim]")
-                    raise typer.Exit(1)
-
-            for row in reader:
-                name = row.get("NAME", "").strip()
-                vessel_type = row.get("TYPE", "").strip()
-                vessel_class = row.get("CLASS", "").strip()
-                aliases_str = (row.get("ALIASES") or "").strip()
-                aliases = [a.strip() for a in aliases_str.split(",") if a.strip()] if aliases_str else []
-
-                if not name:
-                    continue  # Skip rows without vessel name
-
-                if not vessel_type or not vessel_class:
-                    console.print(f"[yellow]Warning: Skipping {name} - missing TYPE or CLASS[/yellow]")
-                    continue
-
-                vessel = Vessel(
-                    name=name,
-                    vessel_type=vessel_type,
-                    vessel_class=vessel_class,
-                    aliases=aliases,
-                )
-                vessels_to_import.append(vessel)
-
-        if not vessels_to_import:
-            console.print("[yellow]No vessels found in CSV file[/yellow]")
-            return
 
         # Import vessels with progress
         imported_count = 0
@@ -190,7 +136,7 @@ async def _vessels_import(csv_file: Optional[Path], clear: bool):
                     console.print(f"[yellow]Warning: Failed to import {vessel.name}: {e}[/yellow]")
                 progress.update(task, advance=1)
 
-        console.print(f"[green]Imported {imported_count} vessels from {csv_file.name}[/green]")
+        console.print(f"[green]Imported {imported_count} vessels[/green]")
 
     finally:
         await db.close()

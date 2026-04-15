@@ -108,11 +108,15 @@ class LocalStorageClient:
             f.write(json.dumps(data, default=str) + "\n")
 
     def _doc_to_dict(self, doc: Any) -> Dict[str, Any]:
-        """Convert Document model to dictionary."""
+        """Convert Document model to dictionary for JSONL serialization."""
+        email_meta = getattr(doc, "email_metadata", None)
+        att_meta = getattr(doc, "attachment_metadata", None)
         return {
             "id": str(doc.id),
             "source_id": doc.source_id,
             "doc_id": doc.doc_id,
+            "content_version": getattr(doc, "content_version", 1),
+            "ingest_version": doc.ingest_version,
             "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else doc.document_type,
             "file_path": doc.file_path,
             "file_name": doc.file_name,
@@ -120,11 +124,24 @@ class LocalStorageClient:
             "parent_id": str(doc.parent_id) if doc.parent_id else None,
             "root_id": str(doc.root_id) if doc.root_id else None,
             "depth": doc.depth,
+            "path": getattr(doc, "path", []),
             "source_title": doc.source_title,
+            "archive_path": getattr(doc, "archive_path", None),
             "archive_browse_uri": doc.archive_browse_uri,
             "archive_download_uri": doc.archive_download_uri,
             "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
-            "ingest_version": doc.ingest_version,
+            "error_message": getattr(doc, "error_message", None),
+            "processed_at": doc.processed_at.isoformat() if getattr(doc, "processed_at", None) else None,
+            # Email metadata
+            "email_subject": email_meta.subject if email_meta else None,
+            "email_participants": email_meta.participants if email_meta else None,
+            "email_initiator": email_meta.initiator if email_meta else None,
+            "email_date_start": email_meta.date_start.isoformat() if email_meta and email_meta.date_start else None,
+            "email_date_end": email_meta.date_end.isoformat() if email_meta and email_meta.date_end else None,
+            "email_message_count": email_meta.message_count if email_meta else None,
+            # Attachment metadata
+            "attachment_content_type": att_meta.content_type if att_meta else None,
+            "attachment_size_bytes": att_meta.size_bytes if att_meta else None,
         }
 
     def _chunk_to_dict(self, chunk: Any) -> Dict[str, Any]:

@@ -27,9 +27,10 @@ topics_app = typer.Typer(help="Topic management for categorization and filtering
 app.add_typer(topics_app, name="topics")
 
 # Register commands from each module
-from . import admin_cmd, entities_cmd, ingest_cmd, maintenance_cmd, query_cmd
+from . import admin_cmd, entities_cmd, import_cmd, ingest_cmd, maintenance_cmd, query_cmd
 
 ingest_cmd.register(app)
+import_cmd.register(app)
 query_cmd.register(app)
 admin_cmd.register(app)
 maintenance_cmd.register(app)

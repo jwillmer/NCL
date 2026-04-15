@@ -66,16 +66,11 @@ def register(app: typer.Typer):
             "--lenient",
             help="Continue processing on errors instead of failing (logs to ingest_events)",
         ),
-        local_only: bool = typer.Option(
-            False,
-            "--local-only",
-            help="Write to local JSONL files instead of Supabase",
-        ),
         output_dir: Optional[Path] = typer.Option(
             None,
             "--output-dir",
             "-o",
-            help="Output directory for local-only mode (default: <source>/../output)",
+            help="Output directory for processed data (default: <source>/../output)",
         ),
         limit: Optional[int] = typer.Option(
             None,
@@ -106,7 +101,7 @@ def register(app: typer.Typer):
         try:
             asyncio.run(_ingest(
                 source_dir, batch_size, resume, retry_failed,
-                reprocess_outdated, lenient, local_only, output_dir, limit,
+                reprocess_outdated, lenient, output_dir, limit,
             ))
         except (SystemExit, KeyboardInterrupt):
             pass
@@ -182,16 +177,19 @@ async def _ingest(
     retry_failed: bool,
     reprocess_outdated: bool = False,
     lenient: bool = False,
-    local_only: bool = False,
     output_dir: Optional[Path] = None,
     limit: Optional[int] = None,
 ):
     """Async implementation of ingest command."""
     from ..config import get_settings
+    from ..ingest.components import create_local_ingest_components
     from ..ingest.lane_classifier import LaneClassifier
     from ..ingest.pipeline import process_email
     from ..ingest.version_manager import VersionManager
+    from ..models.vessel import load_vessels_from_csv
     from ..storage.failure_report import IngestReportWriter
+    from ..storage.local_client import LocalStorageClient
+    from ..storage.local_progress_tracker import LocalProgressTracker
 
     settings = get_settings()
     source_dir = source_dir or settings.eml_source_dir
@@ -200,47 +198,23 @@ async def _ingest(
         console.print(f"[red]Source directory not found: {source_dir}[/red]")
         raise typer.Exit(1)
 
-    # Initialize components based on mode
-    if local_only:
-        from ..ingest.components import create_local_ingest_components
-        from ..storage.local_client import LocalStorageClient
-        from ..storage.local_progress_tracker import LocalProgressTracker
+    resolved_output = (output_dir or source_dir.parent / "output").resolve()
+    resolved_output.mkdir(parents=True, exist_ok=True)
+    console.print(f"[green]Output: {resolved_output}[/green]")
 
-        resolved_output = (output_dir or source_dir.parent / "output").resolve()
-        resolved_output.mkdir(parents=True, exist_ok=True)
-        console.print(f"[green]Local-only mode: output -> {resolved_output}[/green]")
+    db = LocalStorageClient(output_dir=resolved_output)
+    tracker = LocalProgressTracker(output_dir=resolved_output)
+    unsupported_logger = db
+    version_manager = VersionManager(db)
+    vessels = load_vessels_from_csv()
 
-        db = LocalStorageClient(output_dir=resolved_output)
-        tracker = LocalProgressTracker(output_dir=resolved_output)
-        unsupported_logger = db  # LocalStorageClient has log_unsupported_file()
-        version_manager = VersionManager(db)
-        vessels = await db.get_all_vessels()
-
-        components = create_local_ingest_components(
-            db=db,
-            output_dir=resolved_output,
-            source_dir=source_dir,
-            vessels=vessels,
-            enable_topics=True,
-        )
-    else:
-        from ..ingest.components import create_ingest_components
-        from ..storage.progress_tracker import ProgressTracker
-        from ..storage.supabase_client import SupabaseClient
-        from ..storage.unsupported_file_logger import UnsupportedFileLogger
-
-        db = SupabaseClient()
-        tracker = ProgressTracker(db)
-        unsupported_logger = UnsupportedFileLogger(db)
-        version_manager = VersionManager(db)
-        vessels = await db.get_all_vessels()
-
-        components = create_ingest_components(
-            db=db,
-            source_dir=source_dir,
-            vessels=vessels,
-            enable_topics=True,
-        )
+    components = create_local_ingest_components(
+        db=db,
+        output_dir=resolved_output,
+        source_dir=source_dir,
+        vessels=vessels,
+        enable_topics=True,
+    )
 
     if components.vessel_matcher:
         vprint(f"Loaded {components.vessel_matcher.vessel_count} vessels ({components.vessel_matcher.name_count} names)")
@@ -471,9 +445,8 @@ async def _ingest(
         _show_stats(stats)
         _issue_tracker.show_summary()
 
-        # Write run summary (local-only mode)
-        if local_only:
-            _write_run_summary(resolved_output, run_start, run_start_time, len(files), processed_count, stats)
+        # Write run summary
+        _write_run_summary(resolved_output, run_start, run_start_time, len(files), processed_count, stats)
 
         # Finalize report with stats and cleanup old reports
         report_writer.update_stats(len(files), processed_count)
@@ -481,11 +454,9 @@ async def _ingest(
         console.print(f"\nReport: {report_writer.get_path()}")
 
     finally:
-        # Flush and write manifest for local-only mode
-        if local_only:
-            db.flush()
-            db.write_manifest()
-            console.print(f"[green]Manifest written to {resolved_output / 'manifest.json'}[/green]")
+        db.flush()
+        db.write_manifest()
+        console.print(f"[green]Manifest written to {resolved_output / 'manifest.json'}[/green]")
         await db.close()
 
 

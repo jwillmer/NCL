@@ -8,7 +8,7 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 - **Multi-Format Support:** PDF, DOCX, PPTX, XLSX, CSV, HTML, images, ZIP archives, legacy formats (DOC, XLS, PPT)
 - **Image Understanding:** AI-powered image classification and descriptions via LiteLLM Vision, with local heuristic pre-filtering
 - **Tiered Document Parsing:** Local parsers for simple PDFs (PyMuPDF4LLM), DOCX (python-docx), XLSX (openpyxl), CSV, and HTML; LlamaParse for complex PDFs and legacy formats
-- **Local-Only Ingest:** `--local-only` mode writes to JSONL files instead of Supabase — no cloud database required
+- **Local-First Ingest:** Ingest always writes locally (JSONL + archives); `MTSS import` pushes to Supabase
 - **Contextual Chunking:** LLM-generated document summaries prepended to chunks (35-67% retrieval improvement)
 - **Vector Storage:** Supabase with pgvector for similarity search
 - **Two-Stage Retrieval:** Vector search + cross-encoder reranking (20-35% accuracy improvement)
@@ -26,7 +26,7 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 uv sync
 ```
 
-> **Note:** Simple PDFs, DOCX, XLSX, CSV, and HTML are parsed locally (no API key needed). LlamaParse is used for complex PDFs and legacy formats — requires `LLAMA_CLOUD_API_KEY`. For local-only ingest without Supabase, use `--local-only`.
+> **Note:** Simple PDFs, DOCX, XLSX, CSV, and HTML are parsed locally (no API key needed). LlamaParse is used for complex PDFs and legacy formats — requires `LLAMA_CLOUD_API_KEY`. Ingest always writes locally — Supabase credentials are only needed for `MTSS import`.
 
 ## Running the CLI
 
@@ -59,8 +59,8 @@ MTSS --help
 cp .env.template .env
 
 # 2. Configure your credentials in .env
-#    - SUPABASE_URL, SUPABASE_KEY, SUPABASE_DB_URL (not needed for --local-only)
-#    - OPENROUTER_API_KEY
+#    - OPENROUTER_API_KEY (required for ingest)
+#    - SUPABASE_URL, SUPABASE_KEY, SUPABASE_DB_URL (required for import)
 #    - LLAMA_CLOUD_API_KEY (only needed for complex PDFs and legacy formats)
 #
 # Optional new settings:
@@ -76,11 +76,11 @@ cp .env.template .env
 #    for stable IDs, contextual chunking, and archive links. Existing
 #    databases must be recreated (MTSS clean) or migrated manually.
 
-# 4. Import vessel register (optional - enables vessel filtering)
-uv run MTSS vessels import data/vessel-list.csv
-
-# 5. Ingest emails
+# 4. Ingest emails (always writes locally)
 uv run MTSS ingest --source ./data/emails
+
+# 5. Push local data to Supabase (includes vessels from CSV)
+uv run MTSS import
 
 # 6. Query the system
 uv run MTSS query "What did John say about the project deadline?"
@@ -102,7 +102,8 @@ See the [docs/](docs/) folder for detailed documentation:
 
 | Command | Description |
 |---------|-------------|
-| `uv run MTSS ingest` | Process EML files into the RAG system |
+| `uv run MTSS ingest` | Process EML files into local output |
+| `uv run MTSS import` | Push local output to Supabase |
 | `uv run MTSS query` | Ask questions with AI-generated answers |
 | `uv run MTSS search` | Search without generating an answer |
 | `uv run MTSS stats` | View processing statistics |
@@ -139,14 +140,18 @@ MAX_CONCURRENT_FILES=10 uv run MTSS ingest
 # Lenient mode - continue processing on errors instead of failing documents
 uv run MTSS ingest --lenient
 
-# Local-only mode - write to JSONL files instead of Supabase
-uv run MTSS ingest --local-only --source ./data/emails
+# Custom output directory
+uv run MTSS ingest --output-dir ./my-output --source ./data/emails
 
-# Local-only with custom output directory
-uv run MTSS ingest --local-only --output-dir ./my-output --source ./data/emails
+# Push local data to Supabase
+uv run MTSS import
+
+# Import with options
+uv run MTSS import --skip-archives --verbose
+uv run MTSS import --dry-run  # preview without changes
 ```
 
-**Local-only mode** writes documents, chunks, topics, and processing logs to JSONL files in the output directory. A `manifest.json` is written at the end with embedding model, dimensions, chunk settings, and record counts. No Supabase credentials are needed.
+**Local-first architecture:** Ingest always writes to local JSONL files and archives. No Supabase credentials are needed for ingest. Use `MTSS import` to push local data to Supabase when ready. Import is idempotent — safe to re-run.
 
 ### Data Integrity
 

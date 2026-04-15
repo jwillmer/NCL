@@ -28,7 +28,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Supabase Configuration (optional for --local-only mode)
+    # Supabase Configuration (required for import/query/maintenance commands)
     supabase_url: str | None = Field(default=None, validation_alias="SUPABASE_URL")
     supabase_key: str | None = Field(default=None, validation_alias="SUPABASE_KEY")
     supabase_db_url: str | None = Field(default=None, validation_alias="SUPABASE_DB_URL")

@@ -29,13 +29,13 @@ class SupabaseClient:
         """Initialize Supabase client and repositories.
 
         Raises:
-            ValueError: If Supabase config fields are not set (use --local-only mode instead).
+            ValueError: If Supabase config fields are not set.
         """
         settings = get_settings()
         if not settings.supabase_url or not settings.supabase_key or not settings.supabase_db_url:
             raise ValueError(
                 "SUPABASE_URL, SUPABASE_KEY, and SUPABASE_DB_URL must be set. "
-                "Use --local-only mode if you don't have a Supabase instance."
+                "These are required for import, query, and maintenance commands."
             )
         self.client = create_client(settings.supabase_url, settings.supabase_key)
         self.db_url = settings.supabase_db_url
