@@ -264,60 +264,6 @@ Example response:
             needs_retry=needs_retry,
         )
 
-    def build_retry_hint(self, valid_chunk_ids: List[str]) -> str:
-        """Build a hint for retry prompts listing valid chunk IDs.
-
-        Args:
-            valid_chunk_ids: List of chunk IDs that are valid for citation.
-
-        Returns:
-            Hint string to add to retry prompt.
-        """
-        ids_str = ", ".join(valid_chunk_ids[:20])  # Limit to avoid token bloat
-        return f"\n\nIMPORTANT: Only use these chunk IDs for citations: {ids_str}"
-
-    def format_sources_section(
-        self, citations: List[ValidatedCitation]
-    ) -> str:
-        """Format citations as a sources section for display.
-
-        Args:
-            citations: List of validated citations.
-
-        Returns:
-            Formatted sources section string.
-        """
-        if not citations:
-            return ""
-
-        lines = ["", "**Sources:**"]
-
-        for citation in citations:
-            line_parts = [f"[{citation.index}]"]
-
-            if citation.source_title:
-                line_parts.append(citation.source_title)
-
-            if citation.page:
-                line_parts.append(f"p.{citation.page}")
-
-            if citation.lines:
-                line_parts.append(f"lines {citation.lines[0]}-{citation.lines[1]}")
-
-            # Add links
-            links = []
-            if citation.archive_browse_uri:
-                links.append(f"[View](archive/{citation.archive_browse_uri})")
-            if citation.archive_download_uri:
-                links.append(f"[Download](archive/{citation.archive_download_uri})")
-
-            if links:
-                line_parts.append(" | ".join(links))
-
-            lines.append(" | ".join(line_parts))
-
-        return "\n".join(lines)
-
     def replace_citation_markers(
         self,
         response: str,

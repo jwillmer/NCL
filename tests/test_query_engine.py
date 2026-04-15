@@ -1,15 +1,10 @@
-"""Characterization tests for the RAG query engine."""
+"""Tests for the RAG query engine (search_only and retrieval)."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mtss.models.chunk import (
-    CitationValidationResult,
-    EnhancedRAGResponse,
-    RetrievalResult,
-    ValidatedCitation,
-)
+from mtss.models.chunk import RetrievalResult
 from mtss.rag.query_engine import RAGQueryEngine
 from mtss.rag.retriever import _convert_to_retrieval_results
 
@@ -89,7 +84,6 @@ def mock_settings():
     settings = MagicMock()
     settings.get_model = MagicMock(side_effect=lambda x: x)
     settings.rag_llm_model = "gpt-5-mini"
-    settings.chunk_display_max_chars = 2000
     settings.rerank_enabled = True
     settings.rerank_model = "cohere/rerank-v3.5"
     settings.rerank_top_n = 3
@@ -107,12 +101,9 @@ def patches(mock_settings):
     m = Mocks()
 
     with (
-        patch("mtss.rag.query_engine.get_settings", return_value=mock_settings),
         patch("mtss.rag.query_engine.SupabaseClient") as mock_db_cls,
         patch("mtss.rag.query_engine.EmbeddingGenerator") as mock_emb_cls,
         patch("mtss.rag.query_engine.Reranker") as mock_reranker_cls,
-        patch("mtss.rag.query_engine.CitationProcessor") as mock_citation_cls,
-        patch("mtss.rag.query_engine.get_langfuse_metadata", return_value={}),
     ):
         # SupabaseClient instance
         m.db = mock_db_cls.return_value
@@ -127,150 +118,16 @@ def patches(mock_settings):
         m.reranker = mock_reranker_cls.return_value
         m.reranker.enabled = True
         m.reranker.top_n = 3
-        # By default, rerank_results returns its input sliced to top_n
         m.reranker.rerank_results = AsyncMock(
             side_effect=lambda query, results, top_n=None: results[: top_n or 3]
         )
-
-        # CitationProcessor instance
-        m.citation_proc = mock_citation_cls.return_value
-        m.citation_proc.get_citation_map = MagicMock(return_value={"chunk00000000": MagicMock()})
-        m.citation_proc.build_context = MagicMock(return_value="built-context")
-        m.citation_proc.get_system_prompt = MagicMock(return_value="system-prompt")
-        m.citation_proc.process_response = MagicMock(
-            return_value=CitationValidationResult(
-                response="Answer with citations",
-                citations=[
-                    ValidatedCitation(index=1, chunk_id="chunk00000000", source_title="Test Email"),
-                ],
-                invalid_citations=[],
-                needs_retry=False,
-            )
-        )
-        m.citation_proc.replace_citation_markers = MagicMock(return_value="Final answer [1]")
-        m.citation_proc.format_sources_section = MagicMock(return_value="\n\nSources:\n[1] Test Email")
-        m.citation_proc.build_retry_hint = MagicMock(return_value="\nRetry hint")
 
         m.settings = mock_settings
         yield m
 
 
 # ---------------------------------------------------------------------------
-# 1. test_query_returns_response
-# ---------------------------------------------------------------------------
-
-
-async def test_query_returns_response(patches):
-    """query() returns an EnhancedRAGResponse with answer and citations."""
-    with patch("litellm.completion") as mock_completion:
-        mock_completion.return_value = MagicMock(
-            choices=[MagicMock(message=MagicMock(content="The answer is 42."))]
-        )
-        engine = RAGQueryEngine()
-        response = await engine.query("What is the answer?")
-
-    assert isinstance(response, EnhancedRAGResponse)
-    assert response.query == "What is the answer?"
-    assert "Final answer" in response.answer
-    assert len(response.citations) > 0
-
-
-# ---------------------------------------------------------------------------
-# 2. test_query_no_results
-# ---------------------------------------------------------------------------
-
-
-async def test_query_no_results(patches):
-    """query() returns a canned 'no information' answer when DB returns nothing."""
-    patches.db.search_similar_chunks = AsyncMock(return_value=[])
-
-    engine = RAGQueryEngine()
-    response = await engine.query("Something obscure?")
-
-    assert "couldn't find any relevant information" in response.answer
-    assert response.citations == []
-    assert response.query == "Something obscure?"
-
-
-# ---------------------------------------------------------------------------
-# 3. test_query_with_reranking
-# ---------------------------------------------------------------------------
-
-
-async def test_query_with_reranking(patches):
-    """Reranker is called when enabled and result count exceeds effective_top_n."""
-    patches.db.search_similar_chunks = AsyncMock(return_value=_make_db_rows(5))
-
-    with patch("litellm.completion") as mock_completion:
-        mock_completion.return_value = MagicMock(
-            choices=[MagicMock(message=MagicMock(content="Reranked answer."))]
-        )
-        engine = RAGQueryEngine()
-        await engine.query("budget?", use_rerank=True)
-
-    patches.reranker.rerank_results.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# 4. test_query_skips_reranking_when_disabled
-# ---------------------------------------------------------------------------
-
-
-async def test_query_skips_reranking_when_disabled(patches):
-    """Reranker is bypassed when use_rerank=False."""
-    patches.db.search_similar_chunks = AsyncMock(return_value=_make_db_rows(5))
-
-    with patch("litellm.completion") as mock_completion:
-        mock_completion.return_value = MagicMock(
-            choices=[MagicMock(message=MagicMock(content="No rerank."))]
-        )
-        engine = RAGQueryEngine()
-        await engine.query("budget?", use_rerank=False)
-
-    patches.reranker.rerank_results.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 5. test_query_with_citations_returns_enhanced_response
-# ---------------------------------------------------------------------------
-
-
-async def test_query_with_citations_returns_enhanced_response(patches):
-    """query_with_citations() returns an EnhancedRAGResponse with citations."""
-    with patch("litellm.completion") as mock_completion:
-        mock_completion.return_value = MagicMock(
-            choices=[MagicMock(message=MagicMock(content="Answer [C:chunk00000000]."))]
-        )
-        engine = RAGQueryEngine()
-        response = await engine.query_with_citations("What happened?")
-
-    assert isinstance(response, EnhancedRAGResponse)
-    assert response.query == "What happened?"
-    assert "Final answer" in response.answer
-    assert len(response.citations) == 1
-    assert response.citations[0].chunk_id == "chunk00000000"
-    assert response.retry_count == 0
-
-
-# ---------------------------------------------------------------------------
-# 6. test_query_with_citations_no_results
-# ---------------------------------------------------------------------------
-
-
-async def test_query_with_citations_no_results(patches):
-    """query_with_citations() returns canned answer when DB is empty."""
-    patches.db.search_similar_chunks = AsyncMock(return_value=[])
-
-    engine = RAGQueryEngine()
-    response = await engine.query_with_citations("Anything?")
-
-    assert isinstance(response, EnhancedRAGResponse)
-    assert "couldn't find any relevant information" in response.answer
-    assert response.citations == []
-
-
-# ---------------------------------------------------------------------------
-# 7. test_search_only_returns_retrieval_results
+# test_search_only_returns_retrieval_results
 # ---------------------------------------------------------------------------
 
 
@@ -287,7 +144,7 @@ async def test_search_only_returns_retrieval_results(patches):
 
 
 # ---------------------------------------------------------------------------
-# 8. test_search_only_with_metadata_filter
+# test_search_only_with_metadata_filter
 # ---------------------------------------------------------------------------
 
 
@@ -302,64 +159,7 @@ async def test_search_only_with_metadata_filter(patches):
 
 
 # ---------------------------------------------------------------------------
-# 9. test_context_header_format
-# ---------------------------------------------------------------------------
-
-
-async def test_context_header_format(patches):
-    """_build_context_header() produces the expected bracket-delimited format."""
-    engine = RAGQueryEngine()
-
-    result = RetrievalResult(
-        text="Some text",
-        score=0.9,
-        chunk_id="abc123def456",
-        doc_id="doc-001",
-        source_id="src-001",
-        source_title="Budget Review",
-        section_path=["Overview", "Q2"],
-        file_path="/emails/budget.eml",
-        email_subject="Budget Review",
-        email_participants=["alice@example.com", "bob@example.com", "carol@example.com", "dave@example.com"],
-    )
-
-    header = engine._build_context_header(result)
-
-    assert header.startswith("[Source: ")
-    assert header.endswith("]")
-    assert "Email: Budget Review" in header
-    assert "Participants: alice@example.com, bob@example.com, carol@example.com (+1 more)" in header
-    assert "File: /emails/budget.eml" in header
-    assert "Section: Overview > Q2" in header
-
-
-# ---------------------------------------------------------------------------
-# 10. test_generate_answer_prompt_structure
-# ---------------------------------------------------------------------------
-
-
-async def test_generate_answer_prompt_structure(patches):
-    """_generate_answer_with_citations() calls litellm.completion with system + user messages."""
-    with patch("litellm.completion") as mock_completion:
-        mock_completion.return_value = MagicMock(
-            choices=[MagicMock(message=MagicMock(content="LLM says hello."))]
-        )
-        engine = RAGQueryEngine()
-        result = await engine._generate_answer_with_citations("my question", "my context")
-
-    assert result == "LLM says hello."
-
-    call_kwargs = mock_completion.call_args.kwargs
-    messages = call_kwargs["messages"]
-    assert len(messages) == 2
-    assert messages[0]["role"] == "system"
-    assert messages[1]["role"] == "user"
-    assert "my question" in messages[1]["content"]
-    assert "my context" in messages[1]["content"]
-
-
-# ---------------------------------------------------------------------------
-# 11. test_convert_to_retrieval_results
+# test_convert_to_retrieval_results
 # ---------------------------------------------------------------------------
 
 
@@ -396,7 +196,7 @@ async def test_convert_to_retrieval_results(patches):
 
 
 # ---------------------------------------------------------------------------
-# 12. test_retrieval_result_serialization
+# test_retrieval_result_serialization
 # ---------------------------------------------------------------------------
 
 
@@ -431,7 +231,7 @@ def test_retrieval_result_serialization():
 
 
 # ---------------------------------------------------------------------------
-# 13. test_context_summary_in_retrieval_result
+# test_context_summary_in_retrieval_result
 # ---------------------------------------------------------------------------
 
 
@@ -459,7 +259,7 @@ async def test_context_summary_none_when_missing(patches):
 
 
 # ---------------------------------------------------------------------------
-# 14. test_context_summary_serialization
+# test_context_summary_serialization
 # ---------------------------------------------------------------------------
 
 
@@ -483,7 +283,7 @@ def test_context_summary_serialization():
 
 
 # ---------------------------------------------------------------------------
-# 15. test_hybrid_search_passes_query_text
+# test_hybrid_search_passes_query_text
 # ---------------------------------------------------------------------------
 
 

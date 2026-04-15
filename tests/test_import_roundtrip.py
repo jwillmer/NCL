@@ -20,41 +20,36 @@ from mtss.models.document import (
     ProcessingStatus,
 )
 from mtss.models.topic import Topic
-from mtss.storage.local_client import LocalStorageClient
 
 
 def _roundtrip_doc(doc: Document) -> Document:
     """Serialize a Document to dict, dump/load JSON, deserialize back."""
-    from mtss.cli.import_cmd import _dict_to_document
+    from mtss.models.serializers import dict_to_document, doc_to_dict
 
-    client = LocalStorageClient.__new__(LocalStorageClient)
-    d = client._doc_to_dict(doc)
-    # Simulate JSONL roundtrip
+    d = doc_to_dict(doc)
     json_str = json.dumps(d, default=str)
     d2 = json.loads(json_str)
-    return _dict_to_document(d2)
+    return dict_to_document(d2)
 
 
 def _roundtrip_chunk(chunk: Chunk) -> Chunk:
     """Serialize a Chunk to dict, dump/load JSON, deserialize back."""
-    from mtss.cli.import_cmd import _dict_to_chunk
+    from mtss.models.serializers import chunk_to_dict, dict_to_chunk
 
-    client = LocalStorageClient.__new__(LocalStorageClient)
-    d = client._chunk_to_dict(chunk)
+    d = chunk_to_dict(chunk)
     json_str = json.dumps(d, default=str)
     d2 = json.loads(json_str)
-    return _dict_to_chunk(d2)
+    return dict_to_chunk(d2)
 
 
 def _roundtrip_topic(topic: Topic) -> Topic:
     """Serialize a Topic to dict, dump/load JSON, deserialize back."""
-    from mtss.cli.import_cmd import _dict_to_topic
+    from mtss.models.serializers import dict_to_topic, topic_to_dict
 
-    client = LocalStorageClient.__new__(LocalStorageClient)
-    d = client._topic_to_dict(topic)
+    d = topic_to_dict(topic)
     json_str = json.dumps(d, default=str)
     d2 = json.loads(json_str)
-    return _dict_to_topic(d2)
+    return dict_to_topic(d2)
 
 
 class TestDocumentRoundtrip:

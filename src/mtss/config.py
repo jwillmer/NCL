@@ -133,7 +133,6 @@ class Settings(BaseSettings):
     )
 
     # Processing Options
-    batch_size: int = Field(default=10, validation_alias="BATCH_SIZE")
     max_concurrent_embeddings: int = Field(
         default=5, validation_alias="MAX_CONCURRENT_EMBEDDINGS"
     )
@@ -143,11 +142,6 @@ class Settings(BaseSettings):
     max_concurrent_llamaparse: int = Field(
         default=5, validation_alias="MAX_CONCURRENT_LLAMAPARSE"
     )
-    enable_ocr: bool = Field(default=True, validation_alias="ENABLE_OCR")
-    enable_picture_description: bool = Field(
-        default=True, validation_alias="ENABLE_PICTURE_DESCRIPTION"
-    )
-
     # Reranker Configuration
     rerank_enabled: bool = Field(default=True, validation_alias="RERANK_ENABLED")
     rerank_model: str = Field(
@@ -234,11 +228,6 @@ class Settings(BaseSettings):
         if ".." in str(v):
             raise ValueError(f"Path traversal detected in path: {v}")
         return v
-
-    # Chunk content display truncation (for source references in responses)
-    chunk_display_max_chars: int = Field(
-        default=500, validation_alias="CHUNK_DISPLAY_MAX_CHARS"
-    )
 
     # API Configuration
     api_host: str = Field(default="0.0.0.0", validation_alias="API_HOST")

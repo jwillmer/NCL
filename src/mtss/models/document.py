@@ -35,7 +35,6 @@ class ProcessingStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
-    SKIPPED = "skipped"
 
 
 class EmailMessage(BaseModel):

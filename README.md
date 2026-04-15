@@ -82,10 +82,7 @@ uv run MTSS ingest --source ./data/emails
 # 5. Push local data to Supabase (includes vessels from CSV)
 uv run MTSS import
 
-# 6. Query the system
-uv run MTSS query "What did John say about the project deadline?"
-
-# 7. Search without generating answer
+# 6. Search for relevant documents
 uv run MTSS search "budget allocation" --top-k 10
 ```
 
@@ -104,8 +101,7 @@ See the [docs/](docs/) folder for detailed documentation:
 |---------|-------------|
 | `uv run MTSS ingest` | Process EML files into local output |
 | `uv run MTSS import` | Push local output to Supabase |
-| `uv run MTSS query` | Ask questions with AI-generated answers |
-| `uv run MTSS search` | Search without generating an answer |
+| `uv run MTSS search` | Search for relevant documents |
 | `uv run MTSS stats` | View processing statistics |
 | `uv run MTSS failures` | View/export ingest reports |
 | `uv run MTSS reset-stale` | Reset files stuck in processing |

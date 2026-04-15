@@ -209,13 +209,8 @@ async def _reprocess(target_version: int | None, limit: int, dry_run: bool):
         candidates = await version_manager.get_reprocess_candidates(version, limit)
         console.print(f"[yellow]Processing {len(candidates)} documents...[/yellow]")
 
-        # TODO: Implement actual reprocessing logic
-        # This would involve:
-        # 1. Deleting old chunks for each document
-        # 2. Re-parsing the source file
-        # 3. Regenerating chunks with new context
-        # 4. Updating the document's ingest_version
-        console.print("[red]Reprocessing logic not yet implemented - use 'MTSS clean' and re-ingest[/red]")
+        console.print("[red]Reprocessing not yet implemented — use 'MTSS clean' followed by 'MTSS ingest' + 'MTSS import'.[/red]")
+        raise typer.Exit(1)
 
     finally:
         await db.close()

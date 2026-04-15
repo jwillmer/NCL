@@ -282,53 +282,6 @@ def test_replace_citation_markers(processor: CitationProcessor):
 
 
 # ---------------------------------------------------------------------------
-# 9. test_format_sources_section
-# ---------------------------------------------------------------------------
-
-
-def test_format_sources_section(processor: CitationProcessor):
-    """Formatted sources section contains title, page, lines, and links."""
-    citations = [
-        ValidatedCitation(
-            index=1,
-            chunk_id="aabbccddeeff",
-            source_title="Survey Report",
-            page=3,
-            lines=(100, 120),
-            archive_browse_uri="docs/survey.md",
-            archive_download_uri="docs/survey.pdf",
-            archive_verified=True,
-        ),
-        ValidatedCitation(
-            index=2,
-            chunk_id="112233445566",
-            source_title="Budget Memo",
-            page=None,
-            lines=None,
-            archive_browse_uri=None,
-            archive_download_uri=None,
-            archive_verified=False,
-        ),
-    ]
-
-    section = processor.format_sources_section(citations)
-
-    assert "**Sources:**" in section
-    # First citation
-    assert "[1]" in section
-    assert "Survey Report" in section
-    assert "p.3" in section
-    assert "lines 100-120" in section
-    assert "[View](archive/docs/survey.md)" in section
-    assert "[Download](archive/docs/survey.pdf)" in section
-    # Second citation — no page/lines/links
-    assert "[2]" in section
-    assert "Budget Memo" in section
-    # Empty list returns empty string
-    assert processor.format_sources_section([]) == ""
-
-
-# ---------------------------------------------------------------------------
 # 10. test_process_response_no_citations
 # ---------------------------------------------------------------------------
 

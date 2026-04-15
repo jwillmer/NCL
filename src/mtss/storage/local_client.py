@@ -16,6 +16,8 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from ..models.serializers import chunk_to_dict, doc_to_dict, topic_to_dict
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,81 +111,15 @@ class LocalStorageClient:
 
     def _doc_to_dict(self, doc: Any) -> Dict[str, Any]:
         """Convert Document model to dictionary for JSONL serialization."""
-        email_meta = getattr(doc, "email_metadata", None)
-        att_meta = getattr(doc, "attachment_metadata", None)
-        return {
-            "id": str(doc.id),
-            "source_id": doc.source_id,
-            "doc_id": doc.doc_id,
-            "content_version": getattr(doc, "content_version", 1),
-            "ingest_version": doc.ingest_version,
-            "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else doc.document_type,
-            "file_path": doc.file_path,
-            "file_name": doc.file_name,
-            "file_hash": doc.file_hash,
-            "parent_id": str(doc.parent_id) if doc.parent_id else None,
-            "root_id": str(doc.root_id) if doc.root_id else None,
-            "depth": doc.depth,
-            "path": getattr(doc, "path", []),
-            "source_title": doc.source_title,
-            "archive_path": getattr(doc, "archive_path", None),
-            "archive_browse_uri": doc.archive_browse_uri,
-            "archive_download_uri": doc.archive_download_uri,
-            "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
-            "error_message": getattr(doc, "error_message", None),
-            "processed_at": doc.processed_at.isoformat() if getattr(doc, "processed_at", None) else None,
-            "created_at": doc.created_at.isoformat() if getattr(doc, "created_at", None) else None,
-            "updated_at": doc.updated_at.isoformat() if getattr(doc, "updated_at", None) else None,
-            # Email metadata
-            "email_subject": email_meta.subject if email_meta else None,
-            "email_participants": email_meta.participants if email_meta else None,
-            "email_initiator": email_meta.initiator if email_meta else None,
-            "email_date_start": email_meta.date_start.isoformat() if email_meta and email_meta.date_start else None,
-            "email_date_end": email_meta.date_end.isoformat() if email_meta and email_meta.date_end else None,
-            "email_message_count": email_meta.message_count if email_meta else None,
-            # Attachment metadata
-            "attachment_content_type": att_meta.content_type if att_meta else None,
-            "attachment_size_bytes": att_meta.size_bytes if att_meta else None,
-        }
+        return doc_to_dict(doc)
 
     def _chunk_to_dict(self, chunk: Any) -> Dict[str, Any]:
         """Convert Chunk model to dictionary."""
-        return {
-            "id": str(chunk.id),
-            "document_id": str(chunk.document_id),
-            "chunk_id": chunk.chunk_id,
-            "content": chunk.content,
-            "chunk_index": chunk.chunk_index,
-            "context_summary": chunk.context_summary,
-            "embedding_text": chunk.embedding_text,
-            "section_path": chunk.section_path,
-            "section_title": chunk.section_title,
-            "source_title": chunk.source_title,
-            "source_id": chunk.source_id,
-            "line_from": chunk.line_from,
-            "line_to": chunk.line_to,
-            "char_start": chunk.char_start,
-            "char_end": chunk.char_end,
-            "archive_browse_uri": chunk.archive_browse_uri,
-            "archive_download_uri": chunk.archive_download_uri,
-            "metadata": chunk.metadata,
-            "embedding": chunk.embedding,
-            "page_number": getattr(chunk, "page_number", None),
-        }
+        return chunk_to_dict(chunk)
 
     def _topic_to_dict(self, topic: Any) -> Dict[str, Any]:
         """Convert Topic model to dictionary."""
-        return {
-            "id": str(topic.id),
-            "name": topic.name,
-            "display_name": getattr(topic, "display_name", topic.name),
-            "description": getattr(topic, "description", None),
-            "embedding": getattr(topic, "embedding", None),
-            "chunk_count": getattr(topic, "chunk_count", 0),
-            "document_count": getattr(topic, "document_count", 0),
-            "created_at": topic.created_at.isoformat() if getattr(topic, "created_at", None) else None,
-            "updated_at": topic.updated_at.isoformat() if getattr(topic, "updated_at", None) else None,
-        }
+        return topic_to_dict(topic)
 
     @staticmethod
     def _cosine_similarity(a, b) -> float:
