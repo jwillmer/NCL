@@ -48,11 +48,22 @@ class VesselFilters(BaseModel):
     vessel_class: Optional[str] = None
 
 
+class MessagePart(BaseModel):
+    """A single part of a Vercel AI SDK UIMessage."""
+
+    type: str
+    text: str
+
+
 class Message(BaseModel):
-    """A single chat message from the frontend."""
+    """A single chat message (Vercel AI SDK UIMessage format)."""
 
     role: str
-    content: str
+    parts: List[MessagePart] = Field(..., min_length=1)
+
+    @property
+    def content(self) -> str:
+        return "\n".join(p.text for p in self.parts if p.type == "text")
 
 
 class AgentRequest(BaseModel):
