@@ -113,8 +113,8 @@ async def _import_data(
     console.print(f"Importing from: {resolved_output}")
 
     db = SupabaseClient()
-    totals = {"vessels": 0, "topics": 0, "documents": 0, "chunks": 0, "archives": 0}
-    changes = {"new_documents": 0, "new_chunks": 0, "new_archives": 0,
+    totals = {"vessels": 0, "topics": 0, "documents": 0, "chunks": 0, "archive folders": 0, "archive files": 0}
+    changes = {"new_documents": 0, "new_chunks": 0, "new_archive files": 0,
                "topics_removed": 0, "orphans_removed": 0, "failed": 0}
 
     try:
@@ -139,12 +139,10 @@ async def _import_data(
         summary.add_column("Resource", style="cyan")
         summary.add_column("Total", justify="right", style="green")
         summary.add_column("New", justify="right", style="dim")
-        for key in ("vessels", "topics", "documents", "chunks", "archives"):
+        for key in ("vessels", "topics", "documents", "chunks", "archive folders", "archive files"):
             total = totals.get(key, 0)
-            new_key = f"new_{key}"
-            new = changes.get(new_key, 0)
-            new_str = str(new) if new > 0 else ""
-            summary.add_row(key, str(total) if total else "", new_str)
+            new = changes.get(f"new_{key}", 0)
+            summary.add_row(key, str(total) if total else "", str(new) if new else "")
         # Changes row for removals/failures
         for key in ("topics_removed", "orphans_removed", "failed"):
             count = changes.get(key, 0)
@@ -402,7 +400,8 @@ async def _import_archives(archive_dir: Path, totals, changes, dry_run, remove_o
             console.print("[dim]No archive files to upload.[/dim]")
         return
 
-    totals["archives"] = total_local
+    totals["archive folders"] = len(local_by_folder)
+    totals["archive files"] = total_local
     if dry_run:
         console.print(f"Would upload up to {total_local} archive files...")
         return
@@ -466,7 +465,7 @@ async def _import_archives(archive_dir: Path, totals, changes, dry_run, remove_o
                 try:
                     content_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
                     storage.upload_file(rel_key, local_path.read_bytes(), content_type)
-                    changes["new_archives"] += 1
+                    changes["new_archive files"] += 1
                 except Exception as e:
                     logger.warning(f"Failed to upload {rel_key}: {e}")
                     changes["failed"] += 1
