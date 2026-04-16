@@ -71,10 +71,19 @@ class LocalProgressTracker:
     async def mark_completed(self, file_path: Path):
         """Mark a file as successfully processed."""
         entry = self._entries.get(str(file_path), {})
+        now = datetime.now(timezone.utc)
+        duration = None
+        if entry.get("started_at"):
+            try:
+                started = datetime.fromisoformat(entry["started_at"])
+                duration = round((now - started).total_seconds(), 1)
+            except (ValueError, TypeError):
+                pass
         entry.update({
             "file_path": str(file_path),
             "status": "COMPLETED",
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": now.isoformat(),
+            "duration_seconds": duration,
             "error": None,
         })
         self._save_entry(entry)
