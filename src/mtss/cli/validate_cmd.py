@@ -313,10 +313,10 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
         ev_table.add_column("Count", justify="right", style="green")
         for et, count in event_types.most_common():
             ev_table.add_row(et, str(count))
-            # Show reason breakdown indented below
+            # Show reason breakdown indented below (skip if reason == event_type)
             reason_counts = Counter(
                 e.get("reason") for e in events
-                if e.get("event_type") == et and e.get("reason")
+                if e.get("event_type") == et and e.get("reason") and e.get("reason") != et
             )
             for reason, rc in reason_counts.most_common():
                 ev_table.add_row(f"  {reason}", str(rc))
