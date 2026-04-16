@@ -198,6 +198,7 @@ async def _ingest(
     resolved_output.mkdir(parents=True, exist_ok=True)
     console.print(f"[green]Output: {resolved_output}[/green]")
 
+    console.print("[dim]Loading prior data...[/dim]", end="\r")
     db = LocalStorageClient(output_dir=resolved_output)
     tracker = LocalProgressTracker(output_dir=resolved_output)
     unsupported_logger = db
@@ -228,6 +229,7 @@ async def _ingest(
 
     try:
         # Get files to process
+        console.print("[dim]Scanning files...[/dim]", end="\r")
         if reprocess_outdated:
             files = await tracker.get_outdated_files(source_dir, settings.current_ingest_version)
             console.print(f"[yellow]Reprocessing {len(files)} outdated files (ingest_version < {settings.current_ingest_version})[/yellow]")

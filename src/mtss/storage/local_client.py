@@ -708,6 +708,25 @@ class LocalStorageClient:
                     continue
                 f.write(json.dumps(self._topic_to_dict(topic), default=str) + "\n")
 
+        # Remove orphan archive folders (on disk but not in documents)
+        archive_dir = self.output_dir / "archive"
+        if archive_dir.exists():
+            valid_folder_ids = set()
+            with open(docs_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            d = json.loads(line)
+                            if d.get("document_type") == "email" and d.get("doc_id"):
+                                valid_folder_ids.add(d["doc_id"][:16])
+                        except json.JSONDecodeError:
+                            pass
+            import shutil
+            for folder in archive_dir.iterdir():
+                if folder.is_dir() and folder.name not in valid_folder_ids:
+                    logger.info(f"Removing orphan archive folder: {folder.name}")
+                    shutil.rmtree(folder)
+
     async def persist_ingest_result(
         self,
         email_doc,

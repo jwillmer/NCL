@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 import typer
 from rich.table import Table
 
-from ._common import console
+from ._common import console, make_progress
 
 # Hidden/system files to exclude from archive file counts
 _HIDDEN_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
@@ -756,21 +756,24 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
             local_folder_ids = {d["doc_id"][:16] for d in root_docs}
             orphan_folders = sorted(all_remote_folders - local_folder_ids)
 
-            for d in root_docs:
-                # Archive folders use first 16 chars of doc_id
-                folder_id = d["doc_id"][:16]
+            folder_ids = [d["doc_id"][:16] for d in root_docs]
+            remote_keys_by_folder: Dict[str, set[str]] = {}
+            with make_progress() as progress:
+                task_id = progress.add_task(f"Checking {len(folder_ids)} archive folders", total=len(folder_ids))
+                for folder_id in folder_ids:
+                    keys: set[str] = set()
+                    for subfolder in (folder_id, f"{folder_id}/attachments"):
+                        try:
+                            for f in storage.bucket.list(subfolder):
+                                name = f.get("name")
+                                if name and f.get("id"):
+                                    keys.add(f"{subfolder}/{name}")
+                        except Exception:
+                            pass
+                    remote_keys_by_folder[folder_id] = keys
+                    progress.advance(task_id)
 
-                # List remote files with full subfolder paths
-                remote_keys: set[str] = set()
-                for subfolder in (folder_id, f"{folder_id}/attachments"):
-                    try:
-                        for f in storage.bucket.list(subfolder):
-                            name = f.get("name")
-                            if name and f.get("id"):
-                                remote_keys.add(f"{subfolder}/{name}")
-                    except Exception:
-                        pass
-
+            for folder_id, remote_keys in remote_keys_by_folder.items():
                 remote_count = len(remote_keys)
                 remote_archive_files += remote_count
                 local_keys = local_keys_by_folder.get(folder_id, set())
@@ -778,7 +781,6 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
                 if remote_count == 0:
                     archive_missing.append(folder_id)
                 else:
-                    # Detect orphan files: in remote but not local
                     orphans = remote_keys - local_keys
                     if orphans:
                         archive_orphans.extend(orphans)
@@ -810,7 +812,7 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
 
         if orphan_folders:
             warnings.append(
-                f"{len(orphan_folders)} orphan folders in storage (not in local data) — run 'mtss import --remove-orphans' to remove"
+                f"{len(orphan_folders)} orphan folders in storage (not in local data) — will be cleaned up on next import run"
             )
             if verbose:
                 for folder in orphan_folders[:20]:

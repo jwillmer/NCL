@@ -189,10 +189,12 @@ class ArchiveStorage:
             folder = doc_id
             paths: List[str] = []
 
-            # List files in root folder
+            # List files in root folder (skip subfolder entries which have id=null)
             try:
                 files = self.bucket.list(folder)
                 for f in files:
+                    if not f.get("id"):
+                        continue
                     if preserve_md and f["name"].endswith(".md"):
                         continue
                     paths.append(f"{folder}/{f['name']}")
@@ -203,6 +205,8 @@ class ArchiveStorage:
             try:
                 att_files = self.bucket.list(f"{folder}/attachments")
                 for f in att_files:
+                    if not f.get("id"):
+                        continue
                     if preserve_md and f["name"].endswith(".md"):
                         continue
                     paths.append(f"{folder}/attachments/{f['name']}")

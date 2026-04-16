@@ -49,11 +49,6 @@ def register(app: typer.Typer):
             "-n",
             help="Show what would be imported without making changes",
         ),
-        remove_orphans: bool = typer.Option(
-            False,
-            "--remove-orphans",
-            help="Remove orphan archive folders/files from Supabase Storage (leftovers from previous imports)",
-        ),
         verbose: bool = typer.Option(
             False,
             "--verbose",
@@ -66,7 +61,7 @@ def register(app: typer.Typer):
         Reads the local output directory (JSONL files + archive/) and
         imports everything into Supabase. Safe to re-run (idempotent).
         """
-        asyncio.run(_import_data(output_dir, skip_archives, skip_vessels, dry_run, remove_orphans, verbose))
+        asyncio.run(_import_data(output_dir, skip_archives, skip_vessels, dry_run, verbose))
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +88,6 @@ async def _import_data(
     skip_archives: bool,
     skip_vessels: bool,
     dry_run: bool,
-    remove_orphans: bool,
     verbose: bool,
 ):
     """Async implementation of import command."""
@@ -124,10 +118,17 @@ async def _import_data(
         await _import_topics(db, resolved_output, totals, changes, dry_run, verbose)
         await _import_documents(db, resolved_output, totals, changes, dry_run, verbose)
 
+        await _remove_db_orphans(db, resolved_output, changes, dry_run, verbose)
+
         if not skip_archives:
             archive_dir = resolved_output / "archive"
             if archive_dir.exists():
-                await _import_archives(archive_dir, totals, changes, dry_run, remove_orphans, verbose)
+                docs_data = _read_jsonl(resolved_output / "documents.jsonl")
+                local_doc_folder_ids = {
+                    d["doc_id"][:16] for d in docs_data
+                    if d.get("doc_id") and d.get("document_type") == "email"
+                }
+                await _import_archives(archive_dir, local_doc_folder_ids, totals, changes, dry_run, verbose)
             elif verbose:
                 console.print("[dim]No archive/ directory found, skipping.[/dim]")
 
@@ -373,7 +374,39 @@ async def _import_documents(db, output_dir, totals, changes, dry_run, verbose):
             progress.update(task_id, advance=1)
 
 
-async def _import_archives(archive_dir: Path, totals, changes, dry_run, remove_orphans, verbose):
+async def _remove_db_orphans(db, output_dir: Path, changes, dry_run, verbose):
+    """Remove documents and chunks from Supabase that no longer exist locally."""
+    local_doc_ids = set()
+    for line in open(output_dir / "documents.jsonl", encoding="utf-8"):
+        if line.strip():
+            d = json.loads(line)
+            if d.get("doc_id"):
+                local_doc_ids.add(d["doc_id"])
+
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        remote_rows = await conn.fetch("SELECT id, doc_id FROM documents")
+
+    remote_by_doc_id = {r["doc_id"]: r["id"] for r in remote_rows if r["doc_id"]}
+    orphan_doc_ids = set(remote_by_doc_id.keys()) - local_doc_ids
+
+    if not orphan_doc_ids:
+        return
+
+    orphan_uuids = [remote_by_doc_id[did] for did in orphan_doc_ids]
+    if dry_run:
+        console.print(f"[yellow]Would remove {len(orphan_doc_ids)} orphan documents from database[/yellow]")
+        return
+
+    console.print(f"Removing {len(orphan_doc_ids)} orphan documents from database...")
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM chunks WHERE document_id = ANY($1::uuid[])", orphan_uuids)
+        await conn.execute("DELETE FROM documents WHERE id = ANY($1::uuid[])", orphan_uuids)
+    console.print(f"  [green]Removed {len(orphan_doc_ids)} orphan documents and their chunks[/green]")
+    changes["orphans_removed"] += len(orphan_doc_ids)
+
+
+async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals, changes, dry_run, verbose):
     """Upload archive files to Supabase Storage, skipping files that already exist."""
     from ..storage.archive_storage import ArchiveStorage
 
@@ -423,32 +456,23 @@ async def _import_archives(archive_dir: Path, totals, changes, dry_run, remove_o
     # Pre-fetch existing files per folder to skip already-uploaded files.
     # List root and attachments/ separately to build correct full paths.
     # Uses thread pool since storage3 SDK is synchronous.
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     existing_keys: set[str] = set()
     subfolders = []
     for folder_id in local_by_folder:
         subfolders.append(folder_id)
         subfolders.append(f"{folder_id}/attachments")
 
-    def _list_subfolder(subfolder: str) -> list[str]:
-        keys: list[str] = []
-        try:
-            for f in storage.bucket.list(subfolder):
-                name = f.get("name")
-                if name and f.get("id"):
-                    keys.append(f"{subfolder}/{name}")
-        except Exception:
-            pass  # Folder may not exist yet
-        return keys
-
     with make_progress() as progress:
         task_id = progress.add_task(f"Checking {len(local_by_folder)} folders", total=len(subfolders))
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            futures = {pool.submit(_list_subfolder, sf): sf for sf in subfolders}
-            for future in as_completed(futures):
-                existing_keys.update(future.result())
-                progress.advance(task_id)
+        for subfolder in subfolders:
+            try:
+                for f in storage.bucket.list(subfolder):
+                    name = f.get("name")
+                    if name and f.get("id"):
+                        existing_keys.add(f"{subfolder}/{name}")
+            except Exception:
+                pass  # Folder may not exist yet
+            progress.advance(task_id)
 
     # Build set of expected local keys for orphan detection
     local_keys = {rel_key for files in local_by_folder.values() for _, rel_key in files}
@@ -465,20 +489,20 @@ async def _import_archives(archive_dir: Path, totals, changes, dry_run, remove_o
 
     # Detect orphan folders: list all root-level folders in bucket, compare to local
     orphan_folder_ids: List[str] = []
-    if remove_orphans:
-        all_remote_folders: set[str] = set()
-        offset = 0
-        page_size = 100
-        while True:
-            page = storage.bucket.list("", {"limit": page_size, "offset": offset})
-            for f in page:
-                name = f.get("name")
-                if name and not f.get("id"):  # folders have id=null
-                    all_remote_folders.add(name)
-            if len(page) < page_size:
-                break
-            offset += page_size
-        orphan_folder_ids = sorted(all_remote_folders - set(local_by_folder.keys()))
+    all_remote_folders: set[str] = set()
+    offset = 0
+    page_size = 100
+    while True:
+        page = storage.bucket.list("", {"limit": page_size, "offset": offset})
+        for f in page:
+            name = f.get("name")
+            if name and not f.get("id"):  # folders have id=null
+                all_remote_folders.add(name)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    # Compare against documents.jsonl doc_ids, not just disk folders
+    orphan_folder_ids = sorted(all_remote_folders - local_doc_folder_ids)
 
     if not files_to_upload and not orphan_keys and not orphan_folder_ids:
         console.print(f"Archives up to date ({total_local} files already in storage)")
@@ -500,24 +524,16 @@ async def _import_archives(archive_dir: Path, totals, changes, dry_run, remove_o
                 progress.update(task_id, advance=1)
 
     if orphan_keys:
-        if remove_orphans:
-            console.print(f"Removing {len(orphan_keys)} orphan archive files...")
-            removed = 0
-            try:
-                storage.bucket.remove(list(orphan_keys))
-                removed = len(orphan_keys)
-            except Exception as e:
-                logger.warning(f"Failed to remove orphan files: {e}")
-            if removed:
-                console.print(f"  [green]Removed {removed} orphan files[/green]")
-            changes["orphans_removed"] += removed
-        else:
-            console.print(f"[yellow]{len(orphan_keys)} orphan archive files detected (use --remove-orphans to remove)[/yellow]")
-            if verbose:
-                for key in sorted(orphan_keys)[:10]:
-                    console.print(f"  [dim]{key}[/dim]")
-                if len(orphan_keys) > 10:
-                    console.print(f"  [dim]... and {len(orphan_keys) - 10} more[/dim]")
+        console.print(f"Removing {len(orphan_keys)} orphan archive files...")
+        removed = 0
+        try:
+            storage.bucket.remove(list(orphan_keys))
+            removed = len(orphan_keys)
+        except Exception as e:
+            logger.warning(f"Failed to remove orphan files: {e}")
+        if removed:
+            console.print(f"  [green]Removed {removed} orphan files[/green]")
+        changes["orphans_removed"] += removed
 
     if orphan_folder_ids:
         console.print(f"Removing {len(orphan_folder_ids)} orphan folders...")
