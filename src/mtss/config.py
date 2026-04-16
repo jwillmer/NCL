@@ -128,8 +128,9 @@ class Settings(BaseSettings):
     #   2 - Added line numbers
     #   3 - Added context summaries
     #   4 - Added topic extraction
+    #   5 - Sanitized archive keys (underscores), stripped LlamaParse image refs
     current_ingest_version: int = Field(
-        default=4, validation_alias="CURRENT_INGEST_VERSION"
+        default=5, validation_alias="CURRENT_INGEST_VERSION"
     )
 
     # Processing Options
