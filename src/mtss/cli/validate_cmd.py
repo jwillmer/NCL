@@ -317,6 +317,61 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
             f"{len(emails_without_folder)} emails have no archive folder on disk"
         )
 
+    # === 14. Stale topic references in chunk metadata ===
+    topic_id_set = {t["id"] for t in topics}
+    stale_topic_chunks = 0
+    stale_topic_ids: set[str] = set()
+    for c in chunks:
+        tids = (c.get("metadata") or {}).get("topic_ids", [])
+        for tid in tids:
+            if tid not in topic_id_set:
+                stale_topic_chunks += 1
+                stale_topic_ids.add(tid)
+    if stale_topic_chunks:
+        issues.append(
+            f"{stale_topic_chunks} chunk topic_ids reference {len(stale_topic_ids)} "
+            f"non-existent topics (stale from merges)"
+        )
+
+    # === 15. Topic count accuracy (JSONL counts vs actual chunk refs) ===
+    from collections import Counter as _Counter
+    _topic_cc = _Counter()
+    _topic_ds: Dict[str, set] = {}
+    for c in chunks:
+        for tid in (c.get("metadata") or {}).get("topic_ids", []):
+            _topic_cc[tid] += 1
+            _topic_ds.setdefault(tid, set()).add(c.get("document_id", ""))
+    stale_count_topics = 0
+    for t in topics:
+        tid = t["id"]
+        actual_cc = _topic_cc.get(tid, 0)
+        actual_dc = len(_topic_ds.get(tid, set()))
+        if (t.get("chunk_count", 0) or 0) != actual_cc or (t.get("document_count", 0) or 0) != actual_dc:
+            stale_count_topics += 1
+    if stale_count_topics:
+        issues.append(
+            f"{stale_count_topics}/{len(topics)} topics have stale counts "
+            f"(JSONL counts don't match actual chunk references)"
+        )
+
+    # === 16. Archive URIs point to existing files on disk ===
+    broken_uris = []
+    for d in docs:
+        for key in ("archive_browse_uri", "archive_download_uri"):
+            uri = d.get(key)
+            if uri:
+                rel = uri.removeprefix("/archive/")
+                if not (archive_dir / rel).exists():
+                    broken_uris.append((d.get("file_name", "?"), key, rel))
+    if broken_uris:
+        issues.append(
+            f"{len(broken_uris)} archive URIs point to missing files on disk"
+        )
+        for fn, key, rel in broken_uris[:5]:
+            issues.append(f"  {fn}: {rel}")
+        if len(broken_uris) > 5:
+            issues.append(f"  ... and {len(broken_uris) - 5} more")
+
     # === Display results ===
     summary = Table(title="Ingest Validation Summary")
     summary.add_column("Metric", style="cyan")
