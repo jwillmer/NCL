@@ -216,7 +216,7 @@ def _create_body_chunks(
                 document_id=email_doc.id,
                 event_type="message_filtered",
                 severity="info",
-                message=f"Message {msg_idx} empty after boilerplate removal ({len(message.split())} words raw)",
+                message=f"Empty after boilerplate removal ({len(message.split())} words raw)",
                 source_eml_path=email_doc.source_id,
             )
             continue
@@ -226,7 +226,7 @@ def _create_body_chunks(
                 document_id=email_doc.id,
                 event_type="message_filtered",
                 severity="info",
-                message=f"Message {msg_idx} too short after cleaning: {len(cleaned_message.split())} words",
+                message=f"Too short after cleaning ({len(cleaned_message.split())} words)",
                 source_eml_path=email_doc.source_id,
             )
             continue

@@ -379,15 +379,15 @@ class LocalStorageClient:
         source_zip_path=None,
         parent_document_id=None,
     ):
-        """Log unsupported files to ingest_events.jsonl."""
+        """Log unsupported/skipped files to ingest_events.jsonl."""
         mime_type, _ = mimetypes.guess_type(str(file_path))
         try:
             file_size = Path(file_path).stat().st_size
         except OSError:
             file_size = None
         self._append_jsonl("ingest_events.jsonl", {
-            "event_type": "unsupported_file",
-            "severity": "warning",
+            "event_type": reason,
+            "severity": "info" if reason == "classified_as_non_content" else "warning",
             "file_path": str(file_path),
             "file_name": Path(file_path).name,
             "reason": reason,
