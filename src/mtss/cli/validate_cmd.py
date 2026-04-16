@@ -240,11 +240,44 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
             f"{len(zero_count_topics)}/{len(topics)} topics have document_count=0"
         )
 
-    # === 11. Archive directory checks ===
+    # === 11. Archive directory and URI checks ===
     archive_dir = output_dir / "archive"
-    archive_count = 0
+    _ARCHIVE_URI_FIELDS = ("archive_path", "archive_browse_uri", "archive_download_uri")
+    archive_folders_on_disk: set[str] = set()
+    total_archive_files = 0
     if archive_dir.exists():
-        archive_count = sum(1 for p in archive_dir.iterdir() if p.is_dir())
+        for p in archive_dir.iterdir():
+            if p.is_dir():
+                archive_folders_on_disk.add(p.name)
+                total_archive_files += _count_archive_files(p)
+
+    # URI + folder checks in a single pass over email docs
+    emails_missing_archive = []
+    emails_without_folder = []
+    for d in docs:
+        if d.get("document_type") != "email":
+            continue
+        missing_fields = [f for f in _ARCHIVE_URI_FIELDS if not d.get(f)]
+        if missing_fields:
+            emails_missing_archive.append((d, missing_fields))
+        if archive_folders_on_disk:
+            folder_id = d.get("archive_path") or d["doc_id"][:16]
+            if folder_id not in archive_folders_on_disk:
+                emails_without_folder.append(d)
+
+    if emails_missing_archive:
+        issues.append(
+            f"{len(emails_missing_archive)}/{len(email_uuids)} "
+            f"emails missing archive URIs (UI will show broken links)"
+        )
+        if verbose:
+            for d, fields in emails_missing_archive:
+                issues.append(f"  {d.get('doc_id', '?')[:16]}: missing {', '.join(fields)}")
+
+    if emails_without_folder:
+        warnings.append(
+            f"{len(emails_without_folder)} emails have no archive folder on disk"
+        )
 
     # === Display results ===
     summary = Table(title="Ingest Validation Summary")
@@ -270,7 +303,10 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
 
     summary.add_row("Topics", str(len(topics)))
     summary.add_row("Ingest events", str(len(events)))
-    summary.add_row("Archive folders", str(archive_count))
+    summary.add_row("Archive folders", str(len(archive_folders_on_disk)))
+    summary.add_row("Archive files", str(total_archive_files))
+    archive_uri_ok = len(email_uuids) - len(emails_missing_archive)
+    summary.add_row("Archive URIs", f"{archive_uri_ok}/{len(email_uuids)}")
 
     if chunk_doc_ids:
         counts = list(chunk_doc_ids.values())
@@ -652,17 +688,18 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
 
             root_docs = [d for d in local_docs if d.get("depth", 0) == 0]
             for d in root_docs:
-                doc_id_hex = d["doc_id"]
-                files = [f for f in storage.list_files(doc_id_hex) if f.get("id")]
+                # Archive folders use first 16 chars of doc_id
+                folder_id = d["doc_id"][:16]
+                files = [f for f in storage.list_files(folder_id) if f.get("id")]
                 remote_count = len(files)
                 remote_archive_files += remote_count
-                local_count = local_files_by_doc.get(doc_id_hex, 0)
+                local_count = local_files_by_doc.get(folder_id, 0)
 
                 if remote_count == 0:
-                    archive_missing.append(doc_id_hex)
+                    archive_missing.append(folder_id)
                 elif local_count != remote_count:
                     archive_file_mismatches.append(
-                        (doc_id_hex, local_count, remote_count)
+                        (folder_id, local_count, remote_count)
                     )
         except Exception as e:
             warnings.append(f"Archive check skipped: {e}")
