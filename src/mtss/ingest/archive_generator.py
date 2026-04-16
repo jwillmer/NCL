@@ -40,13 +40,9 @@ def _sanitize_storage_key(filename: str) -> str:
     """
     import unicodedata
 
-    # Replace brackets with parentheses (Supabase rejects [] even when encoded)
+    # Replace characters Supabase Storage rejects even when URL-encoded
     result = filename.replace("[", "(").replace("]", ")")
-
-    # Replace leading tilde (Word temp files like ~WRD0001.jpg)
-    # Supabase Storage rejects keys starting with ~
-    if result.startswith("~"):
-        result = "_" + result[1:]
+    result = result.replace("~", "_")
 
     # Transliterate non-ASCII to ASCII (Greek Δ -> D, Α -> A, etc.)
     # NFKD decomposes characters, then we filter to ASCII
@@ -64,7 +60,7 @@ def _sanitize_storage_key(filename: str) -> str:
         ascii_only = f"{hex_name}{ext_ascii}"
 
     # URL-encode remaining special chars (spaces, etc.)
-    return quote(ascii_only, safe="-_.~()")
+    return quote(ascii_only, safe="-_.()")
 
 
 @dataclass

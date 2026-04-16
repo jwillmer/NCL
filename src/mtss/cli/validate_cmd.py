@@ -480,7 +480,11 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
     local_archive_files = 0
     archive_missing: List[str] = []
     archive_file_mismatches: List[tuple] = []
+    archive_orphans: List[str] = []
+    orphan_folders: List[str] = []
     remote_archive_files = 0
+    remote_archive_folders = 0
+    orphan_docs = 0
     total_remote_docs = 0
     total_remote_chunks = 0
     total_remote_topics = 0
@@ -674,33 +678,77 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
 
         # === 7. Archive storage — full file-level check ===
         archive_dir = resolved / "archive"
-        local_files_by_doc: Dict[str, int] = {}
+        # Build local file keys per folder (matching import's unquote + ~ replacement)
+        from urllib.parse import unquote as _unquote
+        local_keys_by_folder: Dict[str, set[str]] = {}
         if archive_dir.exists():
             for doc_dir in archive_dir.iterdir():
                 if doc_dir.is_dir():
-                    count = _count_archive_files(doc_dir)
-                    local_files_by_doc[doc_dir.name] = count
-                    local_archive_files += count
+                    keys: set[str] = set()
+                    for f in doc_dir.rglob("*"):
+                        if f.is_file() and f.name not in _HIDDEN_FILES:
+                            rel = str(f.relative_to(archive_dir)).replace("\\", "/")
+                            keys.add(_unquote(rel).replace("~", "_"))
+                    local_keys_by_folder[doc_dir.name] = keys
+                    local_archive_files += len(keys)
 
         try:
             from ..storage.archive_storage import ArchiveStorage
             storage = ArchiveStorage()
 
+            # List all root-level folders in the bucket (paginated)
+            all_remote_folders: set[str] = set()
+            try:
+                offset = 0
+                page_size = 100
+                while True:
+                    page = storage.bucket.list("", {"limit": page_size, "offset": offset})
+                    for f in page:
+                        name = f.get("name")
+                        if name and not f.get("id"):  # folders have id=null
+                            all_remote_folders.add(name)
+                    if len(page) < page_size:
+                        break
+                    offset += page_size
+                remote_archive_folders = len(all_remote_folders)
+            except Exception:
+                pass
+
             root_docs = [d for d in local_docs if d.get("depth", 0) == 0]
+            local_folder_ids = {d["doc_id"][:16] for d in root_docs}
+            orphan_folders = sorted(all_remote_folders - local_folder_ids)
+
             for d in root_docs:
                 # Archive folders use first 16 chars of doc_id
                 folder_id = d["doc_id"][:16]
-                files = [f for f in storage.list_files(folder_id) if f.get("id")]
-                remote_count = len(files)
+
+                # List remote files with full subfolder paths
+                remote_keys: set[str] = set()
+                for subfolder in (folder_id, f"{folder_id}/attachments"):
+                    try:
+                        for f in storage.bucket.list(subfolder):
+                            name = f.get("name")
+                            if name and f.get("id"):
+                                remote_keys.add(f"{subfolder}/{name}")
+                    except Exception:
+                        pass
+
+                remote_count = len(remote_keys)
                 remote_archive_files += remote_count
-                local_count = local_files_by_doc.get(folder_id, 0)
+                local_keys = local_keys_by_folder.get(folder_id, set())
 
                 if remote_count == 0:
                     archive_missing.append(folder_id)
-                elif local_count != remote_count:
-                    archive_file_mismatches.append(
-                        (folder_id, local_count, remote_count)
-                    )
+                else:
+                    # Detect orphan files: in remote but not local
+                    orphans = remote_keys - local_keys
+                    if orphans:
+                        archive_orphans.extend(orphans)
+
+                    if len(local_keys) != remote_count:
+                        archive_file_mismatches.append(
+                            (folder_id, len(local_keys), remote_count)
+                        )
         except Exception as e:
             warnings.append(f"Archive check skipped: {e}")
 
@@ -711,6 +759,26 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
             if verbose:
                 for doc_id in archive_missing:
                     issues.append(f"  no archive files for: {doc_id}")
+
+        if archive_orphans:
+            warnings.append(
+                f"{len(archive_orphans)} orphan archive files in storage (not in local data)"
+            )
+            if verbose:
+                for key in sorted(archive_orphans)[:20]:
+                    warnings.append(f"  orphan: {key}")
+                if len(archive_orphans) > 20:
+                    warnings.append(f"  ... and {len(archive_orphans) - 20} more")
+
+        if orphan_folders:
+            warnings.append(
+                f"{len(orphan_folders)} orphan folders in storage (not in local data) — run 'mtss import --remove-orphans' to remove"
+            )
+            if verbose:
+                for folder in orphan_folders[:20]:
+                    warnings.append(f"  orphan folder: {folder}")
+                if len(orphan_folders) > 20:
+                    warnings.append(f"  ... and {len(orphan_folders) - 20} more")
 
         if archive_file_mismatches:
             warnings.append(
@@ -733,11 +801,20 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
         if orphan_chunk_count:
             issues.append(f"{orphan_chunk_count} chunks in Supabase reference non-existent documents")
 
-        # === 9. Remote totals for context ===
+        # === 9. Remote totals and orphan documents ===
         async with pool.acquire() as conn:
             total_remote_docs = await conn.fetchval("SELECT COUNT(*)::int FROM documents") or 0
             total_remote_chunks = await conn.fetchval("SELECT COUNT(*)::int FROM chunks") or 0
             total_remote_topics = await conn.fetchval("SELECT COUNT(*)::int FROM topics") or 0
+
+            # Documents in Supabase not present in local JSONL (orphans)
+            if local_doc_ids:
+                orphan_docs = await conn.fetchval(
+                    "SELECT COUNT(*)::int FROM documents "
+                    "WHERE doc_id IS NOT NULL AND doc_id != '' "
+                    "AND doc_id NOT IN (SELECT unnest($1::text[]))",
+                    list(local_doc_ids),
+                ) or 0
 
     finally:
         await db.close()
@@ -801,13 +878,27 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
         v_status = "[green]\u2713[/green]" if v_ok else f"[yellow]{remote_vessel_count}/{local_vessel_count}[/yellow]"
         summary.add_row("Vessels", str(local_vessel_count), str(remote_vessel_count), v_status)
 
-    # Archives
-    if archive_missing:
-        arc_status = f"[red]{len(archive_missing)} missing[/red]"
-    elif archive_file_mismatches:
-        arc_status = f"[yellow]{len(archive_file_mismatches)} mismatched[/yellow]"
+    # Orphan documents
+    if orphan_docs:
+        summary.add_row("Orphan docs", "", str(orphan_docs), f"[yellow]{orphan_docs} in remote only[/yellow]")
+
+    # Archive folders
+    local_folder_count = len(local_keys_by_folder) if archive_dir.exists() else 0
+    if orphan_folders:
+        folder_status = f"[yellow]{len(orphan_folders)} orphans[/yellow]"
     else:
-        arc_status = "[green]\u2713[/green]"
+        folder_status = "[green]\u2713[/green]"
+    summary.add_row("Archive folders", str(local_folder_count), str(remote_archive_folders), folder_status)
+
+    # Archive files
+    arc_parts = []
+    if archive_missing:
+        arc_parts.append(f"[red]{len(archive_missing)} missing[/red]")
+    if archive_orphans:
+        arc_parts.append(f"[yellow]{len(archive_orphans)} orphans[/yellow]")
+    if archive_file_mismatches and not archive_orphans:
+        arc_parts.append(f"[yellow]{len(archive_file_mismatches)} mismatched[/yellow]")
+    arc_status = ", ".join(arc_parts) if arc_parts else "[green]\u2713[/green]"
     summary.add_row("Archive files", str(local_archive_files), str(remote_archive_files), arc_status)
 
     console.print(summary)
