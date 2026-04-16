@@ -7,7 +7,7 @@ import io
 import logging
 from pathlib import Path
 
-from .base import BaseParser
+from .base import BaseParser, EmptyContentError
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class LocalDocxParser(BaseParser):
             content = "\n\n".join(parts)
 
             if not content or not content.strip():
-                raise ValueError(f"python-docx produced no content for {file_path}")
+                raise EmptyContentError(f"python-docx produced no content for {file_path}")
 
             logger.info(
                 f"Local DOCX parser extracted {len(content)} chars from {file_path.name}"
@@ -74,6 +74,8 @@ class LocalDocxParser(BaseParser):
             raise ValueError(
                 "python-docx is not installed. Install with: pip install python-docx"
             )
+        except EmptyContentError:
+            raise
         except Exception as e:
             raise ValueError(f"Local DOCX parsing failed for {file_path}: {e}") from e
 
@@ -119,7 +121,7 @@ class LocalXlsxParser(BaseParser):
             content = "\n\n".join(parts)
 
             if not content or not content.strip():
-                raise ValueError(f"openpyxl produced no content for {file_path}")
+                raise EmptyContentError(f"openpyxl produced no content for {file_path}")
 
             logger.info(
                 f"Local XLSX parser extracted {len(content)} chars from {file_path.name}"
@@ -130,6 +132,8 @@ class LocalXlsxParser(BaseParser):
             raise ValueError(
                 "openpyxl is not installed. Install with: pip install openpyxl"
             )
+        except EmptyContentError:
+            raise
         except Exception as e:
             raise ValueError(f"Local XLSX parsing failed for {file_path}: {e}") from e
 

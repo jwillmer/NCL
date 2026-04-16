@@ -4,12 +4,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 from ..config import get_settings
 from .base import BaseParser
 
 logger = logging.getLogger(__name__)
+
+
+def strip_llamaparse_image_refs(text: str) -> str:
+    """Strip LlamaParse image refs, preserving alt-text."""
+    text = re.sub(
+        r'<img\s+[^>]*alt="([^"]*)"[^>]*/?>',
+        r"\1",
+        text,
+    )
+    text = re.sub(
+        r"!\[([^\]]*)\]\(page_\d+_(?:image|chart|seal|table)_\d+[^)]*\)",
+        r"\1",
+        text,
+    )
+    text = re.sub(
+        r"!\[([^\]]*)\]\(image\)",
+        r"\1",
+        text,
+    )
+    return text
+
 
 # Module-level semaphore to limit concurrent LlamaParse API calls
 _llamaparse_semaphore: asyncio.Semaphore | None = None
@@ -128,17 +150,7 @@ class LlamaParseParser(BaseParser):
                 # Strip LlamaParse image refs (images not downloaded locally).
                 # Preserve alt-text for semantic content: <img src="..." alt="sketch"> → sketch
                 # and ![alt](page_N_image_N.jpg) → alt
-                import re
-                markdown_text = re.sub(
-                    r'<img\s+[^>]*alt="([^"]*)"[^>]*/?>',
-                    r"\1",
-                    markdown_text,
-                )
-                markdown_text = re.sub(
-                    r"!\[([^\]]*)\]\(page_\d+_(?:image|chart|seal|table)_\d+[^)]*\)",
-                    r"\1",
-                    markdown_text,
-                )
+                markdown_text = strip_llamaparse_image_refs(markdown_text)
 
                 if not markdown_text or not markdown_text.strip():
                     raise ValueError(f"LlamaParse produced no content for {file_path}")

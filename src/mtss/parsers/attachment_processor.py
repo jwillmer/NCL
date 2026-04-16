@@ -214,9 +214,25 @@ class AttachmentProcessor:
 
         # Parse document to markdown text
         logger.info(f"Processing {file_path.name} with {parser.name} parser")
-        text = await parser.parse(file_path)
+        from .base import EmptyContentError
 
-        if parser.name != "llamaparse":
+        effective_parser_name = parser.name
+        try:
+            text = await parser.parse(file_path)
+        except EmptyContentError:
+            if not parser.name.startswith("local_"):
+                raise
+            from .llamaparse_parser import LlamaParseParser
+            fallback = LlamaParseParser()
+            if not fallback.is_available:
+                raise
+            logger.info(
+                f"{parser.name} produced no content for {file_path.name}; falling back to LlamaParse"
+            )
+            text = await fallback.parse(file_path)
+            effective_parser_name = fallback.name
+
+        if effective_parser_name != "llamaparse":
             from ..cli._common import _service_counter
             _service_counter.add("local_parse")
 
@@ -236,7 +252,7 @@ class AttachmentProcessor:
             document_id=document_id,
             source_file=str(file_path),
             is_markdown=True,
-            metadata={"parser": parser.name},
+            metadata={"parser": effective_parser_name},
         )
 
         logger.info(f"Created {len(chunks)} chunks from {file_path.name}")

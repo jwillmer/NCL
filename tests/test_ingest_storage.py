@@ -428,3 +428,277 @@ class TestIngestHelpers:
 
         chunk_ids = [c.chunk_id for c in chunks]
         assert len(set(chunk_ids)) == len(chunk_ids)  # All unique
+
+
+class TestLocalClientFlushChunkDedup:
+    """Tests that LocalStorageClient.flush() dedupes chunks by chunk_id within a run."""
+
+    @pytest.fixture
+    def local_client(self, tmp_path):
+        from mtss.storage.local_client import LocalStorageClient
+
+        return LocalStorageClient(tmp_path / "output")
+
+    @pytest.mark.asyncio
+    async def test_flush_dedupes_same_run_chunks_by_chunk_id(self, local_client):
+        """Two current-run chunks with different UUIDs but same chunk_id should dedupe."""
+        import json as _json
+        from uuid import uuid4
+
+        from mtss.models.chunk import Chunk
+        from mtss.models.document import Document, DocumentType, ProcessingStatus
+
+        doc = Document(
+            id=uuid4(),
+            document_type=DocumentType.EMAIL,
+            file_path="/test.eml",
+            file_name="test.eml",
+            depth=0,
+            status=ProcessingStatus.COMPLETED,
+        )
+        await local_client.insert_document(doc)
+
+        shared_chunk_id = "shared_chunk_1"
+        chunk_a = Chunk(
+            id=uuid4(),
+            document_id=doc.id,
+            chunk_id=shared_chunk_id,
+            content="First write",
+            chunk_index=0,
+            metadata={"type": "email_body"},
+        )
+        chunk_b = Chunk(
+            id=uuid4(),
+            document_id=doc.id,
+            chunk_id=shared_chunk_id,
+            content="Second write",
+            chunk_index=0,
+            metadata={"type": "email_body"},
+        )
+        await local_client.insert_chunks([chunk_a])
+        await local_client.insert_chunks([chunk_b])
+
+        local_client.flush()
+
+        chunks_path = local_client.output_dir / "chunks.jsonl"
+        lines = [ln for ln in chunks_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        matching = [_json.loads(ln) for ln in lines if _json.loads(ln).get("chunk_id") == shared_chunk_id]
+        assert len(matching) == 1
+
+    @pytest.mark.asyncio
+    async def test_flush_keeps_unique_chunks(self, local_client):
+        """Two chunks with different chunk_ids should both survive flush."""
+        import json as _json
+        from uuid import uuid4
+
+        from mtss.models.chunk import Chunk
+        from mtss.models.document import Document, DocumentType, ProcessingStatus
+
+        doc = Document(
+            id=uuid4(),
+            document_type=DocumentType.EMAIL,
+            file_path="/test.eml",
+            file_name="test.eml",
+            depth=0,
+            status=ProcessingStatus.COMPLETED,
+        )
+        await local_client.insert_document(doc)
+
+        chunk_a = Chunk(
+            id=uuid4(),
+            document_id=doc.id,
+            chunk_id="unique_a",
+            content="A",
+            chunk_index=0,
+            metadata={"type": "email_body"},
+        )
+        chunk_b = Chunk(
+            id=uuid4(),
+            document_id=doc.id,
+            chunk_id="unique_b",
+            content="B",
+            chunk_index=1,
+            metadata={"type": "email_body"},
+        )
+        await local_client.insert_chunks([chunk_a, chunk_b])
+
+        local_client.flush()
+
+        chunks_path = local_client.output_dir / "chunks.jsonl"
+        lines = [ln for ln in chunks_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        chunk_ids = {_json.loads(ln).get("chunk_id") for ln in lines}
+        assert "unique_a" in chunk_ids
+        assert "unique_b" in chunk_ids
+
+
+class TestMarkFailedCommand:
+    """Tests for `MTSS mark-failed` maintenance command."""
+
+    @pytest.fixture
+    def seeded_output(self, tmp_path):
+        """Output dir with a processing_log.jsonl holding 3 entries."""
+        import json as _json
+
+        output = tmp_path / "output"
+        output.mkdir()
+        log = output / "processing_log.jsonl"
+        entries = [
+            {
+                "file_path": str(tmp_path / "emails" / "a.eml"),
+                "file_hash": "aaa",
+                "status": "COMPLETED",
+                "started_at": "2026-04-16T10:00:00+00:00",
+                "completed_at": "2026-04-16T10:01:00+00:00",
+                "error": None,
+                "attempts": 1,
+            },
+            {
+                "file_path": str(tmp_path / "emails" / "b.eml"),
+                "file_hash": "bbb",
+                "status": "COMPLETED",
+                "started_at": "2026-04-16T10:02:00+00:00",
+                "completed_at": "2026-04-16T10:03:00+00:00",
+                "error": None,
+                "attempts": 1,
+            },
+            {
+                "file_path": str(tmp_path / "emails" / "c.eml"),
+                "file_hash": "ccc",
+                "status": "COMPLETED",
+                "started_at": "2026-04-16T10:04:00+00:00",
+                "completed_at": "2026-04-16T10:05:00+00:00",
+                "error": None,
+                "attempts": 1,
+            },
+        ]
+        with open(log, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(_json.dumps(e) + "\n")
+        return output, entries
+
+    @pytest.mark.asyncio
+    async def test_marks_specified_files_as_failed(self, seeded_output):
+        from pathlib import Path as _Path
+
+        from mtss.cli.maintenance_cmd import _mark_failed
+        from mtss.storage.local_progress_tracker import LocalProgressTracker
+
+        output, entries = seeded_output
+        await _mark_failed(
+            [_Path(entries[0]["file_path"]), _Path(entries[2]["file_path"])],
+            output,
+            "bad_context",
+        )
+
+        reloaded = LocalProgressTracker(output)
+        assert reloaded._entries[entries[0]["file_path"]]["status"] == "FAILED"
+        assert reloaded._entries[entries[0]["file_path"]]["error"] == "bad_context"
+        assert reloaded._entries[entries[1]["file_path"]]["status"] == "COMPLETED"
+        assert reloaded._entries[entries[2]["file_path"]]["status"] == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_resolves_file_by_basename(self, seeded_output):
+        from pathlib import Path as _Path
+
+        from mtss.cli.maintenance_cmd import _mark_failed
+        from mtss.storage.local_progress_tracker import LocalProgressTracker
+
+        output, entries = seeded_output
+        await _mark_failed([_Path("b.eml")], output, "manual")
+
+        reloaded = LocalProgressTracker(output)
+        assert reloaded._entries[entries[1]["file_path"]]["status"] == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_compacts_log_to_one_entry_per_file(self, seeded_output):
+        from pathlib import Path as _Path
+
+        from mtss.cli.maintenance_cmd import _mark_failed
+
+        output, entries = seeded_output
+        await _mark_failed([_Path(entries[0]["file_path"])], output, "x")
+
+        with open(output / "processing_log.jsonl", encoding="utf-8") as f:
+            lines = [ln for ln in f if ln.strip()]
+        assert len(lines) == 3  # One per file, no duplicates from append
+
+    @pytest.mark.asyncio
+    async def test_missing_log_file_exits(self, tmp_path):
+        from pathlib import Path as _Path
+
+        import typer as _typer
+
+        from mtss.cli.maintenance_cmd import _mark_failed
+
+        with pytest.raises(_typer.Exit):
+            await _mark_failed([_Path("x.eml")], tmp_path / "nope", "reason")
+
+
+class TestCleanArchiveMdCommand:
+    """`MTSS clean-archive-md` strips stale LlamaParse image refs from archived .md files."""
+
+    @pytest.fixture
+    def seeded_archive(self, tmp_path):
+        output = tmp_path / "output"
+        archive = output / "archive"
+        folder_a = archive / "abc123" / "attachments"
+        folder_b = archive / "def456" / "attachments"
+        folder_a.mkdir(parents=True)
+        folder_b.mkdir(parents=True)
+        # Broken bare-image ref
+        (folder_a / "report.pdf.md").write_text(
+            "Intro text\n![Diagram](image)\nTrailing text\n",
+            encoding="utf-8",
+        )
+        # Mix of broken + LlamaParse page refs
+        (folder_b / "slides.pdf.md").write_text(
+            "![logo](image)\n![chart](page_3_chart_1_v2.jpg)\n",
+            encoding="utf-8",
+        )
+        # Clean file — should not change
+        clean_path = archive / "abc123" / "email.eml.md"
+        clean_path.write_text("- [Attachment](abc123/attachments/report.pdf)\n", encoding="utf-8")
+        return output, folder_a / "report.pdf.md", folder_b / "slides.pdf.md", clean_path
+
+    def test_rewrites_files_with_bare_image_refs(self, seeded_archive):
+        from mtss.cli.maintenance_cmd import _clean_archive_md
+
+        output, md_a, md_b, clean = seeded_archive
+        _clean_archive_md(output, dry_run=False)
+
+        txt_a = md_a.read_text(encoding="utf-8")
+        assert "(image)" not in txt_a
+        assert "Diagram" in txt_a  # alt-text preserved
+
+        txt_b = md_b.read_text(encoding="utf-8")
+        assert "(image)" not in txt_b
+        assert "page_3_chart_1_v2.jpg" not in txt_b
+        assert "logo" in txt_b and "chart" in txt_b
+
+        # Clean file untouched
+        assert clean.read_text(encoding="utf-8") == "- [Attachment](abc123/attachments/report.pdf)\n"
+
+    def test_dry_run_does_not_write(self, seeded_archive):
+        from mtss.cli.maintenance_cmd import _clean_archive_md
+
+        output, md_a, _md_b, _clean = seeded_archive
+        before = md_a.read_text(encoding="utf-8")
+        _clean_archive_md(output, dry_run=True)
+        assert md_a.read_text(encoding="utf-8") == before
+
+    def test_missing_archive_dir_exits(self, tmp_path):
+        import typer as _typer
+
+        from mtss.cli.maintenance_cmd import _clean_archive_md
+
+        with pytest.raises(_typer.Exit):
+            _clean_archive_md(tmp_path / "no-such-output", dry_run=False)
+
+    def test_idempotent(self, seeded_archive):
+        from mtss.cli.maintenance_cmd import _clean_archive_md
+
+        output, md_a, _md_b, _clean = seeded_archive
+        _clean_archive_md(output, dry_run=False)
+        first = md_a.read_text(encoding="utf-8")
+        _clean_archive_md(output, dry_run=False)
+        assert md_a.read_text(encoding="utf-8") == first

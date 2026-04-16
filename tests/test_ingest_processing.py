@@ -778,3 +778,188 @@ class TestThreadDigest:
                 assert result is not None
                 assert result.embedding_text == "Digest summary text."
                 assert result.context_summary is None
+
+
+class TestZipAttachmentContextGeneration:
+    """Tests for process_zip_attachment context generation + archive URIs."""
+
+    @pytest.fixture
+    def zip_attachment(self, tmp_path):
+        """ParsedAttachment representing a ZIP file."""
+        from mtss.models.document import ParsedAttachment
+
+        zip_path = tmp_path / "bundle.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake-zip")
+        return ParsedAttachment(
+            filename="bundle.zip",
+            content_type="application/zip",
+            size_bytes=zip_path.stat().st_size,
+            saved_path=str(zip_path),
+        )
+
+    @pytest.fixture
+    def extracted_text_file(self, tmp_path):
+        """A plaintext file to represent the ZIP extraction result."""
+        extracted = tmp_path / "extracted" / "notes.txt"
+        extracted.parent.mkdir(parents=True, exist_ok=True)
+        extracted.write_text("Some extracted content from a ZIP member.")
+        return extracted
+
+    @pytest.fixture
+    def attach_chunk(self, sample_document_id):
+        """A single chunk returned by the mocked parser for the extracted file."""
+        from uuid import uuid4
+
+        from mtss.models.chunk import Chunk
+
+        return Chunk(
+            id=uuid4(),
+            document_id=sample_document_id,
+            chunk_id="zipchunk123",
+            content="Some extracted content from a ZIP member.",
+            chunk_index=0,
+            section_path=[],
+            source_id="test.eml/bundle.zip/notes.txt",
+        )
+
+    @pytest.fixture
+    def mock_components(self, extracted_text_file):
+        """Mock IngestComponents wired for process_zip_attachment."""
+        components = MagicMock()
+
+        components.attachment_processor = MagicMock()
+        components.attachment_processor.extract_zip = MagicMock(
+            return_value=[(extracted_text_file, "text/plain")]
+        )
+
+        preprocess_result = MagicMock()
+        preprocess_result.should_process = True
+        preprocess_result.is_image = False
+        preprocess_result.skip_reason = None
+        components.attachment_processor.preprocess = AsyncMock(return_value=preprocess_result)
+        components.attachment_processor.process_attachment = AsyncMock()
+
+        components.hierarchy_manager = MagicMock()
+        components.hierarchy_manager.build_attachment_document = MagicMock()
+
+        components.context_generator = MagicMock()
+        components.context_generator.generate_context = AsyncMock(
+            return_value="Generated context summary"
+        )
+        components.context_generator.build_embedding_text = MagicMock(
+            side_effect=lambda ctx, content: f"{ctx}\n\n{content}"
+        )
+
+        components.archive_generator = MagicMock()
+        components.archive_generator.update_attachment_markdown = MagicMock(
+            return_value="doc123abc/attachments/notes.txt.md"
+        )
+        return components
+
+    def _wire_attach_doc(self, components, sample_attachment_document, attach_chunks):
+        components.hierarchy_manager.build_attachment_document.return_value = sample_attachment_document
+        components.attachment_processor.process_attachment.return_value = attach_chunks
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_zip_text_attachment_gets_context_summary(
+        self,
+        zip_attachment,
+        sample_document,
+        sample_attachment_document,
+        attach_chunk,
+        mock_components,
+    ):
+        """Chunks from ZIP contents must get context_summary and embedding_text."""
+        self._wire_attach_doc(mock_components, sample_attachment_document, [attach_chunk])
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        chunks = await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=mock_components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        mock_components.context_generator.generate_context.assert_awaited_once()
+        assert len(chunks) == 1
+        assert chunks[0].context_summary == "Generated context summary"
+        assert chunks[0].embedding_text == (
+            "Generated context summary\n\nSome extracted content from a ZIP member."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_zip_attachment_gets_archive_uris(
+        self,
+        zip_attachment,
+        sample_document,
+        sample_attachment_document,
+        attach_chunk,
+        mock_components,
+    ):
+        """ZIP extracted attachment must have archive_browse_uri / download_uri set."""
+        sample_attachment_document.archive_browse_uri = None
+        sample_attachment_document.archive_download_uri = None
+        self._wire_attach_doc(mock_components, sample_attachment_document, [attach_chunk])
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+        collected: list = []
+
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=mock_components,
+            unsupported_logger=unsupported_logger,
+            collect_docs=collected,
+        )
+
+        mock_components.archive_generator.update_attachment_markdown.assert_called_once()
+        assert sample_attachment_document.archive_browse_uri == (
+            "/archive/doc123abc/attachments/notes.txt.md"
+        )
+        assert sample_attachment_document.archive_download_uri == (
+            "/archive/doc123abc/attachments/notes.txt"
+        )
+        assert collected == [sample_attachment_document]
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_zip_context_generation_failure_non_fatal(
+        self,
+        zip_attachment,
+        sample_document,
+        sample_attachment_document,
+        attach_chunk,
+        mock_components,
+    ):
+        """Context generation errors must not break ZIP processing."""
+        self._wire_attach_doc(mock_components, sample_attachment_document, [attach_chunk])
+        mock_components.context_generator.generate_context = AsyncMock(
+            side_effect=RuntimeError("LLM exploded")
+        )
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        chunks = await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=mock_components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        assert len(chunks) == 1
+        assert chunks[0].context_summary is None

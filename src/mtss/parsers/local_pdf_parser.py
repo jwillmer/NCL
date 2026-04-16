@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .base import BaseParser
+from .base import BaseParser, EmptyContentError
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +32,14 @@ class LocalPDFParser(BaseParser):
             markdown = pymupdf4llm.to_markdown(str(file_path))
 
             if not markdown or not markdown.strip():
-                raise ValueError(f"PyMuPDF4LLM produced no content for {file_path}")
+                raise EmptyContentError(f"PyMuPDF4LLM produced no content for {file_path}")
 
             logger.info(f"Local PDF parser extracted {len(markdown)} chars from {file_path.name}")
             return markdown
 
         except ImportError:
             raise ValueError("pymupdf4llm is not installed. Install with: pip install pymupdf4llm")
+        except EmptyContentError:
+            raise
         except Exception as e:
             raise ValueError(f"Local PDF parsing failed for {file_path}: {e}") from e

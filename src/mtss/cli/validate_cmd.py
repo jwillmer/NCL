@@ -41,6 +41,25 @@ def register(app: typer.Typer):
 # ---------------------------------------------------------------------------
 
 
+def build_folder_to_email_map(docs: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Map archive folder id -> source email identifier.
+
+    Keyed on archive_path when present (what folders are named), else doc_id[:16].
+    Value prefers source_id (eml filename) so warnings point users at a real file.
+    """
+    mapping: Dict[str, str] = {}
+    for d in docs:
+        if d.get("depth", 0) != 0:
+            continue
+        key = d.get("archive_path") or (d.get("doc_id") or "")[:16]
+        if not key:
+            continue
+        mapping[key] = (
+            d.get("source_id") or d.get("file_name") or d.get("source_title") or "?"
+        )
+    return mapping
+
+
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     """Load a JSONL file, returning empty list if missing."""
     if not path.exists():
@@ -210,6 +229,9 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
                 continue
             # Images may legitimately have no chunks (non-content)
             if d.get("document_type") == "attachment_image":
+                continue
+            # Failed documents have 0 chunks by definition — already surfaced by status=failed check
+            if d.get("status") == "failed":
                 continue
             docs_without_chunks.append(d)
 
@@ -424,12 +446,7 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
 
         total_broken = sum(len(v) for v in broken_md_links.values())
         if total_broken:
-            # Map folder_id to email for readable output
-            folder_to_email = {
-                d["doc_id"][:16]: d.get("file_name") or d.get("source_title", "?")
-                for d in docs if d.get("depth", 0) == 0
-            }
-            # Categorize
+            folder_to_email = build_folder_to_email_map(docs)
             truncated = sum(1 for links in broken_md_links.values()
                            for l in links if not Path(l).suffix)
             unicode_broken = sum(1 for links in broken_md_links.values()
@@ -447,10 +464,11 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
                 f"{total_broken} broken markdown links in {len(broken_md_links)} archive folders "
                 f"({detail})"
             )
-            if verbose:
-                for folder_id, links in sorted(broken_md_links.items())[:10]:
-                    email = folder_to_email.get(folder_id, "?")
-                    warnings.append(f"  {folder_id} ({email}): {len(links)} broken")
+            for folder_id, links in sorted(broken_md_links.items())[:10]:
+                email = folder_to_email.get(folder_id, "unknown email")
+                warnings.append(f"    {folder_id} ({email}): {len(links)} broken")
+            if len(broken_md_links) > 10:
+                warnings.append(f"    ... and {len(broken_md_links) - 10} more folders")
 
     # === 21. Chunk position validity ===
     # Thread digest chunks legitimately use (-1, -1) — skip those

@@ -370,6 +370,21 @@ async def process_zip_attachment(
                     )
                     if attach_chunks:
                         parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
+
+                if attach_chunks and components.context_generator and parsed_content:
+                    try:
+                        attach_context = await components.context_generator.generate_context(
+                            attach_doc, parsed_content[:4000]
+                        )
+                        if attach_context:
+                            for chunk in attach_chunks:
+                                chunk.context_summary = attach_context
+                                chunk.embedding_text = components.context_generator.build_embedding_text(
+                                    attach_context, chunk.content
+                                )
+                    except Exception as e:
+                        vprint(f"  -> Context generation failed: {e}", file_ctx)
+
                 # Enrich chunks with document citation metadata
                 enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
                 # Add vessel metadata to chunk metadata for filtering
@@ -388,13 +403,19 @@ async def process_zip_attachment(
 
                 # Update archive with .md file for this extracted file
                 if components.archive_generator and parsed_content and email_doc.doc_id:
-                    components.archive_generator.update_attachment_markdown(
+                    md_path = components.archive_generator.update_attachment_markdown(
                         doc_id=email_doc.doc_id,
                         filename=extracted_path.name,
                         content_type=extracted_content_type,
                         size_bytes=extracted_path.stat().st_size,
                         parsed_content=parsed_content,
                     )
+                    if md_path:
+                        browse_uri = f"/archive/{md_path}"
+                        download_path = md_path.removesuffix('.md')
+                        download_uri = f"/archive/{download_path}"
+                        attach_doc.archive_browse_uri = browse_uri
+                        attach_doc.archive_download_uri = download_uri
             except Exception as e:
                 if issue_tracker:
                     await issue_tracker.track_async(file_ctx, f"{attachment.filename}/{extracted_path.name}", str(e))

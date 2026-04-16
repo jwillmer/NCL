@@ -295,3 +295,165 @@ class TestIsSupported:
         assert processor.is_supported("script.py") is False
         assert processor.is_supported("data.json") is False
         assert processor.is_supported("archive.tar.gz") is False
+
+
+class TestLlamaParseFallback:
+    """Process_attachment should fall back to LlamaParse when a local parser
+    reports empty content (EmptyContentError), and only then."""
+
+    @pytest.fixture
+    def tmp_docx(self, tmp_path):
+        p = tmp_path / "empty.docx"
+        p.write_bytes(b"PK\x03\x04fake-docx")
+        return p
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_llamaparse_on_empty_content(self, processor, tmp_docx):
+        from uuid import uuid4
+
+        from unittest.mock import AsyncMock
+
+        from mtss.parsers.base import EmptyContentError
+
+        local = MagicMock()
+        local.name = "local_docx"
+        local.parse = AsyncMock(side_effect=EmptyContentError("empty"))
+
+        llp = MagicMock()
+        llp.name = "llamaparse"
+        llp.is_available = True
+        llp.parse = AsyncMock(return_value="# Extracted\n\nReal content from LlamaParse.")
+
+        with patch.object(processor, "_get_tiered_parser", return_value=local):
+            with patch("mtss.parsers.attachment_processor.get_settings"):
+                with patch("mtss.parsers.llamaparse_parser.LlamaParseParser", return_value=llp):
+                    chunks = await processor.process_attachment(tmp_docx, uuid4())
+
+        local.parse.assert_awaited_once()
+        llp.parse.assert_awaited_once()
+        assert len(chunks) > 0
+        assert chunks[0].metadata.get("parser") == "llamaparse"
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_when_llamaparse_disabled(self, processor, tmp_docx):
+        from uuid import uuid4
+
+        from unittest.mock import AsyncMock
+
+        from mtss.parsers.base import EmptyContentError
+
+        local = MagicMock()
+        local.name = "local_docx"
+        local.parse = AsyncMock(side_effect=EmptyContentError("empty"))
+
+        llp = MagicMock()
+        llp.is_available = False
+        llp.parse = AsyncMock()
+
+        with patch.object(processor, "_get_tiered_parser", return_value=local):
+            with patch("mtss.parsers.llamaparse_parser.LlamaParseParser", return_value=llp):
+                with pytest.raises(EmptyContentError):
+                    await processor.process_attachment(tmp_docx, uuid4())
+
+        llp.parse.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_on_non_empty_value_error(self, processor, tmp_docx):
+        """Non-empty ValueError (e.g. corrupted file) should propagate, not fall back."""
+        from uuid import uuid4
+
+        from unittest.mock import AsyncMock
+
+        local = MagicMock()
+        local.name = "local_docx"
+        local.parse = AsyncMock(side_effect=ValueError("Local DOCX parsing failed: corrupt"))
+
+        llp = MagicMock()
+        llp.is_available = True
+        llp.parse = AsyncMock()
+
+        with patch.object(processor, "_get_tiered_parser", return_value=local):
+            with patch("mtss.parsers.llamaparse_parser.LlamaParseParser", return_value=llp):
+                with pytest.raises(ValueError, match="corrupt"):
+                    await processor.process_attachment(tmp_docx, uuid4())
+
+        llp.parse.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_when_primary_already_llamaparse(self, processor, tmp_docx):
+        """If the primary parser is LlamaParse itself and it raises EmptyContentError,
+        don't recurse into LlamaParse again."""
+        from uuid import uuid4
+
+        from unittest.mock import AsyncMock
+
+        from mtss.parsers.base import EmptyContentError
+
+        llp_primary = MagicMock()
+        llp_primary.name = "llamaparse"
+        llp_primary.parse = AsyncMock(side_effect=EmptyContentError("empty"))
+
+        with patch.object(processor, "_get_tiered_parser", return_value=llp_primary):
+            with pytest.raises(EmptyContentError):
+                await processor.process_attachment(tmp_docx, uuid4())
+
+
+class TestLocalParserEmptyContentError:
+    """Local parsers must raise EmptyContentError (not plain ValueError) when they
+    open the file successfully but extract no content — enables fallback routing."""
+
+    @pytest.mark.asyncio
+    async def test_docx_empty_raises_empty_content_error(self, tmp_path):
+        from mtss.parsers.base import EmptyContentError
+        from mtss.parsers.local_office_parser import LocalDocxParser
+
+        docx_path = tmp_path / "empty.docx"
+        docx_path.write_bytes(b"x")
+
+        with patch("docx.Document") as mock_docx:
+            fake_doc = MagicMock()
+            fake_doc.paragraphs = []
+            fake_doc.tables = []
+            mock_docx.return_value = fake_doc
+
+            parser = LocalDocxParser()
+            with pytest.raises(EmptyContentError):
+                await parser.parse(docx_path)
+
+    @pytest.mark.asyncio
+    async def test_xlsx_empty_raises_empty_content_error(self, tmp_path):
+        from mtss.parsers.base import EmptyContentError
+        from mtss.parsers.local_office_parser import LocalXlsxParser
+
+        xlsx_path = tmp_path / "empty.xlsx"
+        xlsx_path.write_bytes(b"x")
+
+        with patch("openpyxl.load_workbook") as mock_wb:
+            fake_wb = MagicMock()
+            fake_wb.sheetnames = []
+            mock_wb.return_value = fake_wb
+
+            parser = LocalXlsxParser()
+            with pytest.raises(EmptyContentError):
+                await parser.parse(xlsx_path)
+
+    @pytest.mark.asyncio
+    async def test_pdf_empty_raises_empty_content_error(self, tmp_path):
+        from mtss.parsers.base import EmptyContentError
+        from mtss.parsers.local_pdf_parser import LocalPDFParser
+
+        pdf_path = tmp_path / "empty.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+
+        with patch("pymupdf4llm.to_markdown", return_value=""):
+            parser = LocalPDFParser()
+            with pytest.raises(EmptyContentError):
+                await parser.parse(pdf_path)
+
+    @pytest.mark.asyncio
+    async def test_empty_content_error_is_value_error_subclass(self):
+        """EmptyContentError must be a ValueError subclass so existing handlers
+        (BaseParser contract) still catch it when they don't care about fallback."""
+        from mtss.parsers.base import EmptyContentError
+
+        assert issubclass(EmptyContentError, ValueError)

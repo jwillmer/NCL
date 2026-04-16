@@ -686,12 +686,25 @@ class LocalStorageClient:
                         except json.JSONDecodeError:
                             pass
         with open(chunks_path, "w", encoding="utf-8") as f:
+            written_chunk_ids: set[str] = set()
             for line in prior_lines:
                 f.write(line + "\n")
+                try:
+                    c = json.loads(line)
+                    cid = c.get("chunk_id")
+                    if cid:
+                        written_chunk_ids.add(cid)
+                except json.JSONDecodeError:
+                    pass
             for chunk in self._chunks.values():
                 # Also filter current-run orphan chunks (doc_id dedup can leave unregistered UUIDs)
                 if str(getattr(chunk, "document_id", "")) not in all_valid_doc_uuids:
                     continue
+                chunk_id = getattr(chunk, "chunk_id", None)
+                if chunk_id and chunk_id in written_chunk_ids:
+                    continue
+                if chunk_id:
+                    written_chunk_ids.add(chunk_id)
                 f.write(json.dumps(self._chunk_to_dict(chunk), default=str) + "\n")
 
         # Recompute topic counts from actual chunk metadata (all chunks on disk)

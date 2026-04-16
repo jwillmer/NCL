@@ -458,6 +458,121 @@ class TestValidateNewChecks:
                     broken.append(link)
         assert len(broken) == 0
 
+    # --- Broken-link -> source email attribution ---
+
+    @pytest.mark.unit
+    def test_folder_to_email_prefers_source_id(self):
+        from mtss.cli.validate_cmd import build_folder_to_email_map
+
+        docs = [
+            {
+                "doc_id": "13970e47fe87d88a0000",
+                "depth": 0,
+                "archive_path": "13970e47fe87d88a",
+                "source_id": "100308534_gypn44jw.3cq.eml",
+                "file_name": "100308534_gypn44jw.3cq.eml",
+            },
+        ]
+        mapping = build_folder_to_email_map(docs)
+        assert mapping["13970e47fe87d88a"] == "100308534_gypn44jw.3cq.eml"
+
+    @pytest.mark.unit
+    def test_folder_to_email_ignores_attachments(self):
+        from mtss.cli.validate_cmd import build_folder_to_email_map
+
+        docs = [
+            {
+                "doc_id": "aaaa000000000000",
+                "depth": 0,
+                "archive_path": "aaaa000000000000",
+                "source_id": "root.eml",
+            },
+            {
+                "doc_id": "bbbb000000000000",
+                "depth": 1,
+                "archive_path": "aaaa000000000000",
+                "source_id": "root.eml/attachment.pdf",
+            },
+        ]
+        mapping = build_folder_to_email_map(docs)
+        assert mapping == {"aaaa000000000000": "root.eml"}
+
+    @pytest.mark.unit
+    def test_folder_to_email_falls_back_to_doc_id_prefix(self):
+        from mtss.cli.validate_cmd import build_folder_to_email_map
+
+        docs = [
+            {
+                "doc_id": "ccccddddeeeeffff9999",
+                "depth": 0,
+                "archive_path": None,
+                "source_id": "legacy.eml",
+            },
+        ]
+        mapping = build_folder_to_email_map(docs)
+        assert mapping == {"ccccddddeeeeffff": "legacy.eml"}
+
+    # --- Docs without chunks: status=failed exclusion ---
+
+    @pytest.mark.unit
+    def test_failed_document_not_flagged_as_missing_chunks(self):
+        doc = self._make_doc(doc_type="attachment_document")
+        doc["status"] = "failed"
+        chunk_doc_ids = set()
+        filtered_doc_uuids = set()
+
+        docs_without_chunks = []
+        for d in [doc]:
+            if d["id"] not in chunk_doc_ids:
+                if d["id"] in filtered_doc_uuids:
+                    continue
+                if d.get("document_type") == "attachment_image":
+                    continue
+                if d.get("status") == "failed":
+                    continue
+                docs_without_chunks.append(d)
+
+        assert docs_without_chunks == []
+
+    @pytest.mark.unit
+    def test_completed_document_with_no_chunks_flagged(self):
+        doc = self._make_doc(doc_type="attachment_document")
+        chunk_doc_ids = set()
+        filtered_doc_uuids = set()
+
+        docs_without_chunks = []
+        for d in [doc]:
+            if d["id"] not in chunk_doc_ids:
+                if d["id"] in filtered_doc_uuids:
+                    continue
+                if d.get("document_type") == "attachment_image":
+                    continue
+                if d.get("status") == "failed":
+                    continue
+                docs_without_chunks.append(d)
+
+        assert len(docs_without_chunks) == 1
+        assert docs_without_chunks[0]["id"] == doc["id"]
+
+    @pytest.mark.unit
+    def test_image_attachment_with_no_chunks_not_flagged(self):
+        doc = self._make_doc(doc_type="attachment_image")
+        chunk_doc_ids = set()
+        filtered_doc_uuids = set()
+
+        docs_without_chunks = []
+        for d in [doc]:
+            if d["id"] not in chunk_doc_ids:
+                if d["id"] in filtered_doc_uuids:
+                    continue
+                if d.get("document_type") == "attachment_image":
+                    continue
+                if d.get("status") == "failed":
+                    continue
+                docs_without_chunks.append(d)
+
+        assert docs_without_chunks == []
+
 
 # ---------------------------------------------------------------------------
 # LlamaParse image ref stripping
@@ -468,19 +583,8 @@ class TestLlamaParseImageStripping:
     """Test that LlamaParse image refs are stripped, preserving alt-text."""
 
     def _strip(self, text: str) -> str:
-        """Apply the same regex as llamaparse_parser.py."""
-        import re
-        text = re.sub(
-            r'<img\s+[^>]*alt="([^"]*)"[^>]*/?>',
-            r"\1",
-            text,
-        )
-        text = re.sub(
-            r"!\[([^\]]*)\]\(page_\d+_(?:image|chart|seal|table)_\d+[^)]*\)",
-            r"\1",
-            text,
-        )
-        return text
+        from mtss.parsers.llamaparse_parser import strip_llamaparse_image_refs
+        return strip_llamaparse_image_refs(text)
 
     @pytest.mark.unit
     def test_strips_img_tag_preserves_alt(self):
@@ -527,3 +631,21 @@ class TestLlamaParseImageStripping:
         assert "page_1_image_1" not in result
         assert "Text before" in result
         assert "Text after" in result
+
+    @pytest.mark.unit
+    def test_strips_bare_image_ref(self):
+        assert self._strip("![alt text](image)") == "alt text"
+
+    @pytest.mark.unit
+    def test_strips_bare_image_ref_empty_alt(self):
+        assert self._strip("![](image)") == ""
+
+    @pytest.mark.unit
+    def test_preserves_real_image_filenames(self):
+        md = "![photo](real_file.jpg)"
+        assert self._strip(md) == md
+
+    @pytest.mark.unit
+    def test_multiple_bare_refs(self):
+        text = "![one](image) and ![two](image) and ![three](image)"
+        assert self._strip(text) == "one and two and three"

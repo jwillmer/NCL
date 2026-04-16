@@ -5,6 +5,15 @@ from pathlib import Path
 from typing import Optional
 
 
+class EmptyContentError(ValueError):
+    """Raised when a parser successfully opened a file but extracted no text content.
+
+    Distinct from other ValueError cases (corrupted file, missing dependency) so
+    callers can fall back to a more capable parser (e.g. LlamaParse for image-only
+    DOCX/XLSX) while letting real parse failures propagate.
+    """
+
+
 class BaseParser(ABC):
     """Abstract base class for document parsers.
 

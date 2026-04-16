@@ -159,6 +159,134 @@ def register(app: typer.Typer):
 
         asyncio.run(_ingest_update(source_dir, dry_run, limit))
 
+    @app.command("mark-failed")
+    def mark_failed(
+        file_paths: list[Path] = typer.Argument(
+            ...,
+            help="EML file paths to mark as FAILED in processing_log.jsonl",
+        ),
+        output_dir: Optional[Path] = typer.Option(
+            None,
+            "--output-dir",
+            "-o",
+            help="Output directory containing processing_log.jsonl (default: data/output)",
+        ),
+        reason: str = typer.Option(
+            "manual_mark_failed",
+            "--reason",
+            "-r",
+            help="Error reason recorded on the entry",
+        ),
+    ):
+        """Mark specific EML files as FAILED so they are picked up by `ingest --retry-failed`.
+
+        Use this to force re-ingest of specific emails that produced bad data
+        without wiping the whole output directory. After running, run:
+
+            MTSS ingest --retry-failed
+
+        which triggers force_reparse (cleans up existing docs/chunks before re-processing).
+
+        Examples:
+            MTSS mark-failed data/emails/100301741_nihjjh1l.22p.eml
+            MTSS mark-failed path/a.eml path/b.eml --reason "missing_context"
+        """
+        asyncio.run(_mark_failed(file_paths, output_dir, reason))
+
+    @app.command("clean-archive-md")
+    def clean_archive_md(
+        output_dir: Optional[Path] = typer.Option(
+            None,
+            "--output-dir",
+            "-o",
+            help="Output directory containing archive/ (default: data/output)",
+        ),
+        dry_run: bool = typer.Option(
+            False,
+            "--dry-run",
+            "-n",
+            help="Report files that would change without writing",
+        ),
+    ):
+        """Strip stale LlamaParse image refs from archived .md files.
+
+        Applies `strip_llamaparse_image_refs` to every .md under archive/.
+        Use this after bumping the stripping regex — e.g. to retroactively
+        clean `![alt](image)` links that slipped through an older version.
+        Zero API cost. Idempotent.
+        """
+        _clean_archive_md(output_dir, dry_run)
+
+
+def _clean_archive_md(output_dir: Optional[Path], dry_run: bool) -> None:
+    """Rewrite archive .md files with current image-ref stripping regex."""
+    from ..parsers.llamaparse_parser import strip_llamaparse_image_refs
+
+    resolved_output = output_dir or Path("data/output")
+    archive_dir = resolved_output / "archive"
+    if not archive_dir.exists():
+        console.print(f"[red]No archive directory at {archive_dir}[/red]")
+        raise typer.Exit(1)
+
+    changed: list[Path] = []
+    scanned = 0
+    for md_file in archive_dir.rglob("*.md"):
+        scanned += 1
+        original = md_file.read_text(encoding="utf-8", errors="replace")
+        cleaned = strip_llamaparse_image_refs(original)
+        if cleaned != original:
+            changed.append(md_file)
+            if not dry_run:
+                md_file.write_text(cleaned, encoding="utf-8")
+
+    action = "would change" if dry_run else "rewrote"
+    console.print(f"Scanned {scanned} .md files; {action} {len(changed)} file(s).")
+    for p in changed:
+        console.print(f"  {p.relative_to(archive_dir)}")
+
+
+async def _mark_failed(file_paths: list[Path], output_dir: Optional[Path], reason: str):
+    """Set the given files to status=FAILED in processing_log.jsonl."""
+    from ..storage.local_progress_tracker import LocalProgressTracker
+
+    resolved_output = output_dir or Path("data/output")
+    if not (resolved_output / "processing_log.jsonl").exists():
+        console.print(f"[red]No processing_log.jsonl found in {resolved_output}[/red]")
+        raise typer.Exit(1)
+
+    tracker = LocalProgressTracker(resolved_output)
+
+    matched: list[str] = []
+    missing: list[str] = []
+    for fp in file_paths:
+        fp_str = str(fp)
+        entry = tracker._entries.get(fp_str)
+        if entry is None:
+            for key in tracker._entries:
+                if Path(key).name == fp.name or Path(key).resolve() == fp.resolve():
+                    entry = tracker._entries[key]
+                    fp_str = key
+                    break
+        if entry is None:
+            missing.append(str(fp))
+            continue
+        await tracker.mark_failed(Path(fp_str), reason)
+        matched.append(fp_str)
+
+    tracker.compact()
+
+    table = Table(title="mark-failed summary")
+    table.add_column("Status", style="bold")
+    table.add_column("File")
+    for fp in matched:
+        table.add_row("[green]marked[/green]", fp)
+    for fp in missing:
+        table.add_row("[red]not found[/red]", fp)
+    console.print(table)
+
+    if missing:
+        console.print(f"[yellow]{len(missing)} file(s) not found in processing_log. Paths must match entries exactly or by basename.[/yellow]")
+
 
 async def _reprocess(target_version: int | None, limit: int, dry_run: bool):
     """Async implementation of reprocess command."""

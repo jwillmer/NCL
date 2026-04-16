@@ -106,6 +106,8 @@ See the [docs/](docs/) folder for detailed documentation:
 | `uv run MTSS failures` | View/export ingest reports |
 | `uv run MTSS reset-stale` | Reset files stuck in processing |
 | `uv run MTSS reprocess` | Re-ingest documents with older ingest version |
+| `uv run MTSS mark-failed` | Flag specific EMLs as FAILED so `--retry-failed` re-ingests them |
+| `uv run MTSS clean-archive-md` | Strip stale LlamaParse image refs from archived `.md` files |
 | `uv run MTSS vessels import` | Import vessel register from CSV |
 | `uv run MTSS vessels list` | List all vessels in registry |
 | `uv run MTSS vessels retag` | Re-tag existing chunks with vessel IDs |
@@ -218,6 +220,49 @@ uv run MTSS reprocess --target-version 2
 # Limit number of documents processed
 uv run MTSS reprocess --limit 50
 ```
+
+### Mark-Failed Command
+
+Flag specific EML files as `FAILED` in `processing_log.jsonl` without touching the rest of the output. Paired with `ingest --retry-failed`, this forces a targeted re-ingest of just those emails (existing documents + chunks are cleaned up first via `force_reparse`).
+
+Use when `mtss validate` surfaces issues tied to a small set of emails and you want to re-process them without wiping the whole run.
+
+```bash
+# Mark one email
+uv run MTSS mark-failed data/emails/100301741_nihjjh1l.22p.eml
+
+# Mark several, with a reason recorded on each entry
+uv run MTSS mark-failed \
+  data/emails/a.eml data/emails/b.eml \
+  --reason "missing_context_summary"
+
+# Target a non-default output directory
+uv run MTSS mark-failed ./some.eml --output-dir ./alt-output
+
+# Then re-ingest
+uv run MTSS ingest --retry-failed
+```
+
+Paths may be absolute or match by basename (e.g. `foo.eml` resolves if the log contains `data/emails/foo.eml`). Missing files are reported but do not abort the run.
+
+### Clean-Archive-MD Command
+
+Rewrite every `.md` file under `data/output/archive/` with the current LlamaParse image-ref stripping regex. Zero API cost, idempotent, and safe to re-run.
+
+Use after bumping the stripping logic to retroactively clean markdown files that were archived by an older version (for example, stale `![alt](image)` links that slipped through a previous regex).
+
+```bash
+# Preview files that would change
+uv run MTSS clean-archive-md --dry-run
+
+# Apply changes
+uv run MTSS clean-archive-md
+
+# Custom output directory
+uv run MTSS clean-archive-md --output-dir ./alt-output
+```
+
+Only human-readable markdown under `archive/` is touched — documents, chunks, and embeddings are left alone.
 
 ### Vessel Commands
 
