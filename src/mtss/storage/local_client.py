@@ -527,6 +527,7 @@ class LocalStorageClient:
                 f.write(json.dumps(self._doc_to_dict(doc), default=str) + "\n")
 
         # Merge prior topics with current run (current overrides by id)
+        # Drop orphan topics: created during extraction but never linked to chunks
         topics_path = self.output_dir / "topics.jsonl"
         current_topic_ids = set(self._topics.keys())
         with open(topics_path, "w") as f:
@@ -534,6 +535,9 @@ class LocalStorageClient:
                 if tid not in current_topic_ids:
                     f.write(json.dumps(prior_topic, default=str) + "\n")
             for topic in self._topics.values():
+                if (getattr(topic, "chunk_count", 0) or 0) == 0 and (getattr(topic, "document_count", 0) or 0) == 0:
+                    logger.debug(f"Dropping orphan topic: {topic.name}")
+                    continue
                 f.write(json.dumps(self._topic_to_dict(topic), default=str) + "\n")
 
     async def persist_ingest_result(
