@@ -421,8 +421,8 @@ async def search_node(
             await on_progress("Analyzing query")
             topic_filter = TopicFilter(
                 topic_extractor=TopicExtractor(),
-                topic_matcher=TopicMatcher(engine.db, engine.embeddings),
-                db=engine.db,
+                topic_matcher=TopicMatcher(engine.retriever.db, engine.retriever.embeddings),
+                db=engine.retriever.db,
             )
             filter_task = topic_filter.analyze_query(question, vessel_filter)
             embed_task = engine.retriever.embed_query(question)
