@@ -106,7 +106,11 @@ def write_run_summary(
 
     mins = int(elapsed // 60)
     secs = int(elapsed % 60)
-    table.add_row("Duration", f"{mins}m {secs}s", "")
+    duration_str = f"{mins}m {secs}s"
+    if processed_count > 0:
+        avg = elapsed / processed_count
+        duration_str += f" (~{avg:.0f}s per mail)"
+    table.add_row("Duration", duration_str, "")
     table.add_row("Files processed", str(processed_count), str(stats.get("completed", 0)))
     table.add_row("Failed", str(stats.get("failed", 0)), "")
     table.add_row("Documents", f"+{processed_count}", str(doc_count))
