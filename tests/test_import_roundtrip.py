@@ -209,35 +209,61 @@ class TestImportIdempotency:
 
     @pytest.mark.asyncio
     async def test_topics_dedup_by_name(self, tmp_path):
-        """Import should skip topics that already exist in DB."""
+        """Import should skip topics that already exist in DB with same counts."""
         from mtss.cli.import_cmd import _import_topics
 
+        # Mock async context manager for pool.acquire()
+        mock_conn = MagicMock()
+        mock_conn.fetch = AsyncMock(return_value=[
+            {"name": "existing", "chunk_count": 0, "document_count": 0, "description": None}
+        ])
+        mock_conn.execute = AsyncMock()
+
+        class FakeAcquire:
+            async def __aenter__(self):
+                return mock_conn
+            async def __aexit__(self, *args):
+                pass
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value = FakeAcquire()
         mock_db = MagicMock()
-        mock_db.get_topic_by_name = AsyncMock(
-            return_value=Topic(name="existing", display_name="Existing")
-        )
+        mock_db.get_pool = AsyncMock(return_value=mock_pool)
         mock_db.insert_topic = AsyncMock()
 
         # Write JSONL file
         topic_data = {"id": str(uuid4()), "name": "existing", "display_name": "Existing"}
         (tmp_path / "topics.jsonl").write_text(json.dumps(topic_data) + "\n")
 
-        counts = {"topics": 0, "skipped": 0, "failed": 0}
+        totals = {"topics": 0}
+        changes = {"failed": 0, "topics_removed": 0}
 
-        await _import_topics(mock_db, tmp_path, counts, dry_run=False, verbose=False)
+        await _import_topics(mock_db, tmp_path, totals, changes, dry_run=False, verbose=False)
 
+        # Topic already exists with same counts, should not be inserted or updated
         mock_db.insert_topic.assert_not_called()
-        assert counts["skipped"] == 1
 
     @pytest.mark.asyncio
     async def test_documents_dedup_by_doc_id(self, tmp_path):
         """Import should skip documents that already exist in DB."""
         from mtss.cli.import_cmd import _import_documents
 
+        # Mock async context manager for pool.acquire()
+        mock_conn = MagicMock()
+        mock_conn.fetch = AsyncMock(return_value=[
+            {"doc_id": "existing-doc"}
+        ])
+
+        class FakeAcquire:
+            async def __aenter__(self):
+                return mock_conn
+            async def __aexit__(self, *args):
+                pass
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value = FakeAcquire()
         mock_db = MagicMock()
-        mock_db.get_document_by_doc_id = AsyncMock(
-            return_value=MagicMock()  # Existing doc
-        )
+        mock_db.get_pool = AsyncMock(return_value=mock_pool)
         mock_db.persist_ingest_result = AsyncMock()
 
         doc_id = str(uuid4())
@@ -256,9 +282,10 @@ class TestImportIdempotency:
         (tmp_path / "documents.jsonl").write_text(json.dumps(doc) + "\n")
         (tmp_path / "chunks.jsonl").write_text("")
 
-        counts = {"documents": 0, "chunks": 0, "skipped": 0, "failed": 0}
+        totals = {"documents": 0, "chunks": 0}
+        changes = {"new_documents": 0, "new_chunks": 0, "failed": 0}
 
-        await _import_documents(mock_db, tmp_path, counts, dry_run=False, verbose=False)
+        await _import_documents(mock_db, tmp_path, totals, changes, dry_run=False, verbose=False)
 
+        # Doc already exists, should not be re-imported
         mock_db.persist_ingest_result.assert_not_called()
-        assert counts["skipped"] == 1

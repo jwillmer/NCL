@@ -694,16 +694,48 @@ class LocalStorageClient:
                     continue
                 f.write(json.dumps(self._chunk_to_dict(chunk), default=str) + "\n")
 
+        # Recompute topic counts from actual chunk metadata (all chunks on disk)
+        # This prevents stale accumulation across runs.
+        topic_chunk_counts: dict[str, int] = {}
+        topic_doc_sets: dict[str, set[str]] = {}
+        with open(chunks_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        c = json.loads(line)
+                        meta = c.get("metadata") or {}
+                        tids = meta.get("topic_ids")
+                        if tids:
+                            doc_id = c.get("document_id", "")
+                            for tid in tids:
+                                topic_chunk_counts[tid] = topic_chunk_counts.get(tid, 0) + 1
+                                if tid not in topic_doc_sets:
+                                    topic_doc_sets[tid] = set()
+                                topic_doc_sets[tid].add(doc_id)
+                    except json.JSONDecodeError:
+                        pass
+
         # Merge prior topics with current run (current overrides by id)
-        # Drop orphan topics: created during extraction but never linked to chunks
+        # Drop orphan topics: no chunks reference them
         topics_path = self.output_dir / "topics.jsonl"
         current_topic_ids = set(self._topics.keys())
         with open(topics_path, "w") as f:
             for tid, prior_topic in self._prior_topics.items():
                 if tid not in current_topic_ids:
+                    # Update prior topic counts from recomputed data
+                    prior_topic["chunk_count"] = topic_chunk_counts.get(tid, 0)
+                    prior_topic["document_count"] = len(topic_doc_sets.get(tid, set()))
+                    if prior_topic["chunk_count"] == 0 and prior_topic["document_count"] == 0:
+                        logger.debug(f"Dropping orphan prior topic: {prior_topic.get('name')}")
+                        continue
                     f.write(json.dumps(prior_topic, default=str) + "\n")
             for topic in self._topics.values():
-                if (getattr(topic, "chunk_count", 0) or 0) == 0 and (getattr(topic, "document_count", 0) or 0) == 0:
+                tid = str(topic.id)
+                recomputed_cc = topic_chunk_counts.get(tid, 0)
+                recomputed_dc = len(topic_doc_sets.get(tid, set()))
+                topic.chunk_count = recomputed_cc
+                topic.document_count = recomputed_dc
+                if recomputed_cc == 0 and recomputed_dc == 0:
                     logger.debug(f"Dropping orphan topic: {topic.name}")
                     continue
                 f.write(json.dumps(self._topic_to_dict(topic), default=str) + "\n")
