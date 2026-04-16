@@ -822,12 +822,17 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
                     warnings.append(f"  ... and {len(orphan_folders) - 20} more")
 
         if archive_file_mismatches:
+            # Map folder_id -> source email for readable output
+            folder_to_email = {
+                d["doc_id"][:16]: d.get("file_name") or d.get("source_title", "?")
+                for d in local_docs if d.get("depth", 0) == 0
+            }
             warnings.append(
                 f"{len(archive_file_mismatches)} documents have different archive file counts (local vs remote)"
             )
-            if verbose:
-                for doc_id, lc, rc in archive_file_mismatches:
-                    warnings.append(f"  {doc_id}: local={lc} remote={rc}")
+            for doc_id, lc, rc in archive_file_mismatches:
+                email_name = folder_to_email.get(doc_id, "?")
+                warnings.append(f"  {doc_id} ({email_name}): local={lc} remote={rc}")
 
         # === 8. Foreign key integrity (chunks -> documents) ===
         if remote_docs:
