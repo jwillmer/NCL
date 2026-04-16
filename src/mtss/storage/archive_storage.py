@@ -247,6 +247,30 @@ class ArchiveStorage:
 
         return result
 
+    def _list_paginated(self, folder: str, files_only: bool = True) -> List[dict]:
+        """List entries in a folder, paginating past the 100-item default.
+
+        Args:
+            folder: Folder path to list.
+            files_only: If True, skip subfolder placeholders (id=None).
+        """
+        page_size = 100
+        offset = 0
+        results: List[dict] = []
+        while True:
+            try:
+                page = self.bucket.list(folder, {"limit": page_size, "offset": offset})
+            except StorageException:
+                break
+            if files_only:
+                results.extend(f for f in page if f.get("id"))
+            else:
+                results.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        return results
+
     def delete_all(self) -> int:
         """Delete all files from bucket. Used by clean command.
 
@@ -254,27 +278,19 @@ class ArchiveStorage:
             Number of files deleted.
         """
         try:
-            # List root level folders (doc_id folders)
-            folders = self.bucket.list("")
+            # List root level entries (doc_id folders) — paginated
+            root_entries = self._list_paginated("", files_only=False)
             count = 0
 
-            for folder in folders:
-                folder_name = folder["name"]
+            for entry in root_entries:
+                folder_name = entry["name"]
                 paths: List[str] = []
 
-                # List files in folder
-                try:
-                    files = self.bucket.list(folder_name)
-                    paths.extend([f"{folder_name}/{f['name']}" for f in files])
-                except StorageException:
-                    pass
+                for f in self._list_paginated(folder_name):
+                    paths.append(f"{folder_name}/{f['name']}")
 
-                # List files in attachments subfolder
-                try:
-                    att_files = self.bucket.list(f"{folder_name}/attachments")
-                    paths.extend([f"{folder_name}/attachments/{f['name']}" for f in att_files])
-                except StorageException:
-                    pass
+                for f in self._list_paginated(f"{folder_name}/attachments"):
+                    paths.append(f"{folder_name}/attachments/{f['name']}")
 
                 if paths:
                     try:
