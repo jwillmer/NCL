@@ -767,7 +767,8 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
                             for f in storage.bucket.list(subfolder):
                                 name = f.get("name")
                                 if name and f.get("id"):
-                                    keys.add(f"{subfolder}/{name}")
+                                    # Decode URL-encoded names to match local keys (which are unquoted)
+                                    keys.add(f"{subfolder}/{_unquote(name)}")
                         except Exception:
                             pass
                     remote_keys_by_folder[folder_id] = keys

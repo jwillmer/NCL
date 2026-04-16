@@ -117,6 +117,7 @@ async def _import_data(
 
         await _import_topics(db, resolved_output, totals, changes, dry_run, verbose)
         await _import_documents(db, resolved_output, totals, changes, dry_run, verbose)
+        await _recompute_topic_counts(db, dry_run, verbose)
 
         await _remove_db_orphans(db, resolved_output, changes, dry_run, verbose)
 
@@ -374,6 +375,45 @@ async def _import_documents(db, output_dir, totals, changes, dry_run, verbose):
             progress.update(task_id, advance=1)
 
 
+async def _recompute_topic_counts(db, dry_run, verbose):
+    """Recompute topic chunk_count and document_count from actual chunk metadata."""
+    if dry_run:
+        return
+
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        # Count chunks per topic from actual chunk metadata
+        updated = await conn.execute("""
+            WITH topic_stats AS (
+                SELECT
+                    t.id AS topic_id,
+                    COALESCE(counts.chunk_count, 0) AS chunk_count,
+                    COALESCE(counts.document_count, 0) AS document_count
+                FROM topics t
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*) AS chunk_count,
+                        COUNT(DISTINCT c.document_id) AS document_count
+                    FROM chunks c
+                    WHERE c.metadata->'topic_ids' ? t.id::text
+                ) counts ON true
+            )
+            UPDATE topics
+            SET chunk_count = ts.chunk_count,
+                document_count = ts.document_count,
+                updated_at = NOW()
+            FROM topic_stats ts
+            WHERE topics.id = ts.topic_id
+              AND (topics.chunk_count != ts.chunk_count
+                   OR topics.document_count != ts.document_count)
+        """)
+
+    count_str = updated.split()[-1] if updated else "0"
+    count = int(count_str)
+    if count and verbose:
+        console.print(f"  [dim]Recomputed counts for {count} topics[/dim]")
+
+
 async def _remove_db_orphans(db, output_dir: Path, changes, dry_run, verbose):
     """Remove documents and chunks from Supabase that no longer exist locally."""
     local_doc_ids = set()
@@ -469,7 +509,8 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
                 for f in storage.bucket.list(subfolder):
                     name = f.get("name")
                     if name and f.get("id"):
-                        existing_keys.add(f"{subfolder}/{name}")
+                        # Decode URL-encoded names to match local keys (which are unquoted)
+                        existing_keys.add(f"{subfolder}/{unquote(name)}")
             except Exception:
                 pass  # Folder may not exist yet
             progress.advance(task_id)
