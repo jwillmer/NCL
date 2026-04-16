@@ -18,7 +18,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -41,6 +43,25 @@ logger = logging.getLogger(__name__)
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles with SPA fallback: serve index.html for unknown non-asset paths.
+
+    React Router uses BrowserRouter (HTML5 history API). Deep links like
+    /chat?threadId=... must return index.html so the client-side router can
+    resolve the route. Default StaticFiles returns 404 for unknown paths.
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                index = Path(self.directory) / "index.html"
+                if index.is_file():
+                    return FileResponse(index)
+            raise
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -209,9 +230,7 @@ async def lifespan(app: FastAPI):
         # This ensures /api/* routes take priority over the catch-all static mount
         static_dir = Path(__file__).parent.parent.parent.parent / "web" / "dist"
         if static_dir.exists():
-            from fastapi.staticfiles import StaticFiles
-
-            app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
+            app.mount("/", SPAStaticFiles(directory=static_dir, html=True), name="frontend")
             logger.info("Static frontend mounted from %s", static_dir)
 
         yield
