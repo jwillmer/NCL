@@ -422,17 +422,33 @@ async def _import_archives(archive_dir: Path, totals, changes, dry_run, remove_o
 
     # Pre-fetch existing files per folder to skip already-uploaded files.
     # List root and attachments/ separately to build correct full paths.
-    console.print(f"Checking {len(local_by_folder)} archive folders...")
+    # Uses thread pool since storage3 SDK is synchronous.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     existing_keys: set[str] = set()
+    subfolders = []
     for folder_id in local_by_folder:
-        for subfolder in (folder_id, f"{folder_id}/attachments"):
-            try:
-                for f in storage.bucket.list(subfolder):
-                    name = f.get("name")
-                    if name and f.get("id"):
-                        existing_keys.add(f"{subfolder}/{name}")
-            except Exception:
-                pass  # Folder may not exist yet
+        subfolders.append(folder_id)
+        subfolders.append(f"{folder_id}/attachments")
+
+    def _list_subfolder(subfolder: str) -> list[str]:
+        keys: list[str] = []
+        try:
+            for f in storage.bucket.list(subfolder):
+                name = f.get("name")
+                if name and f.get("id"):
+                    keys.append(f"{subfolder}/{name}")
+        except Exception:
+            pass  # Folder may not exist yet
+        return keys
+
+    with make_progress() as progress:
+        task_id = progress.add_task(f"Checking {len(local_by_folder)} folders", total=len(subfolders))
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = {pool.submit(_list_subfolder, sf): sf for sf in subfolders}
+            for future in as_completed(futures):
+                existing_keys.update(future.result())
+                progress.advance(task_id)
 
     # Build set of expected local keys for orphan detection
     local_keys = {rel_key for files in local_by_folder.values() for _, rel_key in files}
