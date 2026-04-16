@@ -460,6 +460,17 @@ async def _ingest(
             tracker.compact()
         except Exception:
             pass
+
+        # Merge near-duplicate topics before flushing
+        try:
+            merges = db.merge_similar_topics(threshold=0.78)
+            if merges:
+                console.print(f"\n[cyan]Merged {len(merges)} similar topics:[/cyan]")
+                for absorbed, kept, sim in merges:
+                    console.print(f"  [dim]{absorbed}[/dim] → [cyan]{kept}[/cyan] ({sim})")
+        except Exception as e:
+            console.print(f"[yellow]Topic merge failed (non-fatal): {e}[/yellow]")
+
         db.flush()
         db.write_manifest()
         console.print(f"[green]Manifest written to {resolved_output / 'manifest.json'}[/green]")

@@ -47,6 +47,7 @@ class LocalStorageClient:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._prior_documents: list[Dict[str, Any]] = []
         self._prior_topics: Dict[str, Dict[str, Any]] = {}
+        self._merged_topic_map: Dict[str, str] = {}  # absorbed_id -> keeper_id
         self._load_prior_data()
 
     def _load_prior_data(self):
@@ -339,6 +340,80 @@ class LocalStorageClient:
                 if hasattr(topic, "document_count"):
                     topic.document_count = (topic.document_count or 0) + document_delta
 
+    def merge_similar_topics(self, threshold: float = 0.80) -> List[tuple]:
+        """Merge near-duplicate topics that slipped past the creation threshold.
+
+        Finds topic pairs with cosine similarity >= threshold and merges the
+        smaller topic into the larger one. Updates all chunk metadata references.
+
+        Args:
+            threshold: Similarity threshold for merging (default 0.80).
+
+        Returns:
+            List of (absorbed_name, kept_name, similarity) tuples.
+        """
+        topics = list(self._topics.values())
+        if len(topics) < 2:
+            return []
+
+        # Build similarity matrix for all topic pairs
+        merges = []
+        absorbed_ids: set = set()
+
+        # Sort by chunk_count descending so larger topics absorb smaller ones
+        topics.sort(key=lambda t: getattr(t, "chunk_count", 0) or 0, reverse=True)
+
+        for i, topic_a in enumerate(topics):
+            if str(topic_a.id) in absorbed_ids:
+                continue
+            emb_a = getattr(topic_a, "embedding", None)
+            if emb_a is None:
+                continue
+
+            for j in range(i + 1, len(topics)):
+                topic_b = topics[j]
+                if str(topic_b.id) in absorbed_ids:
+                    continue
+                emb_b = getattr(topic_b, "embedding", None)
+                if emb_b is None:
+                    continue
+
+                sim = self._cosine_similarity(emb_a, emb_b)
+                if sim >= threshold:
+                    # Merge topic_b into topic_a (topic_a is larger)
+                    self._merge_topic_into(topic_a, topic_b)
+                    absorbed_ids.add(str(topic_b.id))
+                    merges.append((topic_b.name, topic_a.name, round(sim, 3)))
+
+        # Remove absorbed topics from all indexes (including prior, to prevent resurrection)
+        for tid in absorbed_ids:
+            topic = self._topics.pop(tid, None)
+            if topic and hasattr(topic, "name"):
+                self._topics_by_name.pop(topic.name, None)
+            self._prior_topics.pop(tid, None)
+
+        return merges
+
+    def _merge_topic_into(self, keeper, absorbed):
+        """Merge absorbed topic into keeper: transfer counts and update chunk metadata."""
+        # Transfer counts
+        keeper.chunk_count = (getattr(keeper, "chunk_count", 0) or 0) + (getattr(absorbed, "chunk_count", 0) or 0)
+        keeper.document_count = (getattr(keeper, "document_count", 0) or 0) + (getattr(absorbed, "document_count", 0) or 0)
+
+        # Track replacement for prior chunks rewrite during flush
+        absorbed_id = str(absorbed.id)
+        keeper_id = str(keeper.id)
+        self._merged_topic_map[absorbed_id] = keeper_id
+        for chunk in self._chunks.values():
+            meta = getattr(chunk, "metadata", None)
+            if not isinstance(meta, dict):
+                continue
+            topic_ids = meta.get("topic_ids")
+            if topic_ids and absorbed_id in topic_ids:
+                topic_ids = [keeper_id if t == absorbed_id else t for t in topic_ids]
+                # Deduplicate (if keeper was already in the list)
+                meta["topic_ids"] = list(dict.fromkeys(topic_ids))
+
     # ── Vessel operations ──────────────────────────────────────────
 
     async def get_all_vessels(self):
@@ -525,6 +600,35 @@ class LocalStorageClient:
                     f.write(json.dumps(prior_doc, default=str) + "\n")
             for doc in self._documents.values():
                 f.write(json.dumps(self._doc_to_dict(doc), default=str) + "\n")
+
+        # Rewrite chunks: current in-memory chunks (with merged topic IDs) + prior chunks
+        current_chunk_ids = {str(cid) for cid in self._chunks}
+        chunks_path = self.output_dir / "chunks.jsonl"
+        # Read prior chunks from disk, apply topic ID replacements, skip current-run chunks
+        prior_lines = []
+        if chunks_path.exists():
+            with open(chunks_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            c = json.loads(line)
+                            if c.get("id") not in current_chunk_ids:
+                                # Apply absorbed topic ID replacements to prior chunks
+                                meta = c.get("metadata")
+                                if isinstance(meta, dict) and self._merged_topic_map:
+                                    tids = meta.get("topic_ids")
+                                    if tids:
+                                        meta["topic_ids"] = list(dict.fromkeys(
+                                            self._merged_topic_map.get(t, t) for t in tids
+                                        ))
+                                prior_lines.append(json.dumps(c, default=str))
+                        except json.JSONDecodeError:
+                            pass
+        with open(chunks_path, "w", encoding="utf-8") as f:
+            for line in prior_lines:
+                f.write(line + "\n")
+            for chunk in self._chunks.values():
+                f.write(json.dumps(self._chunk_to_dict(chunk), default=str) + "\n")
 
         # Merge prior topics with current run (current overrides by id)
         # Drop orphan topics: created during extraction but never linked to chunks
