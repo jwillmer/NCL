@@ -297,25 +297,14 @@ async def _import_archives(archive_dir: Path, counts, dry_run, verbose):
 
     storage = ArchiveStorage()
 
-    async def _upload_one(local_path: Path, rel_key: str):
-        content_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
-        await asyncio.to_thread(
-            lambda: storage.upload_file(rel_key, local_path.read_bytes(), content_type)
-        )
-
     with make_progress() as progress:
         task_id = progress.add_task("Archives", total=len(files_to_upload))
-        batch_size = 10
-        for i in range(0, len(files_to_upload), batch_size):
-            batch = files_to_upload[i : i + batch_size]
-            results = await asyncio.gather(
-                *[_upload_one(lp, rk) for lp, rk in batch],
-                return_exceptions=True,
-            )
-            for j, result in enumerate(results):
-                if isinstance(result, Exception):
-                    logger.warning(f"Failed to upload {batch[j][1]}: {result}")
-                    counts["failed"] += 1
-                else:
-                    counts["archives"] += 1
-            progress.update(task_id, advance=len(batch))
+        for local_path, rel_key in files_to_upload:
+            try:
+                content_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
+                storage.upload_file(rel_key, local_path.read_bytes(), content_type)
+                counts["archives"] += 1
+            except Exception as e:
+                logger.warning(f"Failed to upload {rel_key}: {e}")
+                counts["failed"] += 1
+            progress.update(task_id, advance=1)

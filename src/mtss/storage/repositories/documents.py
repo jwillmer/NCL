@@ -13,6 +13,17 @@ from ...models.chunk import Chunk
 from ...models.document import Document, ProcessingStatus
 from .base import BaseRepository
 
+
+def _to_datetime(val: Any) -> datetime | None:
+    """Ensure value is a datetime object (asyncpg requires this for timestamptz)."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        return datetime.fromisoformat(val)
+    return val
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,14 +79,10 @@ class DocumentRepository(BaseRepository):
                     "email_participants": doc.email_metadata.participants,
                     "email_initiator": doc.email_metadata.initiator,
                     "email_date_start": (
-                        doc.email_metadata.date_start.isoformat()
-                        if doc.email_metadata.date_start
-                        else None
+                        _to_datetime(doc.email_metadata.date_start)
                     ),
                     "email_date_end": (
-                        doc.email_metadata.date_end.isoformat()
-                        if doc.email_metadata.date_end
-                        else None
+                        _to_datetime(doc.email_metadata.date_end)
                     ),
                     "email_message_count": doc.email_metadata.message_count,
                 }
@@ -482,8 +489,8 @@ class DocumentRepository(BaseRepository):
             doc.email_metadata.subject if doc.email_metadata else None,
             doc.email_metadata.participants if doc.email_metadata else None,
             doc.email_metadata.initiator if doc.email_metadata else None,
-            doc.email_metadata.date_start.isoformat() if doc.email_metadata and doc.email_metadata.date_start else None,
-            doc.email_metadata.date_end.isoformat() if doc.email_metadata and doc.email_metadata.date_end else None,
+            _to_datetime(doc.email_metadata.date_start) if doc.email_metadata else None,
+            _to_datetime(doc.email_metadata.date_end) if doc.email_metadata else None,
             doc.email_metadata.message_count if doc.email_metadata else None,
             doc.attachment_metadata.content_type if doc.attachment_metadata else None,
             doc.attachment_metadata.size_bytes if doc.attachment_metadata else None,

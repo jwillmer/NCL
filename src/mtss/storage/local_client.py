@@ -398,6 +398,99 @@ class LocalStorageClient:
             "parent_document_id": str(parent_document_id) if parent_document_id else None,
         })
 
+    # ── Result JSON ────────────────────────────────────────────────
+
+    def _write_result_json(self, email_doc, attachment_docs, chunks, topic_ids):
+        """Write result.json with AI-enriched data to the archive folder."""
+        doc_id = getattr(email_doc, "doc_id", None)
+        if not doc_id:
+            return
+
+        archive_dir = self.output_dir / "archive" / doc_id
+        if not archive_dir.exists():
+            return
+
+        # Categorize chunks
+        body_chunks = []
+        digest_text = None
+        att_chunk_counts: Dict[str, int] = {}  # document_id -> count
+
+        for chunk in chunks:
+            chunk_type = (chunk.metadata or {}).get("type", "")
+            if chunk_type == "thread_digest":
+                digest_text = chunk.content
+            elif chunk_type == "email_body":
+                body_chunks.append(chunk)
+            else:
+                did = str(chunk.document_id)
+                att_chunk_counts[did] = att_chunk_counts.get(did, 0) + 1
+
+        # Extract context summary from first body chunk
+        context_summary = None
+        if body_chunks:
+            context_summary = body_chunks[0].context_summary
+
+        # Collect vessel info from chunk metadata
+        vessel_ids = set()
+        vessel_types = set()
+        vessel_classes = set()
+        for chunk in chunks:
+            meta = chunk.metadata or {}
+            for vid in meta.get("vessel_ids", []):
+                vessel_ids.add(vid)
+            for vt in meta.get("vessel_types", []):
+                vessel_types.add(vt)
+            for vc in meta.get("vessel_classes", []):
+                vessel_classes.add(vc)
+
+        # Resolve topic names
+        topics_info = []
+        if topic_ids:
+            for tid in topic_ids:
+                topic = self._topics.get(str(tid))
+                if topic:
+                    topics_info.append({
+                        "name": topic.name,
+                        "display_name": getattr(topic, "display_name", topic.name),
+                    })
+
+        # Build attachment summary
+        attachments_info = []
+        for doc in attachment_docs:
+            attachments_info.append({
+                "file_name": doc.file_name,
+                "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else doc.document_type,
+                "chunks": att_chunk_counts.get(str(doc.id), 0),
+            })
+
+        # Email metadata
+        email_meta = getattr(email_doc, "email_metadata", None)
+
+        result = {
+            "doc_id": doc_id,
+            "subject": email_meta.subject if email_meta else getattr(email_doc, "source_title", None),
+            "participants": email_meta.participants if email_meta else [],
+            "initiator": email_meta.initiator if email_meta else None,
+            "date_start": email_meta.date_start.isoformat() if email_meta and hasattr(email_meta.date_start, "isoformat") else (email_meta.date_start if email_meta else None),
+            "date_end": email_meta.date_end.isoformat() if email_meta and hasattr(email_meta.date_end, "isoformat") else (email_meta.date_end if email_meta else None),
+            "message_count": email_meta.message_count if email_meta else 1,
+            "context_summary": context_summary,
+            "thread_digest": digest_text,
+            "vessels": sorted(vessel_types),
+            "topics": topics_info,
+            "chunks": {
+                "total": len(chunks),
+                "email_body": len(body_chunks),
+                "thread_digest": 1 if digest_text else 0,
+                "attachments": sum(att_chunk_counts.values()),
+            },
+            "attachments": attachments_info,
+        }
+
+        result_path = archive_dir / "result.json"
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False, default=str)
+
     # ── Manifest / flush / close ───────────────────────────────────
 
     def write_manifest(self):
@@ -459,6 +552,9 @@ class LocalStorageClient:
             await self.insert_chunks(chunks)
         if topic_ids and chunk_delta:
             await self.increment_topic_counts(topic_ids, chunk_delta=chunk_delta, document_delta=1)
+
+        # Write result.json to archive folder
+        self._write_result_json(email_doc, attachment_docs, chunks, topic_ids)
 
     async def close(self) -> None:
         """Flush and close local storage."""
