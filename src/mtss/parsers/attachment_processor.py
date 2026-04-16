@@ -242,9 +242,20 @@ class AttachmentProcessor:
         logger.info(f"Created {len(chunks)} chunks from {file_path.name}")
         return chunks
 
+    # Fallback when filename has no/mangled extension (e.g. trailing dot)
+    _MIMETYPE_TO_EXT = {
+        "application/pdf": ".pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        "text/csv": ".csv",
+        "text/html": ".html",
+    }
+
     def _get_tiered_parser(self, file_path: Path, content_type: str | None = None):
         """Select parser using tiered routing: local first, LlamaParse fallback."""
         ext = file_path.suffix.lower()
+        if not ext or ext == ".":
+            ext = self._MIMETYPE_TO_EXT.get(content_type or "", "")
 
         if ext == ".pdf":
             from .pdf_classifier import PDFComplexity, classify_pdf

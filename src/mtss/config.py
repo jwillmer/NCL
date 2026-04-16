@@ -133,9 +133,6 @@ class Settings(BaseSettings):
     )
 
     # Processing Options
-    max_concurrent_embeddings: int = Field(
-        default=5, validation_alias="MAX_CONCURRENT_EMBEDDINGS"
-    )
     max_concurrent_files: int = Field(
         default=8, validation_alias="MAX_CONCURRENT_FILES"
     )

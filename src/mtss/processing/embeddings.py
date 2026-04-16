@@ -75,7 +75,6 @@ class EmbeddingGenerator:
         self.model = settings.embedding_model
         self.dimensions = settings.embedding_dimensions
         self.max_tokens = settings.embedding_max_tokens
-        self.max_concurrent = settings.max_concurrent_embeddings
         self.batch_size = settings.embedding_batch_size
 
         # Initialize tokenizer for truncation

@@ -29,6 +29,17 @@ class PreprocessResult:
     image_description: Optional[str] = None
 
 
+# Extensions and MIME types handled by local parsers (tiered routing)
+_LOCAL_PARSER_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".csv", ".html", ".htm"}
+_LOCAL_PARSER_MIMETYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv",
+    "text/html",
+}
+
+
 class DocumentPreprocessor:
     """Preprocessor for routing files to appropriate parsers and filtering.
 
@@ -176,8 +187,7 @@ class DocumentPreprocessor:
                 )
 
         # Check local parsers first (not in registry, handled by tiered routing)
-        _LOCAL_PARSER_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".csv", ".html", ".htm"}
-        if file_path.suffix.lower() in _LOCAL_PARSER_EXTENSIONS:
+        if file_path.suffix.lower() in _LOCAL_PARSER_EXTENSIONS or actual_type in _LOCAL_PARSER_MIMETYPES:
             return PreprocessResult(
                 should_process=True,
                 parser_name="local",

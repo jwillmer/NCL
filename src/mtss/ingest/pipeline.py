@@ -425,16 +425,23 @@ async def process_email(
     # Use hierarchy_manager's ingest_root to ensure consistent doc_id computation
     source_id = normalize_source_id(source_eml_path, components.hierarchy_manager.ingest_root)
 
-    # Step 1: Dedup check
-    action, cleanup_doc_id = await _resolve_existing_document(
-        source_id, file_hash, components, version_manager, vprint, file_ctx
-    )
-    if action == "skip":
-        result.skipped = True
-        result.skip_reason = "already_processed"
-        return result
-    if action == "cleanup_and_proceed" and cleanup_doc_id:
-        components.db.delete_document_for_reprocess(cleanup_doc_id)
+    # Step 1: Dedup check (skip when force_reparse — always clean up and reprocess)
+    if force_reparse:
+        target_doc_id = compute_doc_id(source_id, file_hash)
+        existing = await components.db.get_document_by_doc_id(target_doc_id)
+        if existing:
+            vprint("Force reparse: cleaning up existing document", file_ctx)
+            components.db.delete_document_for_reprocess(existing.id)
+    else:
+        action, cleanup_doc_id = await _resolve_existing_document(
+            source_id, file_hash, components, version_manager, vprint, file_ctx
+        )
+        if action == "skip":
+            result.skipped = True
+            result.skip_reason = "already_processed"
+            return result
+        if action == "cleanup_and_proceed" and cleanup_doc_id:
+            components.db.delete_document_for_reprocess(cleanup_doc_id)
 
     await tracker.mark_started(eml_path, file_hash)
     vprint(f"Processing: {eml_path}", file_ctx)

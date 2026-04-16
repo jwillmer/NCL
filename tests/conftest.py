@@ -157,7 +157,6 @@ def comprehensive_mock_settings():
     settings.embedding_model = "text-embedding-3-small"
     settings.embedding_dimensions = 1536
     settings.embedding_max_tokens = 8191
-    settings.max_concurrent_embeddings = 5
     settings.embedding_batch_size = 100
     # Chunking settings
     settings.chunk_size_tokens = 512

@@ -43,12 +43,6 @@ def register(app: typer.Typer):
             "-s",
             help="Directory containing EML files",
         ),
-        batch_size: int = typer.Option(
-            10,
-            "--batch-size",
-            "-b",
-            help="Number of files to process in each batch",
-        ),
         resume: bool = typer.Option(
             True,
             "--resume/--no-resume",
@@ -103,7 +97,7 @@ def register(app: typer.Typer):
 
         try:
             asyncio.run(_ingest(
-                source_dir, batch_size, resume, retry_failed,
+                source_dir, resume, retry_failed,
                 reprocess_outdated, lenient, output_dir, limit,
             ))
         except (SystemExit, KeyboardInterrupt):
@@ -175,7 +169,6 @@ def register(app: typer.Typer):
 
 async def _ingest(
     source_dir: Optional[Path],
-    batch_size: int,
     resume: bool,
     retry_failed: bool,
     reprocess_outdated: bool = False,
@@ -228,7 +221,7 @@ async def _ingest(
 
     # Initialize continuous report writer
     report_writer = IngestReportWriter(source_dir=str(source_dir))
-    console.print(f"[dim]Report: {report_writer.get_path()}[/dim]")
+    vprint(f"Report: {report_writer.get_path()}")
 
     run_start = time.monotonic()
     run_start_time = datetime.now(timezone.utc).isoformat()
@@ -288,11 +281,14 @@ async def _ingest(
         slow_count = slow_queue.qsize()
         vprint(f"Lane assignment: {fast_count} fast, {slow_count} slow")
 
-        # Split workers: 60% fast, 40% slow (minimum 1 each if both queues have items)
+        # Split workers: slow workers capped at LlamaParse concurrency,
+        # rest go to fast lane. Slow workers help with fast queue when idle,
+        # but fast workers never touch slow queue — prevents LlamaParse
+        # from starving fast-lane processing.
         total_workers = settings.max_concurrent_files
         if fast_count > 0 and slow_count > 0:
-            fast_worker_count = max(1, round(total_workers * 0.6))
-            slow_worker_count = max(1, total_workers - fast_worker_count)
+            slow_worker_count = min(slow_count, settings.max_concurrent_llamaparse, total_workers - 1)
+            fast_worker_count = total_workers - slow_worker_count
         elif fast_count > 0:
             fast_worker_count = total_workers
             slow_worker_count = 0
@@ -300,7 +296,7 @@ async def _ingest(
             fast_worker_count = 0
             slow_worker_count = total_workers
 
-        vprint(f"Worker split: {fast_worker_count} fast workers, {slow_worker_count} slow workers")
+        vprint(f"Worker split: {fast_worker_count} fast, {slow_worker_count} slow (LlamaParse limit: {settings.max_concurrent_llamaparse})")
 
         # Process files with progress tracking
         with Progress(
@@ -360,7 +356,7 @@ async def _ingest(
                             tracker=tracker,
                             unsupported_logger=unsupported_logger,
                             version_manager=version_manager,
-                            force_reparse=reprocess_outdated,
+                            force_reparse=reprocess_outdated or retry_failed,
                             lenient=lenient,
                             on_verbose=vprint,
                             issue_tracker=_issue_tracker,
@@ -390,7 +386,7 @@ async def _ingest(
                     slot_queue.put_nowait(slot_idx)
 
             async def fast_worker() -> None:
-                """Worker for fast queue. Helps slow queue when fast is empty."""
+                """Worker for fast queue only. Never touches slow queue."""
                 while True:
                     if _common._shutdown_requested:
                         return
@@ -398,15 +394,10 @@ async def _ingest(
                         file_path = fast_queue.get_nowait()
                         await process_one(file_path)
                     except asyncio.QueueEmpty:
-                        # Fast queue empty - help with slow queue
-                        try:
-                            file_path = slow_queue.get_nowait()
-                            await process_one(file_path)
-                        except asyncio.QueueEmpty:
-                            return  # Both queues empty
+                        return  # Fast queue empty — done
 
             async def slow_worker() -> None:
-                """Worker dedicated to slow queue."""
+                """Worker for slow queue. Helps fast queue when idle."""
                 while True:
                     if _common._shutdown_requested:
                         return
@@ -414,7 +405,12 @@ async def _ingest(
                         file_path = slow_queue.get_nowait()
                         await process_one(file_path)
                     except asyncio.QueueEmpty:
-                        return  # Slow queue empty
+                        # Slow queue empty — help with fast queue
+                        try:
+                            file_path = fast_queue.get_nowait()
+                            await process_one(file_path)
+                        except asyncio.QueueEmpty:
+                            return  # Both queues empty
 
             # Start both worker pools in parallel
             all_workers = (
@@ -453,7 +449,7 @@ async def _ingest(
         # Finalize report with stats and cleanup old reports
         report_writer.update_stats(len(files), processed_count)
         report_writer.cleanup_old_reports()
-        console.print(f"\nReport: {report_writer.get_path()}")
+        vprint(f"\nReport: {report_writer.get_path()}")
 
     finally:
         try:
@@ -465,9 +461,9 @@ async def _ingest(
         try:
             merges = db.merge_similar_topics(threshold=0.78)
             if merges:
-                console.print(f"\n[cyan]Merged {len(merges)} similar topics:[/cyan]")
+                vprint(f"\nMerged {len(merges)} similar topics:")
                 for absorbed, kept, sim in merges:
-                    console.print(f"  [dim]{absorbed}[/dim] → [cyan]{kept}[/cyan] ({sim})")
+                    vprint(f"  {absorbed} → {kept} ({sim})")
         except Exception as e:
             console.print(f"[yellow]Topic merge failed (non-fatal): {e}[/yellow]")
 

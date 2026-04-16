@@ -190,12 +190,26 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
     # Image chunks skip LLM context generation by design — only flag non-image chunks
     image_doc_uuids = {d["id"] for d in docs if d.get("document_type") == "attachment_image"}
     text_chunks = [c for c in chunks if c["document_id"] not in image_doc_uuids]
-    no_context = sum(1 for c in text_chunks if not c.get("context_summary"))
-    no_emb_text = sum(1 for c in text_chunks if not c.get("embedding_text"))
-    if no_context:
-        warnings.append(f"{no_context}/{len(text_chunks)} text chunks missing context_summary")
-    if no_emb_text:
-        warnings.append(f"{no_emb_text}/{len(text_chunks)} text chunks missing embedding_text")
+    incomplete_chunks = [c for c in text_chunks if not c.get("context_summary") or not c.get("embedding_text")]
+    if incomplete_chunks:
+        # Group by source email for actionable output
+        affected_docs: Dict[str, int] = {}
+        for c in incomplete_chunks:
+            did = c["document_id"]
+            affected_docs[did] = affected_docs.get(did, 0) + 1
+        affected_emails: Dict[str, int] = {}
+        for d in docs:
+            if d["id"] in affected_docs:
+                root = d.get("root_id", d["id"])
+                email = doc_by_uuid.get(root, d)
+                eml = email.get("source_id", "?")
+                affected_emails[eml] = affected_emails.get(eml, 0) + affected_docs[d["id"]]
+        warnings.append(
+            f"{len(incomplete_chunks)}/{len(text_chunks)} text chunks missing context_summary/embedding_text "
+            f"({len(affected_emails)} emails)"
+        )
+        for eml, cnt in sorted(affected_emails.items()):
+            warnings.append(f"    {eml} ({cnt} chunks)")
 
     # === 8. Documents without chunks ===
     docs_without_chunks = []
@@ -229,7 +243,31 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
             f"{len(orphan_attachments)} attachments have root_id not matching any email"
         )
 
-    # === 10. Topic health ===
+    # === 10. Failed documents still in output ===
+    failed_docs = [d for d in docs if d.get("status") == "failed"]
+    if failed_docs:
+        warnings.append(
+            f"{len(failed_docs)} document(s) have status='failed' in documents.jsonl"
+        )
+        if verbose:
+            for d in failed_docs:
+                err = d.get("error_message") or "no error message"
+                warnings.append(f"  {d.get('doc_id', '?')[:16]}: {err[:80]}")
+
+    # === 11. Trailing-dot filenames (may cause parsing issues) ===
+    trailing_dot_docs = [
+        d for d in docs if d.get("source_id") and d["source_id"].endswith(".")
+    ]
+    if trailing_dot_docs:
+        warnings.append(
+            f"{len(trailing_dot_docs)} document(s) have source_id ending in '.' "
+            f"(potential parsing issues)"
+        )
+        if verbose:
+            for d in trailing_dot_docs:
+                warnings.append(f"  {d.get('document_type')}: {d.get('source_id', '')[:70]}")
+
+    # === 12. Topic health ===
     no_topic_embedding = sum(1 for t in topics if not t.get("embedding"))
     if no_topic_embedding:
         warnings.append(f"{no_topic_embedding}/{len(topics)} topics missing embeddings")
@@ -240,7 +278,7 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
             f"{len(zero_count_topics)}/{len(topics)} topics have document_count=0"
         )
 
-    # === 11. Archive directory and URI checks ===
+    # === 13. Archive directory and URI checks ===
     archive_dir = output_dir / "archive"
     _ARCHIVE_URI_FIELDS = ("archive_path", "archive_browse_uri", "archive_download_uri")
     archive_folders_on_disk: set[str] = set()

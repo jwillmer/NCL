@@ -138,5 +138,10 @@ class LlamaParseParser(BaseParser):
 
             except Exception as e:
                 if "LlamaParse" in str(type(e).__name__):
-                    raise ValueError(f"LlamaParse failed: {e}") from e
+                    # Strip noisy "Started parsing the file under job_id ..." lines
+                    msg = "\n".join(
+                        ln for ln in str(e).splitlines()
+                        if not ln.startswith("Started parsing the file")
+                    ).strip()
+                    raise ValueError(f"LlamaParse failed: {msg}") from e
                 raise

@@ -311,13 +311,13 @@ async def _import_documents(db, output_dir, totals, changes, dry_run, verbose):
     if dry_run:
         return
 
-    # Batch-fetch existing doc_ids (1 query instead of N)
-    local_doc_ids = [r.get("doc_id", "") for r in roots]
+    # Batch-fetch existing doc_ids for all documents (roots + attachments)
+    all_local_doc_ids = [d.get("doc_id", "") for d in docs_data if d.get("doc_id")]
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         existing_rows = await conn.fetch(
             "SELECT doc_id FROM documents WHERE doc_id = ANY($1::text[])",
-            local_doc_ids,
+            all_local_doc_ids,
         )
     existing_doc_ids = {r["doc_id"] for r in existing_rows}
 
@@ -335,9 +335,19 @@ async def _import_documents(db, output_dir, totals, changes, dry_run, verbose):
             try:
                 email_doc = _dict_to_document(root_dict)
                 child_dicts = children_by_root.get(str(root_dict["id"]), [])
-                attachment_docs = [_dict_to_document(cd) for cd in child_dicts]
+                # Deduplicate children by doc_id, skip existing and self-references
+                skip_doc_ids = existing_doc_ids | {root_dict.get("doc_id")}
+                seen_doc_ids: set = set()
+                unique_children = []
+                for cd in child_dicts:
+                    did = cd.get("doc_id")
+                    if did in skip_doc_ids or did in seen_doc_ids:
+                        continue
+                    seen_doc_ids.add(did)
+                    unique_children.append(cd)
+                attachment_docs = [_dict_to_document(cd) for cd in unique_children]
 
-                # Gather chunks for all documents in this email tree
+                # Gather chunks for all NEW documents in this email tree
                 all_doc_ids = [str(email_doc.id)] + [str(d.id) for d in attachment_docs]
                 all_chunks = []
                 for did in all_doc_ids:
@@ -383,14 +393,16 @@ async def _import_archives(archive_dir: Path, totals, changes, dry_run, remove_o
             continue
 
         rel_key = str(file_path.relative_to(archive_dir)).replace("\\", "/")
-        if ".." in rel_key:
-            logger.warning(f"Skipping path with traversal: {rel_key}")
-            continue
 
         # Local filenames are URL-encoded by _sanitize_storage_key (e.g. %20 for spaces).
         # Supabase client handles encoding itself, so decode first. Also replace ~
         # which Supabase Storage rejects in keys (older ingests may have it).
         rel_key = unquote(rel_key).replace("~", "_")
+
+        # Check for actual path traversal (.. as a path segment, not in filenames like "S.A..pdf")
+        if any(seg == ".." for seg in rel_key.split("/")):
+            logger.warning(f"Skipping path with traversal: {rel_key}")
+            continue
         folder = rel_key.split("/", 1)[0]
         local_by_folder.setdefault(folder, []).append((file_path, rel_key))
 

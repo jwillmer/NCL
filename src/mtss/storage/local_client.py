@@ -137,13 +137,14 @@ class LocalStorageClient:
     # ── Document operations ────────────────────────────────────────
 
     async def insert_document(self, doc: Any) -> Any:
-        """Insert a document record to local storage."""
+        """Insert a document record to local storage. Skips if doc_id already exists."""
+        if hasattr(doc, "doc_id") and doc.doc_id:
+            if doc.doc_id in self._documents_by_doc_id:
+                return self._documents_by_doc_id[doc.doc_id]
+            self._documents_by_doc_id[doc.doc_id] = doc
         self._documents[doc.id] = doc
-        # Populate indexes
         if hasattr(doc, "file_hash") and doc.file_hash:
             self._documents_by_hash[doc.file_hash] = doc
-        if hasattr(doc, "doc_id") and doc.doc_id:
-            self._documents_by_doc_id[doc.doc_id] = doc
         if hasattr(doc, "source_id") and doc.source_id:
             self._documents_by_source_id[doc.source_id] = doc
         self._append_jsonl("documents.jsonl", self._doc_to_dict(doc))
@@ -192,21 +193,47 @@ class LocalStorageClient:
         ]
 
     def delete_document_for_reprocess(self, doc_id):
-        """Synchronous -- matches SupabaseClient signature."""
+        """Remove a document and all its children + chunks for reprocessing."""
         doc_id_str = str(doc_id)
-        doc = self._documents.pop(doc_id, None)
-        if doc:
-            self._documents_by_hash.pop(getattr(doc, "file_hash", ""), None)
-            self._documents_by_doc_id.pop(getattr(doc, "doc_id", ""), None)
-            self._documents_by_source_id.pop(getattr(doc, "source_id", ""), None)
-        self._chunks_by_document.pop(doc_id_str, None)
-        # Remove chunks from in-memory cache
+
+        # Collect all document UUIDs to remove (root + children by root_id)
+        doc_ids_to_remove = {doc_id_str}
+        # Check in-memory documents
+        for did, d in list(self._documents.items()):
+            if str(getattr(d, "root_id", "")) == doc_id_str:
+                doc_ids_to_remove.add(str(did))
+        # Check prior documents (from previous runs)
+        for pd in list(self._prior_documents):
+            if pd.get("root_id") == doc_id_str:
+                doc_ids_to_remove.add(pd.get("id", ""))
+
+        # Remove from in-memory caches (try both UUID and string keys)
+        for did in doc_ids_to_remove:
+            doc = self._documents.pop(did, None)
+            if doc is None:
+                try:
+                    doc = self._documents.pop(UUID(did), None)
+                except ValueError:
+                    pass
+            if doc:
+                self._documents_by_hash.pop(getattr(doc, "file_hash", ""), None)
+                self._documents_by_doc_id.pop(getattr(doc, "doc_id", ""), None)
+                self._documents_by_source_id.pop(getattr(doc, "source_id", ""), None)
+            self._chunks_by_document.pop(did, None)
+
+        # Remove chunks for all removed documents
         chunks_to_remove = [
             cid for cid, c in self._chunks.items()
-            if str(getattr(c, "document_id", "")) == doc_id_str
+            if str(getattr(c, "document_id", "")) in doc_ids_to_remove
         ]
         for cid in chunks_to_remove:
             del self._chunks[cid]
+
+        # Remove from prior documents (so flush doesn't write them back)
+        self._prior_documents = [
+            pd for pd in self._prior_documents
+            if pd.get("id") not in doc_ids_to_remove
+        ]
 
     async def update_document_status(
         self,
@@ -591,20 +618,45 @@ class LocalStorageClient:
 
     def flush(self):
         """Rewrite JSONL files merging prior data with current run."""
-        # Merge prior documents with current run (current overrides by id)
+        # Merge prior documents with current run (current overrides by id, dedup by doc_id)
         current_doc_ids = {str(doc.id) for doc in self._documents.values()}
+        seen_doc_ids = {doc.doc_id for doc in self._documents.values() if hasattr(doc, "doc_id") and doc.doc_id}
         docs_path = self.output_dir / "documents.jsonl"
+
+        # First pass: collect candidate prior docs (dedup + override filter)
+        candidate_prior: list[dict] = []
+        for prior_doc in self._prior_documents:
+            if prior_doc.get("id") in current_doc_ids:
+                continue
+            did = prior_doc.get("doc_id")
+            if did and did in seen_doc_ids:
+                continue
+            if did:
+                seen_doc_ids.add(did)
+            candidate_prior.append(prior_doc)
+
+        # Build full UUID set to detect orphan children (root_id → non-existent parent)
+        all_valid_doc_uuids: set[str] = (
+            {pd["id"] for pd in candidate_prior}
+            | {str(doc.id) for doc in self._documents.values()}
+        )
+
+        # Write, skipping orphan children whose parent was replaced
         with open(docs_path, "w") as f:
-            for prior_doc in self._prior_documents:
-                if prior_doc.get("id") not in current_doc_ids:
-                    f.write(json.dumps(prior_doc, default=str) + "\n")
+            for prior_doc in candidate_prior:
+                root_id = prior_doc.get("root_id", "")
+                if root_id and root_id != prior_doc["id"] and root_id not in all_valid_doc_uuids:
+                    all_valid_doc_uuids.discard(prior_doc["id"])
+                    continue
+                f.write(json.dumps(prior_doc, default=str) + "\n")
             for doc in self._documents.values():
                 f.write(json.dumps(self._doc_to_dict(doc), default=str) + "\n")
 
         # Rewrite chunks: current in-memory chunks (with merged topic IDs) + prior chunks
         current_chunk_ids = {str(cid) for cid in self._chunks}
+        seen_chunk_ids = {c.chunk_id for c in self._chunks.values() if hasattr(c, "chunk_id") and c.chunk_id}
         chunks_path = self.output_dir / "chunks.jsonl"
-        # Read prior chunks from disk, apply topic ID replacements, skip current-run chunks
+        # Read prior chunks from disk, apply topic ID replacements, skip orphan/duplicate chunks
         prior_lines = []
         if chunks_path.exists():
             with open(chunks_path, "r", encoding="utf-8") as f:
@@ -612,22 +664,34 @@ class LocalStorageClient:
                     if line.strip():
                         try:
                             c = json.loads(line)
-                            if c.get("id") not in current_chunk_ids:
-                                # Apply absorbed topic ID replacements to prior chunks
-                                meta = c.get("metadata")
-                                if isinstance(meta, dict) and self._merged_topic_map:
-                                    tids = meta.get("topic_ids")
-                                    if tids:
-                                        meta["topic_ids"] = list(dict.fromkeys(
-                                            self._merged_topic_map.get(t, t) for t in tids
-                                        ))
-                                prior_lines.append(json.dumps(c, default=str))
+                            if c.get("id") in current_chunk_ids:
+                                continue
+                            # Drop orphan chunks (document was deleted for reprocess)
+                            if c.get("document_id") not in all_valid_doc_uuids:
+                                continue
+                            cid = c.get("chunk_id")
+                            if cid and cid in seen_chunk_ids:
+                                continue
+                            if cid:
+                                seen_chunk_ids.add(cid)
+                            # Apply absorbed topic ID replacements to prior chunks
+                            meta = c.get("metadata")
+                            if isinstance(meta, dict) and self._merged_topic_map:
+                                tids = meta.get("topic_ids")
+                                if tids:
+                                    meta["topic_ids"] = list(dict.fromkeys(
+                                        self._merged_topic_map.get(t, t) for t in tids
+                                    ))
+                            prior_lines.append(json.dumps(c, default=str))
                         except json.JSONDecodeError:
                             pass
         with open(chunks_path, "w", encoding="utf-8") as f:
             for line in prior_lines:
                 f.write(line + "\n")
             for chunk in self._chunks.values():
+                # Also filter current-run orphan chunks (doc_id dedup can leave unregistered UUIDs)
+                if str(getattr(chunk, "document_id", "")) not in all_valid_doc_uuids:
+                    continue
                 f.write(json.dumps(self._chunk_to_dict(chunk), default=str) + "\n")
 
         # Merge prior topics with current run (current overrides by id)
@@ -653,9 +717,21 @@ class LocalStorageClient:
         chunk_delta: int = 0,
     ) -> None:
         """Persist all documents + chunks atomically (buffer in memory, flush on close)."""
-        await self.insert_document(email_doc)
+        # Track UUID remaps from doc_id dedup (insert_document may return existing doc)
+        uuid_remap: Dict[str, str] = {}
+        stored = await self.insert_document(email_doc)
+        if stored.id != email_doc.id:
+            uuid_remap[str(email_doc.id)] = str(stored.id)
         for doc in attachment_docs:
-            await self.insert_document(doc)
+            stored = await self.insert_document(doc)
+            if stored.id != doc.id:
+                uuid_remap[str(doc.id)] = str(stored.id)
+        # Remap chunk document_ids if any docs were deduped
+        if chunks and uuid_remap:
+            for chunk in chunks:
+                old_did = str(getattr(chunk, "document_id", ""))
+                if old_did in uuid_remap:
+                    chunk.document_id = UUID(uuid_remap[old_did])
         if chunks:
             await self.insert_chunks(chunks)
         if topic_ids and chunk_delta:
@@ -665,8 +741,8 @@ class LocalStorageClient:
         self._write_result_json(email_doc, attachment_docs, chunks, topic_ids)
 
     async def close(self) -> None:
-        """Flush and close local storage."""
-        self.flush()
+        """No resources to release for local storage."""
+        pass
 
 
 @dataclass

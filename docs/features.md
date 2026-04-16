@@ -617,8 +617,6 @@ DATA_SOURCE_DIR=./data/source          # EML files (supports subdirectories)
 DATA_PROCESSED_DIR=./data/processed    # Extracted attachments and ZIP contents
 
 # Optional - Processing
-BATCH_SIZE=10
-MAX_CONCURRENT_EMBEDDINGS=5
 ENABLE_OCR=true
 ENABLE_PICTURE_DESCRIPTION=true
 
