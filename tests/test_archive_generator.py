@@ -286,12 +286,13 @@ class TestSanitizeStorageKey:
         assert "WRD0001.jpg" in result
 
     @pytest.mark.unit
-    def test_preserves_non_leading_tilde(self):
-        """Should preserve tilde that's not at the start."""
+    def test_replaces_non_leading_tilde(self):
+        """Should replace tilde everywhere (problematic in storage keys)."""
         from mtss.ingest.archive_generator import _sanitize_storage_key
 
         result = _sanitize_storage_key("file~backup.txt")
-        assert "~" in result
+        assert "~" not in result
+        assert "file_backup.txt" == result
 
 
 class TestContentFileResult:

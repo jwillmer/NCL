@@ -279,9 +279,148 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 
 ---
 
+## Input Sanitization
+
+Sanitization is applied at multiple stages to prevent corrupted data from entering the pipeline.
+
+### Stage 1: EML Parsing (`parsers/eml_parser.py`)
+
+| What | How | Why |
+|------|-----|-----|
+| UTF-8 BOM | Strip `\xef\xbb\xbf` prefix | Some email clients add BOM that breaks multipart parsing |
+| HTML body | Convert to plain text, preserve hyperlinks as markdown `[text](url)` | UI renders markdown |
+| Encoding fallback | Try declared charset, then UTF-8, then latin-1 with `errors="replace"` | Never crash on bad encoding |
+
+### Stage 2: Email Cleaning (`parsers/email_cleaner.py`)
+
+| What | How | Why |
+|------|-----|-----|
+| Content boundaries | LLM detects first/last meaningful word anchors | Zero-modification extraction of relevant content |
+| Boilerplate | Regex removes signatures, contact blocks, mailto syntax, CID image refs | Noise reduction for embeddings |
+| Short messages | Filter messages <20 words after cleaning | Removes auto-replies, signature-only messages |
+
+### Stage 3: Archive Storage Keys (`ingest/archive_generator.py`)
+
+`_sanitize_storage_key()` applied to all filenames stored in archive:
+
+| Character | Replacement | Why |
+|-----------|-------------|-----|
+| `[ ] ( ) ~` | `_` | Break markdown link syntax |
+| Non-ASCII | NFKD transliteration to ASCII | Storage key compatibility |
+| All-non-ASCII names | Hex-encoded fallback | Prevent empty keys |
+| Spaces, `' , # &` | `_` or removed | URL-safe keys, no encoding needed |
+| Multiple `_` | Collapsed to single `_` | Clean keys |
+
+### Stage 4: Markdown Heading Escaping (`ingest/archive_generator.py`)
+
+`_escape_markdown_heading()` applied to email subjects and filenames in generated `.md` files:
+
+| Character | Escaped to | Why |
+|-----------|------------|-----|
+| `\` | `\\` | Prevent escape sequences |
+| `[ ]` | `\[ \]` | Prevent link creation |
+| `#` | `\#` | Prevent heading injection |
+| `` ` `` | `` \` `` | Prevent code span injection |
+
+### Stage 5: Topic Extraction (`processing/topics.py`)
+
+`sanitize_input()` applied before LLM calls:
+- Strips control characters (preserves `\n`, `\t`)
+- Truncates to `max_length` (default 6000 chars)
+- Mitigates prompt injection patterns
+
+### Stage 6: ZIP Extraction (`parsers/attachment_processor.py`)
+
+| Check | Action |
+|-------|--------|
+| `..` in path | Skip file (path traversal) |
+| Absolute paths | Skip file |
+| Windows drive letters | Skip file |
+| Hidden files (`.`, `__MACOSX`) | Skip file |
+| Compression ratio >100:1 | Skip file (ZIP bomb) |
+
+---
+
+## Validation (`mtss validate ingest`)
+
+Post-ingest validation catches issues that slip through the pipeline. Run after every ingest.
+
+### Checks (22 total)
+
+| # | Check | Severity | What it catches |
+|---|-------|----------|-----------------|
+| 1 | Duplicate UUIDs | Error | Serialization bugs |
+| 2 | Processing log status | Error | Files stuck in non-COMPLETED state |
+| 3-5 | Chunk-document linkage | Error | Orphan chunks, missing embeddings |
+| 6 | Empty chunk content | Error | Chunks with no text |
+| 7 | Context/embedding_text presence | Warning | LLM failures during context generation |
+| 8 | Documents without chunks | Error | Processing failures not caught |
+| 9-10 | Hierarchy and status | Warning | Broken parent chains, failed docs in output |
+| 11 | Trailing-dot filenames | Warning | Potential parsing issues |
+| 12-15 | Topic health | Warning/Error | Missing embeddings, stale refs, inaccurate counts |
+| 16 | Archive URI file existence | Error | URIs pointing to missing files on disk |
+| 17 | Duplicate doc_ids/chunk_ids | Error | Content-addressable ID collisions |
+| 18-19 | URL-encoded names/URIs | Error | Pre-migration state needing cleanup |
+| 20 | Broken markdown internal links | Warning | Sanitization mismatches in archive .md files |
+| 21 | Chunk position validity | Warning | `char_start > char_end` or negative positions |
+| 22 | Email metadata consistency | Warning | `date_start > date_end`, missing participants |
+
+### Running Validation
+
+```bash
+# Validate local ingest output
+mtss validate ingest [--output-dir PATH] [--verbose]
+
+# Compare local output against Supabase (after import)
+mtss validate import [--output-dir PATH] [--verbose]
+```
+
+---
+
+## Test Coverage
+
+### Regression Tests (`tests/test_archive_uris.py`)
+
+Covers 7 categories of archive URI bugs:
+1. No double `/archive/` prefix in URIs
+2. Sanitized filename matching for `archive_file_result`
+3. Chunk URI propagation from document
+4. Citation processor strips `/archive/` prefix
+5. No double URL-encoding (`%2520`)
+6. Frontend `stripArchivePrefix` defense-in-depth
+7. **Download links and [View] links use sanitized filenames** (prevents broken markdown)
+
+### Archive Generator Tests (`tests/test_archive_generator.py`)
+
+- Markdown generation, attachment processing, URI construction
+- `_sanitize_storage_key`: brackets, parens, tilde, non-ASCII, hex fallback
+
+### Pipeline Tests (`tests/test_ingest_*.py`)
+
+- Full email processing flow (parse → chunk → embed)
+- Ingest consistency (deterministic output)
+- Ingest update/repair flow
+- Import roundtrip verification
+
+### Parser Tests
+
+- EML parsing: UTF-8 BOM, attachments, metadata, HTML-to-text with link preservation
+- Attachment processor: ZIP extraction, image classification, routing
+- Image filter: size/dimension/filename pattern filtering
+
+---
+
 ## Data Integrity
 
 The ingest command includes data integrity protections to ensure reliable data ingestion.
+
+### Crash Safety
+
+| Mechanism | Location | Protection |
+|-----------|----------|------------|
+| Progress tracking with `fsync` | `local_progress_tracker.py` | No duplicate processing after power loss |
+| Atomic persist | `persist_ingest_result()` | All documents + chunks + topic counts in one transaction |
+| Managed cleanup | Attachment folder deletion only under managed directory | No accidental data loss |
 
 ### Error Handling Behavior
 
@@ -296,47 +435,27 @@ By default, the ingest command fails documents when critical data loss is detect
 
 ### Lenient Mode
 
-Use `--lenient` flag for backward compatibility with softer error handling:
-
 ```bash
 # Strict mode (default) - fail on data loss
-uv run MTSS ingest --source ./data/emails
+mtss ingest --source ./data/emails
 
 # Lenient mode - log errors but continue processing
-uv run MTSS ingest --source ./data/emails --lenient
-```
-
-### Monitoring Ingest Quality
-
-Processing events are logged to the `ingest_events` table for visibility:
-
-```sql
--- View all events by type
-SELECT event_type, severity, COUNT(*)
-FROM ingest_events
-GROUP BY event_type, severity;
-
--- Find documents with errors
-SELECT parent_document_id, event_type, message
-FROM ingest_events
-WHERE severity = 'error'
-ORDER BY discovered_at DESC;
-
--- Get events for a specific document
-SELECT * FROM ingest_events
-WHERE parent_document_id = 'your-doc-uuid';
+mtss ingest --source ./data/emails --lenient
 ```
 
 ### Event Types
 
 | Event Type | Description |
 |------------|-------------|
-| `unsupported_file` | File format not supported (existing behavior) |
+| `unsupported_file` | File format not supported |
 | `encoding_fallback` | Character replacement used during decoding |
 | `parse_failure` | Parser returned empty or error |
 | `archive_failure` | Archive generation failed |
 | `context_failure` | LLM context generation failed |
 | `empty_content` | Content empty after processing |
+| `classified_as_non_content` | Image filtered as decorative/tracking |
+| `message_filtered` | Message too short after boilerplate removal |
+| `no_body_chunks` | Email body produced 0 chunks |
 
 ### Retry Logic
 

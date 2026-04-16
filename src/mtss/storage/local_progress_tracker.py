@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -36,12 +37,16 @@ class LocalProgressTracker:
         self._entries[entry["file_path"]] = entry
         with open(self._log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, default=str) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     def compact(self):
         """Rewrite processing_log.jsonl with one entry per file (removes duplicates)."""
         with open(self._log_file, "w", encoding="utf-8") as f:
             for entry in self._entries.values():
                 f.write(json.dumps(entry, default=str) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     def compute_file_hash(self, file_path: Path) -> str:
         """Compute SHA-256 hash of file content."""

@@ -121,19 +121,9 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
     email_uuids = {d["id"] for d in docs if d.get("document_type") == "email"}
     chunk_doc_ids = Counter(c["document_id"] for c in chunks)
 
-    # === 1. Duplicate detection ===
+    # === 1. Duplicate UUID detection ===
     if len(doc_by_uuid) != len(docs):
         issues.append(f"Duplicate document UUIDs: {len(docs)} rows but {len(doc_by_uuid)} unique ids")
-
-    doc_id_counts = Counter(d["doc_id"] for d in docs)
-    dup_doc_ids = {k: v for k, v in doc_id_counts.items() if v > 1}
-    if dup_doc_ids:
-        issues.append(f"{len(dup_doc_ids)} duplicate doc_id values")
-
-    chunk_id_counts = Counter(c.get("chunk_id", "") for c in chunks if c.get("chunk_id"))
-    dup_chunk_ids = {k: v for k, v in chunk_id_counts.items() if v > 1}
-    if dup_chunk_ids:
-        issues.append(f"{len(dup_chunk_ids)} duplicate chunk_id values")
 
     # Event source tracking (for expected missing chunks)
     filtered_doc_uuids = set()
@@ -334,8 +324,7 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
         )
 
     # === 15. Topic count accuracy (JSONL counts vs actual chunk refs) ===
-    from collections import Counter as _Counter
-    _topic_cc = _Counter()
+    _topic_cc = Counter()
     _topic_ds: Dict[str, set] = {}
     for c in chunks:
         for tid in (c.get("metadata") or {}).get("topic_ids", []):
@@ -373,8 +362,7 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
             issues.append(f"  ... and {len(broken_uris) - 5} more")
 
     # === 17. Duplicate doc_ids and chunk_ids ===
-    from collections import Counter as _Ctr
-    doc_id_counts = _Ctr(d.get("doc_id") for d in docs if d.get("doc_id"))
+    doc_id_counts = Counter(d.get("doc_id") for d in docs if d.get("doc_id"))
     dup_doc_ids = {did: cnt for did, cnt in doc_id_counts.items() if cnt > 1}
     if dup_doc_ids:
         issues.append(f"{len(dup_doc_ids)} duplicate doc_ids in documents.jsonl")
@@ -382,7 +370,7 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
             for did, cnt in list(dup_doc_ids.items())[:5]:
                 issues.append(f"  {did[:16]}: {cnt}x")
 
-    chunk_id_counts = _Ctr(c.get("chunk_id") for c in chunks if c.get("chunk_id"))
+    chunk_id_counts = Counter(c.get("chunk_id") for c in chunks if c.get("chunk_id"))
     dup_chunk_ids = {cid: cnt for cid, cnt in chunk_id_counts.items() if cnt > 1}
     if dup_chunk_ids:
         issues.append(f"{len(dup_chunk_ids)} duplicate chunk_ids in chunks.jsonl")
@@ -463,6 +451,39 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
                 for folder_id, links in sorted(broken_md_links.items())[:10]:
                     email = folder_to_email.get(folder_id, "?")
                     warnings.append(f"  {folder_id} ({email}): {len(links)} broken")
+
+    # === 21. Chunk position validity ===
+    # Thread digest chunks legitimately use (-1, -1) — skip those
+    invalid_positions = []
+    for c in chunks:
+        cs = c.get("char_start")
+        ce = c.get("char_end")
+        if cs is not None and ce is not None and not (cs == -1 and ce == -1):
+            if cs < 0 or ce < 0 or cs > ce:
+                invalid_positions.append(c.get("chunk_id", "?"))
+    if invalid_positions:
+        warnings.append(
+            f"{len(invalid_positions)} chunks have invalid char positions "
+            f"(negative or start > end)"
+        )
+
+    # === 22. Email metadata consistency ===
+    # JSONL keys use email_ prefix (see serializers.py doc_to_dict)
+    bad_dates = 0
+    missing_participants = 0
+    for d in docs:
+        if d.get("document_type") != "email":
+            continue
+        ds = d.get("email_date_start")
+        de = d.get("email_date_end")
+        if ds and de and ds > de:
+            bad_dates += 1
+        if not d.get("email_participants"):
+            missing_participants += 1
+    if bad_dates:
+        warnings.append(f"{bad_dates} emails have date_start > date_end")
+    if missing_participants:
+        warnings.append(f"{missing_participants} emails have no participants")
 
     # === Display results ===
     summary = Table(title="Ingest Validation Summary")

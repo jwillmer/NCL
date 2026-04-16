@@ -284,9 +284,9 @@ async def _ingest(
         vprint(f"Lane assignment: {fast_count} fast, {slow_count} slow")
 
         # Split workers: slow workers capped at LlamaParse concurrency,
-        # rest go to fast lane. Slow workers help with fast queue when idle,
-        # but fast workers never touch slow queue — prevents LlamaParse
-        # from starving fast-lane processing.
+        # rest go to fast lane. Both worker types help the other queue
+        # when their primary queue empties. The LlamaParse semaphore
+        # caps concurrent API calls regardless of worker count.
         total_workers = settings.max_concurrent_files
         if fast_count > 0 and slow_count > 0:
             slow_worker_count = min(slow_count, settings.max_concurrent_llamaparse, total_workers - 1)
@@ -388,7 +388,7 @@ async def _ingest(
                     slot_queue.put_nowait(slot_idx)
 
             async def fast_worker() -> None:
-                """Worker for fast queue only. Never touches slow queue."""
+                """Worker for fast queue. Helps slow queue when idle."""
                 while True:
                     if _common._shutdown_requested:
                         return
@@ -396,7 +396,12 @@ async def _ingest(
                         file_path = fast_queue.get_nowait()
                         await process_one(file_path)
                     except asyncio.QueueEmpty:
-                        return  # Fast queue empty — done
+                        # Fast queue empty — help with slow queue
+                        try:
+                            file_path = slow_queue.get_nowait()
+                            await process_one(file_path)
+                        except asyncio.QueueEmpty:
+                            return  # Both queues empty
 
             async def slow_worker() -> None:
                 """Worker for slow queue. Helps fast queue when idle."""

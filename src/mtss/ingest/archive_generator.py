@@ -24,6 +24,21 @@ logger = logging.getLogger(__name__)
 MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd"}
 
 
+def _escape_markdown_heading(text: str) -> str:
+    """Escape markdown-breaking characters in heading/metadata text.
+
+    Prevents raw email subjects or filenames from breaking the generated
+    markdown structure (e.g. brackets creating links, # creating headings).
+    """
+    # Escape characters that break markdown structure in headings
+    text = text.replace("\\", "\\\\")
+    text = text.replace("[", "\\[")
+    text = text.replace("]", "\\]")
+    text = text.replace("#", "\\#")
+    text = text.replace("`", "\\`")
+    return text
+
+
 def _sanitize_storage_key(filename: str) -> str:
     """Sanitize a filename for use in Supabase Storage keys.
 
@@ -230,9 +245,9 @@ class ArchiveGenerator:
         meta = parsed_email.metadata
         lines: List[str] = []
 
-        # Header
+        # Header (escape subject to prevent markdown injection)
         subject = meta.subject or "(No Subject)"
-        lines.append(f"# {subject}")
+        lines.append(f"# {_escape_markdown_heading(subject)}")
         lines.append("")
         lines.append("**Type:** Email Conversation")
 
@@ -413,17 +428,18 @@ class ArchiveGenerator:
         """Generate markdown preview content for an attachment."""
         lines: List[str] = []
 
-        lines.append(f"# {filename}")
+        lines.append(f"# {_escape_markdown_heading(filename)}")
         lines.append("")
         lines.append(f"**Type:** {content_type}")
         lines.append(f"**Size:** {self._format_size(size_bytes)}")
         lines.append(f"**Extracted:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append("")
-        # Full path from archive root for download link
+        # Full path from archive root for download link (use sanitized name to match stored file)
+        safe_name = _sanitize_storage_key(filename)
         if folder_id:
-            download_path = f"{folder_id}/attachments/{filename}"
+            download_path = f"{folder_id}/attachments/{safe_name}"
         else:
-            download_path = filename
+            download_path = safe_name
         lines.append(f"[Download Original]({download_path})")
         lines.append("")
         lines.append("---")
@@ -534,16 +550,16 @@ class ArchiveGenerator:
         attachment_files: List[ContentFileResult] = []
         if parsed_email.attachments:
             for att in parsed_email.attachments:
-                filename = att.filename
-                markdown_path_check = f"{folder_id}/attachments/{filename}.md"
+                safe_name = _sanitize_storage_key(att.filename)
+                markdown_path_check = f"{folder_id}/attachments/{safe_name}.md"
                 has_md = self.storage.file_exists(markdown_path_check)
                 markdown_path = markdown_path_check if has_md else None
 
                 attachment_files.append(
                     ContentFileResult(
-                        original_path=f"{folder_id}/attachments/{filename}",
+                        original_path=f"{folder_id}/attachments/{safe_name}",
                         markdown_path=markdown_path,
-                        download_uri=f"{folder_id}/attachments/{filename}",
+                        download_uri=f"{folder_id}/attachments/{safe_name}",
                         browse_uri=markdown_path,
                         archive_path=folder_id,
                         skipped=False,

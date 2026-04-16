@@ -7,6 +7,7 @@ Covers 4 related bugs:
 4. Double URL-encoding of filenames (%2520 instead of %20)
 """
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -368,3 +369,155 @@ class TestStripArchivePrefix:
         uri = "/archive/path/to/archive/file.pdf"
         result = uri.removeprefix("/archive/")
         assert result == "path/to/archive/file.pdf"
+
+
+# =============================================================================
+# Test 7: Broken markdown links from unsanitized filenames (Bugs 5 & 6)
+# =============================================================================
+
+
+def _make_archive_generator(mock_storage=None):
+    """Create an ArchiveGenerator with mocked settings and storage."""
+    from mtss.ingest.archive_generator import ArchiveGenerator
+
+    if mock_storage is None:
+        mock_storage = MagicMock()
+        mock_storage.file_exists = MagicMock(return_value=False)
+        mock_storage.upload_text = MagicMock()
+
+    with patch("mtss.config.get_settings") as mock_settings:
+        mock_settings.return_value = MagicMock()
+        with patch("mtss.ingest.archive_generator.ArchiveStorage"):
+            gen = ArchiveGenerator(ingest_root=Path("/tmp"))
+            gen.storage = mock_storage
+    return gen
+
+
+class TestContentMarkdownDownloadLink:
+    """Regression: _generate_content_markdown must use sanitized filename in download link."""
+
+    @pytest.mark.unit
+    def test_download_link_uses_sanitized_name_with_parens(self):
+        """Download link in .md preview must use sanitized filename, not raw."""
+        from mtss.ingest.archive_generator import _sanitize_storage_key
+
+        gen = _make_archive_generator()
+        md = gen._generate_content_markdown(
+            filename="report (final).pdf",
+            content_type="application/pdf",
+            size_bytes=1000,
+            parsed_content="Test content",
+            folder_id="abc123def45678",
+        )
+        safe = _sanitize_storage_key("report (final).pdf")
+        assert f"abc123def45678/attachments/{safe}" in md
+        # Raw filename must NOT appear in link target (only in heading)
+        assert "report (final).pdf)" not in md  # would break markdown
+
+    @pytest.mark.unit
+    def test_download_link_uses_sanitized_name_with_brackets(self):
+        """Download link must sanitize brackets that break markdown link syntax."""
+        from mtss.ingest.archive_generator import _sanitize_storage_key
+
+        gen = _make_archive_generator()
+        md = gen._generate_content_markdown(
+            filename="file[1].pdf",
+            content_type="application/pdf",
+            size_bytes=500,
+            parsed_content="Content",
+            folder_id="abc123def45678",
+        )
+        safe = _sanitize_storage_key("file[1].pdf")
+        assert f"abc123def45678/attachments/{safe}" in md
+        assert "[1]" not in md.split("---")[0].split("\n")[-2]  # not in the link line
+
+
+class TestRegenerateEmailMarkdownSanitization:
+    """Regression: regenerate_email_markdown must use sanitized names for file checks."""
+
+    @pytest.mark.unit
+    def test_regenerate_checks_sanitized_path(self):
+        """file_exists must be called with sanitized filename, not raw."""
+        from mtss.ingest.archive_generator import _sanitize_storage_key
+        from mtss.models.document import EmailMetadata, ParsedAttachment, ParsedEmail
+
+        mock_storage = MagicMock()
+        mock_storage.file_exists = MagicMock(return_value=True)
+        mock_storage.upload_text = MagicMock()
+        gen = _make_archive_generator(mock_storage)
+
+        parsed_email = ParsedEmail(
+            metadata=EmailMetadata(
+                subject="Test",
+                participants=["a@b.com"],
+                initiator="a@b.com",
+                message_count=1,
+            ),
+            messages=[],
+            full_text="Test",
+            attachments=[
+                ParsedAttachment(
+                    filename="report (v2).pdf",
+                    content_type="application/pdf",
+                    size_bytes=100,
+                    saved_path="/tmp/report.pdf",
+                ),
+            ],
+        )
+
+        gen.regenerate_email_markdown("abc123def4567890abcdef", parsed_email)
+
+        safe = _sanitize_storage_key("report (v2).pdf")
+        calls = [str(c) for c in mock_storage.file_exists.call_args_list]
+        assert any(safe in c for c in calls), (
+            f"file_exists not called with sanitized name '{safe}'; calls: {calls}"
+        )
+        assert not any("report (v2).pdf.md" in c for c in calls), (
+            "file_exists called with raw unsanitized filename"
+        )
+
+    @pytest.mark.unit
+    def test_regenerate_produces_valid_markdown_links(self):
+        """Generated markdown links must not contain raw parens/brackets."""
+        from mtss.models.document import EmailMetadata, ParsedAttachment, ParsedEmail
+
+        mock_storage = MagicMock()
+        mock_storage.file_exists = MagicMock(return_value=True)
+        uploaded_content = {}
+
+        def capture_upload(path, content, *args, **kwargs):
+            uploaded_content[path] = content
+
+        mock_storage.upload_text = MagicMock(side_effect=capture_upload)
+        gen = _make_archive_generator(mock_storage)
+
+        parsed_email = ParsedEmail(
+            metadata=EmailMetadata(
+                subject="Test",
+                participants=["a@b.com"],
+                initiator="a@b.com",
+                message_count=1,
+            ),
+            messages=[],
+            full_text="Test",
+            attachments=[
+                ParsedAttachment(
+                    filename="data (Q1) [final].xlsx",
+                    content_type="application/vnd.ms-excel",
+                    size_bytes=200,
+                    saved_path="/tmp/data.xlsx",
+                ),
+            ],
+        )
+
+        gen.regenerate_email_markdown("abc123def4567890abcdef", parsed_email)
+
+        md_key = "abc123def4567890/email.eml.md"
+        assert md_key in uploaded_content
+        md_content = uploaded_content[md_key]
+
+        import re
+        links = re.findall(r"\]\(([^)]+)\)", md_content)
+        for link in links:
+            assert "[" not in link, f"Raw bracket in link target: {link}"
+            assert "(" not in link, f"Raw paren in link target: {link}"

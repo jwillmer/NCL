@@ -556,8 +556,15 @@ class EMLParser:
         html = re.sub(
             r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE
         )
-        # Handle <a> tags: extract only the link text, discard href
-        # This prevents malformed output like "foo@bar.commailto:foo@bar.com"
+        # Convert <a> tags to markdown links so the UI can render them clickable.
+        # Mailto links are dropped (email_cleaner strips them as boilerplate).
+        html = re.sub(
+            r'<a[^>]*href=[\'"]([^\'"]+)[\'"][^>]*>([^<]*)</a>',
+            r"[\2](\1)",
+            html,
+            flags=re.IGNORECASE,
+        )
+        # Strip any remaining <a> tags without href (malformed)
         html = re.sub(r"<a[^>]*>([^<]*)</a>", r"\1", html, flags=re.IGNORECASE)
         # Replace common block elements with newlines
         html = re.sub(r"<(br|p|div|h[1-6]|li)[^>]*>", "\n", html, flags=re.IGNORECASE)
