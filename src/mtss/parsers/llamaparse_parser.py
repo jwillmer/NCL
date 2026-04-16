@@ -125,6 +125,21 @@ class LlamaParseParser(BaseParser):
                 markdown_docs = result.get_markdown_documents(split_by_page=False)
                 markdown_text = "\n\n".join(doc.text for doc in markdown_docs)
 
+                # Strip LlamaParse image refs (images not downloaded locally).
+                # Preserve alt-text for semantic content: <img src="..." alt="sketch"> → sketch
+                # and ![alt](page_N_image_N.jpg) → alt
+                import re
+                markdown_text = re.sub(
+                    r'<img\s+[^>]*alt="([^"]*)"[^>]*/?>',
+                    r"\1",
+                    markdown_text,
+                )
+                markdown_text = re.sub(
+                    r"!\[([^\]]*)\]\(page_\d+_(?:image|chart|seal|table)_\d+[^)]*\)",
+                    r"\1",
+                    markdown_text,
+                )
+
                 if not markdown_text or not markdown_text.strip():
                     raise ValueError(f"LlamaParse produced no content for {file_path}")
 
