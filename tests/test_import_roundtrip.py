@@ -289,3 +289,72 @@ class TestImportIdempotency:
 
         # Doc already exists, should not be re-imported
         mock_db.persist_ingest_result.assert_not_called()
+
+
+class TestUploadWithRetry:
+    """Verify archive upload retry behavior for transient Supabase failures."""
+
+    def test_succeeds_on_first_attempt(self):
+        from mtss.cli import import_cmd
+
+        storage = MagicMock()
+        storage.upload_file = MagicMock(return_value="key")
+
+        with patch.object(import_cmd, "time") as mock_time:
+            ok = import_cmd._upload_with_retry(storage, "doc/email.eml", b"body", "message/rfc822")
+
+        assert ok is True
+        assert storage.upload_file.call_count == 1
+        mock_time.sleep.assert_not_called()
+
+    def test_retries_transient_jsondecodeerror_then_succeeds(self):
+        """Simulates the real failure: storage3 raises JSONDecodeError on
+        non-JSON gateway response, second attempt succeeds."""
+        from json import JSONDecodeError
+
+        from mtss.cli import import_cmd
+
+        storage = MagicMock()
+        storage.upload_file = MagicMock(
+            side_effect=[
+                JSONDecodeError("Expecting value", "", 0),
+                "key",
+            ]
+        )
+
+        with patch.object(import_cmd, "time") as mock_time:
+            ok = import_cmd._upload_with_retry(storage, "doc/email.eml", b"body", "message/rfc822")
+
+        assert ok is True
+        assert storage.upload_file.call_count == 2
+        assert mock_time.sleep.call_count == 1
+        # First retry delay = base * 2^0 = base
+        assert mock_time.sleep.call_args_list[0].args[0] == import_cmd._UPLOAD_BACKOFF_BASE
+
+    def test_returns_false_after_all_attempts_exhausted(self):
+        from mtss.cli import import_cmd
+
+        storage = MagicMock()
+        storage.upload_file = MagicMock(side_effect=RuntimeError("still broken"))
+
+        with patch.object(import_cmd, "time"):
+            ok = import_cmd._upload_with_retry(storage, "doc/email.eml", b"body", "message/rfc822")
+
+        assert ok is False
+        assert storage.upload_file.call_count == import_cmd._UPLOAD_MAX_ATTEMPTS
+
+    def test_backoff_doubles_between_attempts(self):
+        from mtss.cli import import_cmd
+
+        storage = MagicMock()
+        storage.upload_file = MagicMock(side_effect=RuntimeError("always fails"))
+
+        with patch.object(import_cmd, "time") as mock_time:
+            import_cmd._upload_with_retry(storage, "k", b"b", "application/octet-stream")
+
+        # MAX_ATTEMPTS attempts => MAX_ATTEMPTS - 1 sleeps between them
+        delays = [c.args[0] for c in mock_time.sleep.call_args_list]
+        assert len(delays) == import_cmd._UPLOAD_MAX_ATTEMPTS - 1
+        base = import_cmd._UPLOAD_BACKOFF_BASE
+        expected = [base * (2 ** i) for i in range(import_cmd._UPLOAD_MAX_ATTEMPTS - 1)]
+        assert delays == expected

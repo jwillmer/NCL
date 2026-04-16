@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import mimetypes
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,6 +21,12 @@ from ..models.serializers import dict_to_document as _dict_to_document
 from ..models.serializers import dict_to_topic as _dict_to_topic
 
 logger = logging.getLogger(__name__)
+
+# Retry policy for archive uploads. Supabase Storage occasionally returns
+# non-JSON bodies (gateway errors, transient 5xx) which surface as
+# JSONDecodeError in storage3. Retry with exponential backoff.
+_UPLOAD_MAX_ATTEMPTS = 3
+_UPLOAD_BACKOFF_BASE = 1.0  # seconds; delays: 1s, 2s
 
 
 def register(app: typer.Typer):
@@ -406,6 +413,33 @@ async def _remove_db_orphans(db, output_dir: Path, changes, dry_run, verbose):
     changes["orphans_removed"] += len(orphan_doc_ids)
 
 
+def _upload_with_retry(storage, rel_key: str, payload: bytes, content_type: str) -> bool:
+    """Upload one archive file with exponential backoff retry.
+
+    Returns True on success, False after all attempts exhausted. Handles
+    transient Supabase Storage failures (non-JSON gateway responses,
+    temporary 5xx) that surface as JSONDecodeError in storage3.
+    """
+    last_error: Optional[Exception] = None
+    for attempt in range(_UPLOAD_MAX_ATTEMPTS):
+        try:
+            storage.upload_file(rel_key, payload, content_type)
+            return True
+        except Exception as e:
+            last_error = e
+            if attempt < _UPLOAD_MAX_ATTEMPTS - 1:
+                delay = _UPLOAD_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    f"Upload failed for {rel_key} (attempt {attempt + 1}/{_UPLOAD_MAX_ATTEMPTS}): {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                time.sleep(delay)
+    logger.warning(
+        f"Failed to upload {rel_key} after {_UPLOAD_MAX_ATTEMPTS} attempts: {last_error}"
+    )
+    return False
+
+
 async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals, changes, dry_run, verbose):
     """Upload archive files to Supabase Storage, skipping files that already exist."""
     from ..storage.archive_storage import ArchiveStorage
@@ -509,12 +543,11 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
         with make_progress() as progress:
             task_id = progress.add_task("Archives", total=len(files_to_upload))
             for local_path, rel_key in files_to_upload:
-                try:
-                    content_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
-                    storage.upload_file(rel_key, local_path.read_bytes(), content_type)
+                content_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
+                payload = local_path.read_bytes()
+                if _upload_with_retry(storage, rel_key, payload, content_type):
                     changes["new_archive files"] += 1
-                except Exception as e:
-                    logger.warning(f"Failed to upload {rel_key}: {e}")
+                else:
                     changes["failed"] += 1
                 progress.update(task_id, advance=1)
 
