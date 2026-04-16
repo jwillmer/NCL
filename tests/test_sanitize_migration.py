@@ -457,3 +457,73 @@ class TestValidateNewChecks:
                 if not target.exists():
                     broken.append(link)
         assert len(broken) == 0
+
+
+# ---------------------------------------------------------------------------
+# LlamaParse image ref stripping
+# ---------------------------------------------------------------------------
+
+
+class TestLlamaParseImageStripping:
+    """Test that LlamaParse image refs are stripped, preserving alt-text."""
+
+    def _strip(self, text: str) -> str:
+        """Apply the same regex as llamaparse_parser.py."""
+        import re
+        text = re.sub(
+            r'<img\s+[^>]*alt="([^"]*)"[^>]*/?>',
+            r"\1",
+            text,
+        )
+        text = re.sub(
+            r"!\[([^\]]*)\]\(page_\d+_(?:image|chart|seal|table)_\d+[^)]*\)",
+            r"\1",
+            text,
+        )
+        return text
+
+    @pytest.mark.unit
+    def test_strips_img_tag_preserves_alt(self):
+        html = '<th><img src="page_1_image_1_v2.jpg" alt="sketch of hydraulic jack"></th>'
+        result = self._strip(html)
+        assert "sketch of hydraulic jack" in result
+        assert "<img" not in result
+
+    @pytest.mark.unit
+    def test_strips_markdown_image_preserves_alt(self):
+        assert self._strip("![KYMA Logo](page_1_image_1_v2.jpg)") == "KYMA Logo"
+
+    @pytest.mark.unit
+    def test_strips_chart_refs(self):
+        assert self._strip("![chart](page_3_chart_1_v2.jpg)") == "chart"
+
+    @pytest.mark.unit
+    def test_strips_seal_refs(self):
+        assert self._strip("![company seal](page_2_seal_1_v2.jpg)") == "company seal"
+
+    @pytest.mark.unit
+    def test_preserves_normal_images(self):
+        md = "![photo](attachments/report.jpg)"
+        assert self._strip(md) == md
+
+    @pytest.mark.unit
+    def test_preserves_normal_text(self):
+        text = "This is a regular paragraph."
+        assert self._strip(text) == text
+
+    @pytest.mark.unit
+    def test_self_closing_img_tag(self):
+        assert self._strip('<img src="page_1_image_1_v2.jpg" alt="diagram" />') == "diagram"
+
+    @pytest.mark.unit
+    def test_img_tag_without_self_close(self):
+        assert self._strip('<img src="page_1_image_1_v2.jpg" alt="diagram">') == "diagram"
+
+    @pytest.mark.unit
+    def test_mixed_content(self):
+        text = "Text before\n![logo](page_1_image_1_v2.jpg)\nText after"
+        result = self._strip(text)
+        assert "logo" in result
+        assert "page_1_image_1" not in result
+        assert "Text before" in result
+        assert "Text after" in result
