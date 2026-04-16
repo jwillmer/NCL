@@ -563,28 +563,58 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
         if null_embedding_count:
             issues.append(f"{null_embedding_count} chunks in Supabase have NULL embeddings")
 
-        # === 5. Topic checks (presence + embeddings) ===
-        if local_topic_names:
-            async with pool.acquire() as conn:
-                remote_topics = await conn.fetch(
-                    "SELECT name, document_count, chunk_count, "
-                    "  (embedding IS NOT NULL) AS has_embedding "
-                    "FROM topics WHERE name = ANY($1::text[])",
-                    list(local_topic_names),
-                )
+        # === 5. Topic checks (presence, embeddings, stale remote topics) ===
+        topic_count_mismatches: List[tuple] = []
+        extra_remote_topics: List[str] = []
 
-            remote_topic_map = {r["name"]: dict(r) for r in remote_topics}
+        async with pool.acquire() as conn:
+            all_remote_topics = await conn.fetch(
+                "SELECT id, name, document_count, chunk_count, "
+                "  (embedding IS NOT NULL) AS has_embedding "
+                "FROM topics"
+            )
+
+        all_remote_topic_map = {r["name"]: dict(r) for r in all_remote_topics}
+
+        if local_topic_names:
+            remote_topic_map = {n: t for n, t in all_remote_topic_map.items() if n in local_topic_names}
             missing_topics = local_topic_names - set(remote_topic_map.keys())
 
             if missing_topics:
-                warnings.append(f"{len(missing_topics)} topics missing from Supabase")
+                issues.append(f"{len(missing_topics)} topics missing from Supabase")
                 if verbose:
                     for name in sorted(missing_topics):
-                        warnings.append(f"  missing topic: {name}")
+                        issues.append(f"  missing topic: {name}")
 
-            no_emb_topics = [r["name"] for r in remote_topics if not r["has_embedding"]]
+            no_emb_topics = [r["name"] for r in all_remote_topics if not r["has_embedding"] and r["name"] in local_topic_names]
             if no_emb_topics:
                 warnings.append(f"{len(no_emb_topics)} topics in Supabase missing embeddings")
+
+            # Compare counts for matched topics
+            local_topic_map = {t["name"]: t for t in local_topics}
+            for name in local_topic_names & set(remote_topic_map.keys()):
+                lt = local_topic_map[name]
+                rt = remote_topic_map[name]
+                local_cc = lt.get("chunk_count", 0) or 0
+                remote_cc_val = rt.get("chunk_count", 0) or 0
+                local_dc = lt.get("document_count", 0) or 0
+                remote_dc = rt.get("document_count", 0) or 0
+                if local_cc != remote_cc_val or local_dc != remote_dc:
+                    topic_count_mismatches.append((name, local_dc, remote_dc, local_cc, remote_cc_val))
+
+            if topic_count_mismatches:
+                warnings.append(f"{len(topic_count_mismatches)} topics have count mismatches (local vs remote)")
+                if verbose:
+                    for name, ld, rd, lc, rc in topic_count_mismatches:
+                        warnings.append(f"  {name}: docs {ld}/{rd}, chunks {lc}/{rc}")
+
+        # Check for remote topics that don't exist locally (stale/absorbed)
+        extra_remote_topics = sorted(set(all_remote_topic_map.keys()) - local_topic_names)
+        if extra_remote_topics:
+            warnings.append(f"{len(extra_remote_topics)} topics in Supabase not in local data (stale/absorbed)")
+            if verbose:
+                for name in extra_remote_topics:
+                    warnings.append(f"  extra: {name}")
 
         # === 6. Vessel check ===
         try:
@@ -701,11 +731,19 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
     summary.add_row("Chunks", str(len(local_chunks)), remote_chunk_label, chunk_status)
 
     # Topics
-    topic_status = "[green]\u2713[/green]" if not missing_topics else f"[yellow]{len(missing_topics)} missing[/yellow]"
-    remote_topic_label = str(total_remote_topics)
-    if total_remote_topics > len(local_topics) and not missing_topics:
-        remote_topic_label = f"{len(local_topics)}/{total_remote_topics}"
-    summary.add_row("Topics", str(len(local_topics)), remote_topic_label, topic_status)
+    topic_problems = len(missing_topics) + len(extra_remote_topics) + len(topic_count_mismatches)
+    if missing_topics:
+        topic_status = f"[red]{len(missing_topics)} missing[/red]"
+    elif extra_remote_topics or topic_count_mismatches:
+        parts = []
+        if extra_remote_topics:
+            parts.append(f"{len(extra_remote_topics)} stale")
+        if topic_count_mismatches:
+            parts.append(f"{len(topic_count_mismatches)} counts differ")
+        topic_status = f"[yellow]{', '.join(parts)}[/yellow]"
+    else:
+        topic_status = "[green]\u2713[/green]"
+    summary.add_row("Topics", str(len(local_topics)), str(total_remote_topics), topic_status)
 
     summary.add_section()
     emb_status = "[green]\u2713[/green]" if not null_embedding_count else f"[red]{null_embedding_count} null[/red]"

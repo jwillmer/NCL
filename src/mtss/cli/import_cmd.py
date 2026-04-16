@@ -165,14 +165,18 @@ async def _import_vessels(db, vessels, counts, dry_run, verbose):
 
 
 async def _import_topics(db, output_dir, counts, dry_run, verbose):
-    """Import topics from topics.jsonl."""
+    """Sync topics from topics.jsonl to Supabase (upsert + prune stale)."""
+    from ..storage.supabase_client import SupabaseClient
+
     topics_data = _read_jsonl(output_dir / "topics.jsonl")
     if not topics_data:
         if verbose:
             console.print("[dim]No topics to import.[/dim]")
         return
 
-    console.print(f"Importing {len(topics_data)} topics...")
+    local_names = {td["name"] for td in topics_data}
+    console.print(f"Syncing {len(topics_data)} topics...")
+
     if dry_run:
         counts["topics"] = len(topics_data)
         return
@@ -183,7 +187,21 @@ async def _import_topics(db, output_dir, counts, dry_run, verbose):
             try:
                 existing = await db.get_topic_by_name(td["name"])
                 if existing:
-                    counts["skipped"] += 1
+                    # Update existing topic (counts, description, embedding)
+                    pool = await db.get_pool()
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE topics SET display_name=$2, description=$3, "
+                            "embedding=$4, chunk_count=$5, document_count=$6, "
+                            "updated_at=NOW() WHERE name=$1",
+                            td["name"],
+                            td.get("display_name", td["name"]),
+                            td.get("description"),
+                            td.get("embedding"),
+                            td.get("chunk_count", 0) or 0,
+                            td.get("document_count", 0) or 0,
+                        )
+                    counts["topics"] += 1
                 else:
                     topic = _dict_to_topic(td)
                     await db.insert_topic(topic)
@@ -192,6 +210,22 @@ async def _import_topics(db, output_dir, counts, dry_run, verbose):
                 logger.warning(f"Failed to import topic {td.get('name')}: {e}")
                 counts["failed"] += 1
             progress.update(task_id, advance=1)
+
+    # Remove stale topics from Supabase that no longer exist locally
+    try:
+        all_remote = await db.get_all_topics()
+        stale = [t for t in all_remote if t.name not in local_names]
+        if stale:
+            pool = await db.get_pool()
+            async with pool.acquire() as conn:
+                for t in stale:
+                    await conn.execute("DELETE FROM topics WHERE id=$1", t.id)
+            counts["topics_removed"] = len(stale)
+            if verbose:
+                for t in stale:
+                    console.print(f"  [dim]Removed stale topic: {t.name}[/dim]")
+    except Exception as e:
+        logger.warning(f"Failed to prune stale topics: {e}")
 
 
 async def _import_documents(db, output_dir, counts, dry_run, verbose):
