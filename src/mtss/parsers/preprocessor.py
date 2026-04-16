@@ -175,6 +175,15 @@ class DocumentPreprocessor:
                     content_type=actual_type,
                 )
 
+        # Check local parsers first (not in registry, handled by tiered routing)
+        _LOCAL_PARSER_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".csv", ".html", ".htm"}
+        if file_path.suffix.lower() in _LOCAL_PARSER_EXTENSIONS:
+            return PreprocessResult(
+                should_process=True,
+                parser_name="local",
+                content_type=actual_type,
+            )
+
         # Find appropriate parser from registry
         parser = ParserRegistry.get_parser_for_file(file_path, actual_type)
 
