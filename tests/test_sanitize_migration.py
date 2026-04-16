@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from urllib.parse import quote
+from uuid import uuid4
 
 import pytest
 
@@ -266,3 +267,193 @@ class TestSanitizeImportConsistency:
         # API strips /archive/ prefix
         api_path = uri.removeprefix("/archive/")
         assert api_path == storage_key, "URI must match storage key exactly"
+
+
+# ---------------------------------------------------------------------------
+# Validation check tests (sections 17-20 in validate_cmd.py)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateNewChecks:
+    """Test the new validation checks added to mtss validate ingest."""
+
+    def _make_doc(self, doc_id="abc123", file_name="test.eml", depth=0,
+                  browse_uri=None, download_uri=None, doc_type="email"):
+        return {
+            "id": str(uuid4()),
+            "doc_id": doc_id,
+            "document_type": doc_type,
+            "file_name": file_name,
+            "file_path": f"/emails/{file_name}",
+            "depth": depth,
+            "status": "completed",
+            "archive_path": doc_id[:16],
+            "archive_browse_uri": browse_uri,
+            "archive_download_uri": download_uri,
+        }
+
+    def _make_chunk(self, doc_id, chunk_id=None, topic_ids=None):
+        return {
+            "id": str(uuid4()),
+            "document_id": doc_id,
+            "chunk_id": chunk_id or f"chunk_{uuid4().hex[:8]}",
+            "content": "test",
+            "chunk_index": 0,
+            "embedding": [0.1],
+            "metadata": {"topic_ids": topic_ids} if topic_ids else {},
+        }
+
+    # --- Section 17: Duplicate IDs ---
+
+    @pytest.mark.unit
+    def test_detect_duplicate_doc_ids(self):
+        from collections import Counter
+        docs = [
+            self._make_doc(doc_id="dup123"),
+            self._make_doc(doc_id="dup123"),
+            self._make_doc(doc_id="unique456"),
+        ]
+        counts = Counter(d["doc_id"] for d in docs)
+        dupes = {did: c for did, c in counts.items() if c > 1}
+        assert len(dupes) == 1
+        assert dupes["dup123"] == 2
+
+    @pytest.mark.unit
+    def test_no_duplicate_doc_ids(self):
+        from collections import Counter
+        docs = [self._make_doc(doc_id=f"unique_{i}") for i in range(5)]
+        counts = Counter(d["doc_id"] for d in docs)
+        dupes = {did: c for did, c in counts.items() if c > 1}
+        assert len(dupes) == 0
+
+    @pytest.mark.unit
+    def test_detect_duplicate_chunk_ids(self):
+        from collections import Counter
+        doc_id = str(uuid4())
+        chunks = [
+            self._make_chunk(doc_id, chunk_id="dup_chunk"),
+            self._make_chunk(doc_id, chunk_id="dup_chunk"),
+            self._make_chunk(doc_id, chunk_id="unique_chunk"),
+        ]
+        counts = Counter(c["chunk_id"] for c in chunks)
+        dupes = {cid: c for cid, c in counts.items() if c > 1}
+        assert len(dupes) == 1
+
+    # --- Section 18: Encoded filenames on disk ---
+
+    @pytest.mark.unit
+    def test_detect_encoded_filenames(self, tmp_path):
+        import re
+        archive = tmp_path / "archive" / "abc123" / "attachments"
+        archive.mkdir(parents=True)
+        (archive / "file%20name.pdf").write_bytes(b"x")
+        (archive / "clean_name.pdf").write_bytes(b"x")
+
+        enc_re = re.compile(r"%[0-9A-Fa-f]{2}")
+        encoded = [f for f in (tmp_path / "archive").rglob("*")
+                   if f.is_file() and enc_re.search(f.name)]
+        assert len(encoded) == 1
+        assert "file%20name.pdf" in encoded[0].name
+
+    @pytest.mark.unit
+    def test_no_encoded_filenames(self, tmp_path):
+        import re
+        archive = tmp_path / "archive" / "abc123"
+        archive.mkdir(parents=True)
+        (archive / "clean_file.pdf").write_bytes(b"x")
+
+        enc_re = re.compile(r"%[0-9A-Fa-f]{2}")
+        encoded = [f for f in (tmp_path / "archive").rglob("*")
+                   if f.is_file() and enc_re.search(f.name)]
+        assert len(encoded) == 0
+
+    # --- Section 19: Encoded URIs in documents.jsonl ---
+
+    @pytest.mark.unit
+    def test_detect_encoded_uris(self):
+        import re
+        enc_re = re.compile(r"%[0-9A-Fa-f]{2}")
+        doc = self._make_doc(browse_uri="/archive/abc/file%20name.pdf.md")
+        has_encoded = any(
+            enc_re.search(doc.get(k) or "")
+            for k in ("archive_browse_uri", "archive_download_uri")
+        )
+        assert has_encoded
+
+    @pytest.mark.unit
+    def test_clean_uris_not_flagged(self):
+        import re
+        enc_re = re.compile(r"%[0-9A-Fa-f]{2}")
+        doc = self._make_doc(browse_uri="/archive/abc/clean_file.pdf.md")
+        has_encoded = any(
+            enc_re.search(doc.get(k) or "")
+            for k in ("archive_browse_uri", "archive_download_uri")
+        )
+        assert not has_encoded
+
+    # --- Section 20: Broken markdown links ---
+
+    @pytest.mark.unit
+    def test_detect_broken_markdown_links(self, tmp_path):
+        import re
+        archive = tmp_path / "archive" / "abc123"
+        archive.mkdir(parents=True)
+        (archive / "email.eml.md").write_text(
+            "# Email\n\n- [Report](abc123/attachments/missing_file.pdf)\n"
+        )
+
+        broken = []
+        for md in (tmp_path / "archive").rglob("*.md"):
+            content = md.read_text(encoding="utf-8")
+            for link in re.findall(r"\[.*?\]\(([^)]+)\)", content):
+                if link.startswith(("http", "#", "mailto:")):
+                    continue
+                target = tmp_path / "archive" / link
+                if not target.exists():
+                    broken.append(link)
+        assert len(broken) == 1
+        assert "missing_file.pdf" in broken[0]
+
+    @pytest.mark.unit
+    def test_valid_markdown_links_not_flagged(self, tmp_path):
+        import re
+        archive = tmp_path / "archive" / "abc123" / "attachments"
+        archive.mkdir(parents=True)
+        (archive / "report.pdf").write_bytes(b"content")
+        (archive.parent / "email.eml.md").write_text(
+            "- [Report](abc123/attachments/report.pdf)\n"
+        )
+
+        broken = []
+        for md in (tmp_path / "archive").rglob("*.md"):
+            content = md.read_text(encoding="utf-8")
+            for link in re.findall(r"\[.*?\]\(([^)]+)\)", content):
+                if link.startswith(("http", "#", "mailto:")):
+                    continue
+                target = tmp_path / "archive" / link
+                if not target.exists():
+                    broken.append(link)
+        assert len(broken) == 0
+
+    @pytest.mark.unit
+    def test_llamaparse_images_skipped(self, tmp_path):
+        """LlamaParse page images should not be flagged as broken."""
+        import re
+        archive = tmp_path / "archive" / "abc123" / "attachments"
+        archive.mkdir(parents=True)
+        (archive / "report.pdf.md").write_text(
+            "![image](page_1_image_1_v2.jpg)\n![chart](page_3_chart_1_v2.jpg)\n"
+        )
+
+        broken = []
+        for md in (tmp_path / "archive").rglob("*.md"):
+            content = md.read_text(encoding="utf-8")
+            for link in re.findall(r"\[.*?\]\(([^)]+)\)", content):
+                if link.startswith(("http", "#", "mailto:")):
+                    continue
+                if re.match(r"page_\d+_(?:image|chart|seal)_\d+", link):
+                    continue
+                target = tmp_path / "archive" / link
+                if not target.exists():
+                    broken.append(link)
+        assert len(broken) == 0

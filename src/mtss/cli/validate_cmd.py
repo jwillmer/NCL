@@ -372,6 +372,98 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
         if len(broken_uris) > 5:
             issues.append(f"  ... and {len(broken_uris) - 5} more")
 
+    # === 17. Duplicate doc_ids and chunk_ids ===
+    from collections import Counter as _Ctr
+    doc_id_counts = _Ctr(d.get("doc_id") for d in docs if d.get("doc_id"))
+    dup_doc_ids = {did: cnt for did, cnt in doc_id_counts.items() if cnt > 1}
+    if dup_doc_ids:
+        issues.append(f"{len(dup_doc_ids)} duplicate doc_ids in documents.jsonl")
+        if verbose:
+            for did, cnt in list(dup_doc_ids.items())[:5]:
+                issues.append(f"  {did[:16]}: {cnt}x")
+
+    chunk_id_counts = _Ctr(c.get("chunk_id") for c in chunks if c.get("chunk_id"))
+    dup_chunk_ids = {cid: cnt for cid, cnt in chunk_id_counts.items() if cnt > 1}
+    if dup_chunk_ids:
+        issues.append(f"{len(dup_chunk_ids)} duplicate chunk_ids in chunks.jsonl")
+
+    # === 18. Encoded filenames on disk (should use underscores, not %XX) ===
+    import re as _re
+    _enc_re = _re.compile(r"%[0-9A-Fa-f]{2}")
+    encoded_disk_files = []
+    if archive_dir.exists():
+        for f in archive_dir.rglob("*"):
+            if f.is_file() and _enc_re.search(f.name):
+                encoded_disk_files.append(f.name)
+    if encoded_disk_files:
+        issues.append(
+            f"{len(encoded_disk_files)} archive files have URL-encoded names "
+            f"(run migration script to fix)"
+        )
+        if verbose:
+            for name in encoded_disk_files[:5]:
+                issues.append(f"  {name}")
+
+    # === 19. Encoded URIs in documents.jsonl ===
+    encoded_uris = []
+    for d in docs:
+        for key in ("archive_browse_uri", "archive_download_uri"):
+            uri = d.get(key) or ""
+            if _enc_re.search(uri):
+                encoded_uris.append((d.get("file_name", "?"), key, uri))
+    if encoded_uris:
+        issues.append(
+            f"{len(encoded_uris)} archive URIs contain URL-encoding "
+            f"(run migration script to fix)"
+        )
+
+    # === 20. Broken markdown internal links ===
+    if archive_dir.exists():
+        broken_md_links: Dict[str, List[str]] = {}
+        for md_file in archive_dir.rglob("*.md"):
+            content = md_file.read_text(encoding="utf-8", errors="replace")
+            for link in _re.findall(r"\[.*?\]\(([^)]+)\)", content):
+                if link.startswith(("http", "#", "mailto:")):
+                    continue
+                # Skip LlamaParse page images (not stored locally)
+                if _re.match(r"page_\d+_(?:image|chart|seal)_\d+", link):
+                    continue
+                target = archive_dir / link
+                rel_target = md_file.parent / link
+                if not target.exists() and not rel_target.exists():
+                    folder = str(md_file.relative_to(archive_dir)).split("/")[0].split("\\")[0]
+                    broken_md_links.setdefault(folder, []).append(link)
+
+        total_broken = sum(len(v) for v in broken_md_links.values())
+        if total_broken:
+            # Map folder_id to email for readable output
+            folder_to_email = {
+                d["doc_id"][:16]: d.get("file_name") or d.get("source_title", "?")
+                for d in docs if d.get("depth", 0) == 0
+            }
+            # Categorize
+            truncated = sum(1 for links in broken_md_links.values()
+                           for l in links if not Path(l).suffix)
+            unicode_broken = sum(1 for links in broken_md_links.values()
+                                for l in links if not l.isascii())
+            other = total_broken - truncated - unicode_broken
+            parts = []
+            if truncated:
+                parts.append(f"{truncated} truncated by parens")
+            if unicode_broken:
+                parts.append(f"{unicode_broken} unicode-mangled")
+            if other:
+                parts.append(f"{other} other")
+            detail = ", ".join(parts)
+            warnings.append(
+                f"{total_broken} broken markdown links in {len(broken_md_links)} archive folders "
+                f"({detail})"
+            )
+            if verbose:
+                for folder_id, links in sorted(broken_md_links.items())[:10]:
+                    email = folder_to_email.get(folder_id, "?")
+                    warnings.append(f"  {folder_id} ({email}): {len(links)} broken")
+
     # === Display results ===
     summary = Table(title="Ingest Validation Summary")
     summary.add_column("Metric", style="cyan")
