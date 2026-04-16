@@ -958,6 +958,54 @@ class TestChunkMetadataTopicIds:
 
 
 # ---------------------------------------------------------------------------
+# Test: Supabase insert_topic includes counts in INSERT data
+# ---------------------------------------------------------------------------
+
+
+class TestSupabaseInsertTopicCounts:
+    """Regression: insert_topic must include chunk_count/document_count in INSERT."""
+
+    @pytest.mark.unit
+    def test_insert_topic_includes_counts_in_data(self):
+        """The data dict sent to Supabase INSERT must contain count fields."""
+        from mtss.storage.repositories.domain import DomainRepository
+
+        mock_client = MagicMock()
+        mock_table = MagicMock()
+        mock_client.table.return_value = mock_table
+        mock_insert = MagicMock()
+        mock_table.insert.return_value = mock_insert
+        mock_insert.execute.return_value = SimpleNamespace(data=[{
+            "id": str(uuid4()),
+            "name": "test topic",
+            "display_name": "Test Topic",
+            "description": None,
+            "embedding": None,
+            "chunk_count": 42,
+            "document_count": 7,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }])
+
+        repo = DomainRepository(mock_client, db_url="postgresql://test:test@localhost/test")
+        topic = _make_topic("test topic", chunk_count=42, document_count=7)
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(repo.insert_topic(topic))
+
+        # Verify the data dict passed to .insert() contains counts
+        insert_call_data = mock_table.insert.call_args[0][0]
+        assert "chunk_count" in insert_call_data, (
+            "insert_topic must include chunk_count in INSERT data"
+        )
+        assert "document_count" in insert_call_data, (
+            "insert_topic must include document_count in INSERT data"
+        )
+        assert insert_call_data["chunk_count"] == 42
+        assert insert_call_data["document_count"] == 7
+
+
+# ---------------------------------------------------------------------------
 # JSONL reader helper
 # ---------------------------------------------------------------------------
 

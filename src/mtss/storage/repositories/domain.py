@@ -323,6 +323,8 @@ class DomainRepository(BaseRepository):
             "display_name": topic.display_name,
             "description": topic.description,
             "embedding": topic.embedding,
+            "chunk_count": topic.chunk_count,
+            "document_count": topic.document_count,
         }
         result = self.client.table("topics").insert(data).execute()
         if result.data:
