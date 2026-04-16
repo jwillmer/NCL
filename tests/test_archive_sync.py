@@ -38,10 +38,10 @@ class TestSanitizeOutput:
         assert result == "GE_FO_SER_SYS.pdf"
 
     @pytest.mark.unit
-    def test_brackets_become_parens(self):
+    def test_brackets_become_underscores(self):
         result = _sanitize("report[1].pdf")
         assert "[" not in result and "]" not in result
-        assert "(" in result and ")" in result
+        assert result == "report_1.pdf"
 
     @pytest.mark.unit
     def test_tilde_replaced(self):
@@ -71,9 +71,10 @@ class TestSanitizeOutput:
         assert first == second
 
     @pytest.mark.unit
-    def test_parentheses_preserved(self):
+    def test_parentheses_replaced(self):
         result = _sanitize("report (final).pdf")
-        assert "(" in result and ")" in result
+        assert "(" not in result and ")" not in result
+        assert result == "report_final.pdf"
 
 
 # ===========================================================================

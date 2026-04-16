@@ -255,7 +255,7 @@ class TestSanitizeStorageKey:
         result = _sanitize_storage_key("file[1].pdf")
         assert "[" not in result
         assert "]" not in result
-        assert "(1)" in result
+        assert result == "file_1.pdf"
 
     @pytest.mark.unit
     def test_handles_non_ascii_characters(self):

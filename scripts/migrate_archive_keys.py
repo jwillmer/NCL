@@ -19,55 +19,89 @@ from urllib.parse import unquote
 
 
 def _new_key(old_name: str) -> str:
-    """Convert a URL-encoded filename to underscore-based naming.
+    """Convert a filename to clean underscore-based naming.
 
-    Applies the same transformations as the updated _sanitize_storage_key:
+    Matches _sanitize_storage_key:
     - URL-decode first (%20 -> space, %27 -> ', etc.)
+    - Brackets, parens, tildes -> underscores
     - Spaces -> underscores
     - Special chars (', &, #, ,) -> underscores
     - Collapse multiple underscores
     - Strip leading/trailing underscores (preserve extension)
     """
     decoded = unquote(old_name)
-    result = decoded.replace(" ", "_")
+    result = decoded.replace("[", "_").replace("]", "_")
+    result = result.replace("(", "_").replace(")", "_")
+    result = result.replace("~", "_")
+    result = result.replace(" ", "_")
     result = re.sub(r"[',&#]+", "_", result)
     result = re.sub(r"_+", "_", result)
-    # Strip leading/trailing underscores but preserve extension
-    name_part, dot, ext_part = result.rpartition(".")
-    if name_part and dot:
-        result = f"{name_part.strip('_')}.{ext_part}"
+    # Strip leading/trailing underscores but preserve extension(s)
+    # Handle compound extensions like .pdf.md
+    import os
+    base, ext = os.path.splitext(result)
+    if ext == ".md" and "." in base:
+        inner_base, inner_ext = os.path.splitext(base)
+        result = f"{inner_base.strip('_')}{inner_ext}{ext}"
+    elif base:
+        result = f"{base.strip('_')}{ext}"
     return result
 
 
-_ENCODED_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+_NEEDS_FIX_RE = re.compile(r"%[0-9A-Fa-f]{2}|[()~]")
 
 
-def _fix_encoded_refs(text: str) -> tuple[str, int]:
-    """Replace all URL-encoded path segments in text with underscore versions.
+def _fix_refs_in_text(text: str) -> tuple[str, int]:
+    """Fix all path references in text — markdown links and JSON path values.
 
-    Handles both markdown links like (folder/file%20name.pdf) and
-    bare path strings in JSON values.
+    Handles:
+    - URL-encoded segments (%20, %27, etc.)
+    - Parentheses in paths (break markdown links)
+    - Tildes in paths
+    - Bare path strings in JSON values
 
     Returns:
         (updated_text, number_of_replacements)
     """
     count = 0
 
-    def _replace_match(m: re.Match) -> str:
+    def _fix_path_segment(segment: str) -> str:
+        """Apply _new_key to each filename part of a path."""
+        parts = segment.split("/")
+        new_parts = []
+        for part in parts:
+            new = _new_key(part) if _NEEDS_FIX_RE.search(part) else part
+            new_parts.append(new)
+        return "/".join(new_parts)
+
+    # Fix markdown links: [text](path)
+    def _fix_md_link(m: re.Match) -> str:
+        nonlocal count
+        prefix = m.group(1)  # [text](
+        path = m.group(2)    # the path
+        if path.startswith(("http", "mailto:", "#")):
+            return m.group(0)
+        new_path = _fix_path_segment(path)
+        if new_path != path:
+            count += 1
+        return prefix + new_path + ")"
+
+    result = re.sub(r"(\[.*?\]\()([^)]+)\)", _fix_md_link, text)
+
+    # Fix bare path strings (JSON values like "folder/attachments/file.pdf")
+    def _fix_bare_path(m: re.Match) -> str:
         nonlocal count
         full = m.group(0)
-        # Decode and re-sanitize the segment
-        new = _new_key(full)
+        new = _fix_path_segment(full)
         if new != full:
             count += 1
         return new
 
-    # Match path-like strings containing %XX encoding
-    # Covers: folder/attachments/file%20name.pdf and similar
+    # Match path-like strings containing problematic chars
     result = re.sub(
-        r"[A-Za-z0-9_./()\-]+%[0-9A-Fa-f]{2}[A-Za-z0-9_./()\-%]*",
-        _replace_match,
-        text,
+        r"[A-Za-z0-9_./()\-]+(?:%[0-9A-Fa-f]{2}|[~])[A-Za-z0-9_./()\-%~]*",
+        _fix_bare_path,
+        result,
     )
     return result, count
 
@@ -86,7 +120,7 @@ def migrate(output_dir: Path, dry_run: bool = True) -> None:
     # === Phase 1: Rename archive files on disk ===
     renames: list[tuple[Path, Path]] = []
     for f in sorted(archive_dir.rglob("*")):
-        if f.is_file() and "%" in f.name:
+        if f.is_file():
             new_name = _new_key(f.name)
             if new_name != f.name:
                 new_path = f.parent / new_name
@@ -110,19 +144,15 @@ def migrate(output_dir: Path, dry_run: bool = True) -> None:
         changed = False
         for key in ("archive_browse_uri", "archive_download_uri"):
             uri = d.get(key)
-            if uri and "%" in uri:
-                parts = uri.split("/")
-                new_parts = []
-                for part in parts:
-                    if "%" in part:
-                        new_parts.append(_new_key(part))
-                    else:
-                        new_parts.append(part)
-                new_uri = "/".join(new_parts)
-                if new_uri != uri:
-                    d[key] = new_uri
-                    changed = True
-                    uri_updates += 1
+            if not uri:
+                continue
+            parts = uri.split("/")
+            new_parts = [_new_key(p) if p and p not in ("", "archive") else p for p in parts]
+            new_uri = "/".join(new_parts)
+            if new_uri != uri:
+                d[key] = new_uri
+                changed = True
+                uri_updates += 1
         if changed:
             updated_doc_lines.append(json.dumps(d, default=str))
         else:
@@ -136,9 +166,9 @@ def migrate(output_dir: Path, dry_run: bool = True) -> None:
     md_files_to_update: list[tuple[Path, str]] = []
     for md_file in archive_dir.rglob("*.md"):
         content = md_file.read_text(encoding="utf-8", errors="replace")
-        if not _ENCODED_RE.search(content):
+        if not _NEEDS_FIX_RE.search(content):
             continue
-        new_content, fixes = _fix_encoded_refs(content)
+        new_content, fixes = _fix_refs_in_text(content)
         if fixes:
             md_fixes += fixes
             md_files_fixed += 1
@@ -152,9 +182,9 @@ def migrate(output_dir: Path, dry_run: bool = True) -> None:
     meta_files_to_update: list[tuple[Path, str]] = []
     for meta_file in archive_dir.rglob("metadata.json"):
         content = meta_file.read_text(encoding="utf-8")
-        if not _ENCODED_RE.search(content):
+        if not _NEEDS_FIX_RE.search(content):
             continue
-        new_content, fixes = _fix_encoded_refs(content)
+        new_content, fixes = _fix_refs_in_text(content)
         if fixes:
             meta_fixes += fixes
             meta_files_fixed += 1

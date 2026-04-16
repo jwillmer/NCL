@@ -40,8 +40,9 @@ def _sanitize_storage_key(filename: str) -> str:
     import re
     import unicodedata
 
-    # Replace characters Supabase Storage rejects
-    result = filename.replace("[", "(").replace("]", ")")
+    # Replace characters problematic for storage keys and markdown links
+    result = filename.replace("[", "_").replace("]", "_")
+    result = result.replace("(", "_").replace(")", "_")
     result = result.replace("~", "_")
 
     # Transliterate non-ASCII to ASCII (Greek Δ -> D, Α -> A, etc.)
@@ -61,13 +62,17 @@ def _sanitize_storage_key(filename: str) -> str:
     # Replace spaces and other problematic chars with underscores
     ascii_only = ascii_only.replace(" ", "_")
     # Collapse runs of special chars into single underscore
-    ascii_only = re.sub(r"[',&#]+", "_", ascii_only)
+    ascii_only = re.sub(r"[',&#()]+", "_", ascii_only)
     # Collapse multiple underscores
     ascii_only = re.sub(r"_+", "_", ascii_only)
-    # Strip leading/trailing underscores (but preserve extension dot)
-    name_part, _, ext_part = ascii_only.rpartition(".")
-    if name_part:
-        ascii_only = f"{name_part.strip('_')}.{ext_part}"
+    # Strip leading/trailing underscores (preserve extension, handle .pdf.md)
+    import os as _os
+    base, ext = _os.path.splitext(ascii_only)
+    if ext == ".md" and "." in base:
+        inner_base, inner_ext = _os.path.splitext(base)
+        ascii_only = f"{inner_base.strip('_')}{inner_ext}{ext}"
+    elif base:
+        ascii_only = f"{base.strip('_')}{ext}"
 
     return ascii_only
 

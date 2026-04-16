@@ -55,8 +55,8 @@ class TestSanitizeStorageKey:
         assert "_Greece_C.pdf" in result
 
     @pytest.mark.unit
-    def test_brackets_replaced_with_parens(self):
-        assert _sanitize("file[1].pdf") == "file(1).pdf"
+    def test_brackets_replaced_with_underscores(self):
+        assert _sanitize("file[1].pdf") == "file_1.pdf"
 
     @pytest.mark.unit
     def test_tilde_replaced(self):
