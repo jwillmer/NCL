@@ -29,25 +29,25 @@ class TestArchiveUriConstruction:
         assert browse_uri.count("/archive/") == 1
 
     @pytest.mark.unit
-    def test_archive_uri_no_double_encoding(self):
-        """URIs should not double-encode %20 to %2520."""
+    def test_archive_uri_no_encoding(self):
+        """URIs should use underscores, no URL-encoding."""
         from mtss.ingest.archive_generator import _sanitize_storage_key
 
         safe = _sanitize_storage_key("GE FO SER SYS.pdf")
         md_path = f"abc123def45678/attachments/{safe}.md"
         browse_uri = f"/archive/{md_path}"
-        assert "%2520" not in browse_uri
-        assert "%20" in browse_uri  # single encoding preserved
+        assert "%" not in browse_uri  # no URL-encoding
+        assert "_" in safe  # spaces replaced with underscores
 
     @pytest.mark.unit
     def test_sanitize_storage_key_spaces(self):
-        """Filenames with spaces should be encoded once."""
+        """Filenames with spaces should use underscores."""
         from mtss.ingest.archive_generator import _sanitize_storage_key
 
         result = _sanitize_storage_key("MARAN ASPASIA - report.pdf")
-        assert " " not in result  # spaces encoded
-        assert "%20" in result  # to %20
-        assert "%2520" not in result  # but not double
+        assert " " not in result  # no spaces
+        assert "%" not in result  # no URL-encoding
+        assert "_" in result  # underscores instead
 
 
 # =============================================================================

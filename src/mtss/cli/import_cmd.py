@@ -9,7 +9,7 @@ import mimetypes
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import unquote
+
 from uuid import UUID
 
 import typer
@@ -427,11 +427,6 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
 
         rel_key = str(file_path.relative_to(archive_dir)).replace("\\", "/")
 
-        # Local filenames are URL-encoded by _sanitize_storage_key (e.g. %20 for spaces).
-        # Supabase client handles encoding itself, so decode first. Also replace ~
-        # which Supabase Storage rejects in keys (older ingests may have it).
-        rel_key = unquote(rel_key).replace("~", "_")
-
         # Check for actual path traversal (.. as a path segment, not in filenames like "S.A..pdf")
         if any(seg == ".." for seg in rel_key.split("/")):
             logger.warning(f"Skipping path with traversal: {rel_key}")
@@ -469,8 +464,7 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
                 for f in storage.bucket.list(subfolder):
                     name = f.get("name")
                     if name and f.get("id"):
-                        # Decode URL-encoded names to match local keys (which are unquoted)
-                        existing_keys.add(f"{subfolder}/{unquote(name)}")
+                        existing_keys.add(f"{subfolder}/{name}")
             except Exception:
                 pass  # Folder may not exist yet
             progress.advance(task_id)

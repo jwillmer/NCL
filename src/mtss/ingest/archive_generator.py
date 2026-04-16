@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 
 from ..models.document import EmailMessage, ParsedEmail
 from ..storage.archive_storage import ArchiveStorage
@@ -28,19 +27,20 @@ MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd"}
 def _sanitize_storage_key(filename: str) -> str:
     """Sanitize a filename for use in Supabase Storage keys.
 
-    Supabase Storage rejects certain characters even when URL-encoded
-    (it decodes before validating). We replace problematic characters
-    with safe alternatives and transliterate non-ASCII to ASCII.
+    Replaces problematic characters with safe alternatives and
+    transliterates non-ASCII to ASCII.  Spaces become underscores
+    so keys never need URL-encoding.
 
     Args:
         filename: Original filename.
 
     Returns:
-        Sanitized filename safe for storage keys.
+        Sanitized filename safe for storage keys (no URL-encoding).
     """
+    import re
     import unicodedata
 
-    # Replace characters Supabase Storage rejects even when URL-encoded
+    # Replace characters Supabase Storage rejects
     result = filename.replace("[", "(").replace("]", ")")
     result = result.replace("~", "_")
 
@@ -52,15 +52,24 @@ def _sanitize_storage_key(filename: str) -> str:
     # If transliteration removed everything (e.g., all-Greek filename),
     # fall back to hex encoding of original
     if not ascii_only.strip() or not any(c.isalnum() for c in ascii_only):
-        # Keep extension if present
         import os
         name, ext = os.path.splitext(result)
         hex_name = result.encode("utf-8").hex()[:32]  # First 32 hex chars
         ext_ascii = unicodedata.normalize("NFKD", ext).encode("ascii", "ignore").decode("ascii")
         ascii_only = f"{hex_name}{ext_ascii}"
 
-    # URL-encode remaining special chars (spaces, etc.)
-    return quote(ascii_only, safe="-_.()")
+    # Replace spaces and other problematic chars with underscores
+    ascii_only = ascii_only.replace(" ", "_")
+    # Collapse runs of special chars into single underscore
+    ascii_only = re.sub(r"[',&#]+", "_", ascii_only)
+    # Collapse multiple underscores
+    ascii_only = re.sub(r"_+", "_", ascii_only)
+    # Strip leading/trailing underscores (but preserve extension dot)
+    name_part, _, ext_part = ascii_only.rpartition(".")
+    if name_part:
+        ascii_only = f"{name_part.strip('_')}.{ext_part}"
+
+    return ascii_only
 
 
 @dataclass
@@ -277,17 +286,16 @@ class ArchiveGenerator:
 
             for att in parsed_email.attachments:
                 att_name = att.filename
-                # URL-encode filename for markdown links (spaces break markdown parsing)
-                att_name_encoded = quote(att_name)
+                safe_name = _sanitize_storage_key(att_name)
 
                 # Only add [View] link if .md file was created
-                if has_md.get(att_name, False):
+                if has_md.get(safe_name, False):
                     lines.append(
-                        f"- [{att_name}]({att_prefix}/{att_name_encoded}) "
-                        f"([View]({att_prefix}/{att_name_encoded}.md))"
+                        f"- [{att_name}]({att_prefix}/{safe_name}) "
+                        f"([View]({att_prefix}/{safe_name}.md))"
                     )
                 else:
-                    lines.append(f"- [{att_name}]({att_prefix}/{att_name_encoded})")
+                    lines.append(f"- [{att_name}]({att_prefix}/{safe_name})")
             lines.append("")
 
         return "\n".join(lines)
@@ -408,9 +416,9 @@ class ArchiveGenerator:
         lines.append("")
         # Full path from archive root for download link
         if folder_id:
-            download_path = f"{folder_id}/attachments/{quote(filename)}"
+            download_path = f"{folder_id}/attachments/{filename}"
         else:
-            download_path = quote(filename)
+            download_path = filename
         lines.append(f"[Download Original]({download_path})")
         lines.append("")
         lines.append("---")

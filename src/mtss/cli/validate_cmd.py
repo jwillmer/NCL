@@ -716,8 +716,7 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
 
         # === 7. Archive storage — full file-level check ===
         archive_dir = resolved / "archive"
-        # Build local file keys per folder (matching import's unquote + ~ replacement)
-        from urllib.parse import unquote as _unquote
+        # Build local file keys per folder
         local_keys_by_folder: Dict[str, set[str]] = {}
         if archive_dir.exists():
             for doc_dir in archive_dir.iterdir():
@@ -726,7 +725,7 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
                     for f in doc_dir.rglob("*"):
                         if f.is_file() and f.name not in _HIDDEN_FILES:
                             rel = str(f.relative_to(archive_dir)).replace("\\", "/")
-                            keys.add(_unquote(rel).replace("~", "_"))
+                            keys.add(rel)
                     local_keys_by_folder[doc_dir.name] = keys
                     local_archive_files += len(keys)
 
@@ -767,8 +766,7 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
                             for f in storage.bucket.list(subfolder):
                                 name = f.get("name")
                                 if name and f.get("id"):
-                                    # Decode URL-encoded names to match local keys (which are unquoted)
-                                    keys.add(f"{subfolder}/{_unquote(name)}")
+                                    keys.add(f"{subfolder}/{name}")
                         except Exception:
                             pass
                     remote_keys_by_folder[folder_id] = keys

@@ -277,12 +277,11 @@ class TestSanitizeStorageKey:
 
     @pytest.mark.unit
     def test_replaces_leading_tilde(self):
-        """Should replace leading tilde with underscore (Word temp files)."""
+        """Should replace leading tilde (Word temp files)."""
         from mtss.ingest.archive_generator import _sanitize_storage_key
 
-        # ~WRD0001.jpg -> _WRD0001.jpg
+        # ~WRD0001.jpg -> WRD0001.jpg (leading underscore stripped)
         result = _sanitize_storage_key("~WRD0001.jpg")
-        assert result.startswith("_")
         assert not result.startswith("~")
         assert "WRD0001.jpg" in result
 

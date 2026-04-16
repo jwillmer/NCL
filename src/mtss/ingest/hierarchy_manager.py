@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
-from urllib.parse import quote
+
 from uuid import UUID
 
 from ..config import get_settings
@@ -86,14 +86,12 @@ class HierarchyManager:
 
         if archive_result:
             archive_path = archive_result.archive_path
-            md_path_encoded = quote(archive_result.markdown_path, safe="/")
-            orig_path_encoded = quote(archive_result.original_path, safe="/")
             if self.archive_base_url:
-                archive_browse_uri = f"{self.archive_base_url}/{md_path_encoded}"
-                archive_download_uri = f"{self.archive_base_url}/{orig_path_encoded}"
+                archive_browse_uri = f"{self.archive_base_url}/{archive_result.markdown_path}"
+                archive_download_uri = f"{self.archive_base_url}/{archive_result.original_path}"
             else:
-                archive_browse_uri = f"/archive/{md_path_encoded}"
-                archive_download_uri = f"/archive/{orig_path_encoded}"
+                archive_browse_uri = f"/archive/{archive_result.markdown_path}"
+                archive_download_uri = f"/archive/{archive_result.original_path}"
 
         source_title = parsed_email.metadata.subject or eml_path.stem
 
