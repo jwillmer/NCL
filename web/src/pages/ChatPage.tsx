@@ -206,6 +206,7 @@ function ChatPageContent() {
   const [searchParams] = useSearchParams();
   const threadId = searchParams.get("threadId") || "";
   const { session, loading: authLoading } = useAuth();
+  const userId = session?.user?.id;
 
   // Conversation state
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -267,16 +268,16 @@ function ChatPageContent() {
 
   // Load filters
   useEffect(() => {
-    if (!session) return;
+    if (!userId) return;
     Promise.all([listVessels(), listVesselTypes(), listVesselClasses()])
       .then(([v, t, c]) => { setVessels(v); setVesselTypes(t); setVesselClasses(c); })
       .catch(console.error)
       .finally(() => setVesselsLoading(false));
-  }, [session]);
+  }, [userId]);
 
   // Load or create conversation
   useEffect(() => {
-    if (!session || !threadId) return;
+    if (!userId || !threadId) return;
     setLoading(true);
     setError(null);
 
@@ -297,11 +298,11 @@ function ChatPageContent() {
         }
       })
       .finally(() => setLoading(false));
-  }, [session, threadId]);
+  }, [userId, threadId]);
 
   // Load message history
   useEffect(() => {
-    if (!session || !threadId || historyLoaded) return;
+    if (!userId || !threadId || historyLoaded) return;
     getMessages(threadId)
       .then((history) => {
         if (history.length > 0) {
@@ -312,7 +313,7 @@ function ChatPageContent() {
       })
       .catch(console.error)
       .finally(() => setHistoryLoaded(true));
-  }, [session, threadId, historyLoaded, setMessages]);
+  }, [userId, threadId, historyLoaded, setMessages]);
 
   // Track messages for title gen and timestamp update
   useEffect(() => {

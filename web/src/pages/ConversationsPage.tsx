@@ -129,9 +129,11 @@ function ConversationsPageContent() {
   const [loadingMore, setLoadingMore] = useState(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const userId = session?.user?.id;
+
   // Load vessels for name lookup
   useEffect(() => {
-    if (!session) return;
+    if (!userId) return;
     listVessels()
       .then((vessels) => {
         const lookup: Record<string, string> = {};
@@ -139,7 +141,7 @@ function ConversationsPageContent() {
         setVesselLookup(lookup);
       })
       .catch(console.error);
-  }, [session]);
+  }, [userId]);
 
   const LIMIT = 50;
 
@@ -151,7 +153,7 @@ function ConversationsPageContent() {
   }, [searchInput]);
 
   const loadConversations = useCallback(async (reset = false) => {
-    if (!session) return;
+    if (!userId) return;
     const currentOffset = reset ? 0 : offset;
     reset ? setLoading(true) : setLoadingMore(true);
 
@@ -176,11 +178,11 @@ function ConversationsPageContent() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [session, searchQuery, showArchived, offset]);
+  }, [userId, searchQuery, showArchived, offset]);
 
   useEffect(() => {
-    if (session) loadConversations(true);
-  }, [session, searchQuery, showArchived]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (userId) loadConversations(true);
+  }, [userId, searchQuery, showArchived]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNewConversation = async () => {
     const threadId = uuidv4();
