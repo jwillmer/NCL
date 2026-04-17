@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from .._io import atomic_write_text, fsync_append_line
 from ..models.serializers import chunk_to_dict, doc_to_dict, topic_to_dict
 
 logger = logging.getLogger(__name__)
@@ -105,10 +106,9 @@ class LocalStorageClient:
             logger.info(f"Loaded {len(self._prior_documents)} prior documents, {len(self._prior_topics)} prior topics")
 
     def _append_jsonl(self, filename: str, data: Dict[str, Any]) -> None:
-        """Append a JSON object as a line to a JSONL file."""
+        """Append a JSON object as a line to a JSONL file (fsynced)."""
         file_path = self.output_dir / filename
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(data, default=str) + "\n")
+        fsync_append_line(file_path, json.dumps(data, default=str))
 
     def _doc_to_dict(self, doc: Any) -> Dict[str, Any]:
         """Convert Document model to dictionary for JSONL serialization."""
@@ -617,7 +617,13 @@ class LocalStorageClient:
         logger.info(f"Wrote manifest to {manifest_path}")
 
     def flush(self):
-        """Rewrite JSONL files merging prior data with current run."""
+        """Rewrite JSONL files merging prior data with current run.
+
+        Canonical outputs (``documents.jsonl``, ``chunks.jsonl``,
+        ``topics.jsonl``) are written via ``atomic_write_text`` — content is
+        built in memory first, then replaced on disk in a single atomic
+        rename so a crash can never leave a half-written canonical file.
+        """
         # Merge prior documents with current run (current overrides by id, dedup by doc_id)
         current_doc_ids = {str(doc.id) for doc in self._documents.values()}
         seen_doc_ids = {doc.doc_id for doc in self._documents.values() if hasattr(doc, "doc_id") and doc.doc_id}
@@ -641,16 +647,17 @@ class LocalStorageClient:
             | {str(doc.id) for doc in self._documents.values()}
         )
 
-        # Write, skipping orphan children whose parent was replaced
-        with open(docs_path, "w") as f:
-            for prior_doc in candidate_prior:
-                root_id = prior_doc.get("root_id", "")
-                if root_id and root_id != prior_doc["id"] and root_id not in all_valid_doc_uuids:
-                    all_valid_doc_uuids.discard(prior_doc["id"])
-                    continue
-                f.write(json.dumps(prior_doc, default=str) + "\n")
-            for doc in self._documents.values():
-                f.write(json.dumps(self._doc_to_dict(doc), default=str) + "\n")
+        # Build, skipping orphan children whose parent was replaced
+        docs_lines: list[str] = []
+        for prior_doc in candidate_prior:
+            root_id = prior_doc.get("root_id", "")
+            if root_id and root_id != prior_doc["id"] and root_id not in all_valid_doc_uuids:
+                all_valid_doc_uuids.discard(prior_doc["id"])
+                continue
+            docs_lines.append(json.dumps(prior_doc, default=str))
+        for doc in self._documents.values():
+            docs_lines.append(json.dumps(self._doc_to_dict(doc), default=str))
+        atomic_write_text(docs_path, "".join(line + "\n" for line in docs_lines))
 
         # Rewrite chunks: current in-memory chunks (with merged topic IDs) + prior chunks
         current_chunk_ids = {str(cid) for cid in self._chunks}
@@ -685,87 +692,88 @@ class LocalStorageClient:
                             prior_lines.append(json.dumps(c, default=str))
                         except json.JSONDecodeError:
                             pass
-        with open(chunks_path, "w", encoding="utf-8") as f:
-            written_chunk_ids: set[str] = set()
-            for line in prior_lines:
-                f.write(line + "\n")
-                try:
-                    c = json.loads(line)
-                    cid = c.get("chunk_id")
-                    if cid:
-                        written_chunk_ids.add(cid)
-                except json.JSONDecodeError:
-                    pass
-            for chunk in self._chunks.values():
-                # Also filter current-run orphan chunks (doc_id dedup can leave unregistered UUIDs)
-                if str(getattr(chunk, "document_id", "")) not in all_valid_doc_uuids:
-                    continue
-                chunk_id = getattr(chunk, "chunk_id", None)
-                if chunk_id and chunk_id in written_chunk_ids:
-                    continue
-                if chunk_id:
-                    written_chunk_ids.add(chunk_id)
-                f.write(json.dumps(self._chunk_to_dict(chunk), default=str) + "\n")
+        chunks_lines: list[str] = []
+        written_chunk_ids: set[str] = set()
+        for line in prior_lines:
+            chunks_lines.append(line)
+            try:
+                c = json.loads(line)
+                cid = c.get("chunk_id")
+                if cid:
+                    written_chunk_ids.add(cid)
+            except json.JSONDecodeError:
+                pass
+        for chunk in self._chunks.values():
+            # Also filter current-run orphan chunks (doc_id dedup can leave unregistered UUIDs)
+            if str(getattr(chunk, "document_id", "")) not in all_valid_doc_uuids:
+                continue
+            chunk_id = getattr(chunk, "chunk_id", None)
+            if chunk_id and chunk_id in written_chunk_ids:
+                continue
+            if chunk_id:
+                written_chunk_ids.add(chunk_id)
+            chunks_lines.append(json.dumps(self._chunk_to_dict(chunk), default=str))
+        atomic_write_text(chunks_path, "".join(line + "\n" for line in chunks_lines))
 
-        # Recompute topic counts from actual chunk metadata (all chunks on disk)
-        # This prevents stale accumulation across runs.
+        # Recompute topic counts from actual chunk metadata (all chunks just written)
+        # This prevents stale accumulation across runs. We iterate the in-memory
+        # ``chunks_lines`` instead of re-reading the file — identical content, fewer I/Os.
         topic_chunk_counts: dict[str, int] = {}
         topic_doc_sets: dict[str, set[str]] = {}
-        with open(chunks_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        c = json.loads(line)
-                        meta = c.get("metadata") or {}
-                        tids = meta.get("topic_ids")
-                        if tids:
-                            doc_id = c.get("document_id", "")
-                            for tid in tids:
-                                topic_chunk_counts[tid] = topic_chunk_counts.get(tid, 0) + 1
-                                if tid not in topic_doc_sets:
-                                    topic_doc_sets[tid] = set()
-                                topic_doc_sets[tid].add(doc_id)
-                    except json.JSONDecodeError:
-                        pass
+        for line in chunks_lines:
+            if line.strip():
+                try:
+                    c = json.loads(line)
+                    meta = c.get("metadata") or {}
+                    tids = meta.get("topic_ids")
+                    if tids:
+                        doc_id = c.get("document_id", "")
+                        for tid in tids:
+                            topic_chunk_counts[tid] = topic_chunk_counts.get(tid, 0) + 1
+                            if tid not in topic_doc_sets:
+                                topic_doc_sets[tid] = set()
+                            topic_doc_sets[tid].add(doc_id)
+                except json.JSONDecodeError:
+                    pass
 
         # Merge prior topics with current run (current overrides by id)
         # Drop orphan topics: no chunks reference them
         topics_path = self.output_dir / "topics.jsonl"
         current_topic_ids = set(self._topics.keys())
-        with open(topics_path, "w") as f:
-            for tid, prior_topic in self._prior_topics.items():
-                if tid not in current_topic_ids:
-                    # Update prior topic counts from recomputed data
-                    prior_topic["chunk_count"] = topic_chunk_counts.get(tid, 0)
-                    prior_topic["document_count"] = len(topic_doc_sets.get(tid, set()))
-                    if prior_topic["chunk_count"] == 0 and prior_topic["document_count"] == 0:
-                        logger.debug(f"Dropping orphan prior topic: {prior_topic.get('name')}")
-                        continue
-                    f.write(json.dumps(prior_topic, default=str) + "\n")
-            for topic in self._topics.values():
-                tid = str(topic.id)
-                recomputed_cc = topic_chunk_counts.get(tid, 0)
-                recomputed_dc = len(topic_doc_sets.get(tid, set()))
-                topic.chunk_count = recomputed_cc
-                topic.document_count = recomputed_dc
-                if recomputed_cc == 0 and recomputed_dc == 0:
-                    logger.debug(f"Dropping orphan topic: {topic.name}")
+        topics_lines: list[str] = []
+        for tid, prior_topic in self._prior_topics.items():
+            if tid not in current_topic_ids:
+                # Update prior topic counts from recomputed data
+                prior_topic["chunk_count"] = topic_chunk_counts.get(tid, 0)
+                prior_topic["document_count"] = len(topic_doc_sets.get(tid, set()))
+                if prior_topic["chunk_count"] == 0 and prior_topic["document_count"] == 0:
+                    logger.debug(f"Dropping orphan prior topic: {prior_topic.get('name')}")
                     continue
-                f.write(json.dumps(self._topic_to_dict(topic), default=str) + "\n")
+                topics_lines.append(json.dumps(prior_topic, default=str))
+        for topic in self._topics.values():
+            tid = str(topic.id)
+            recomputed_cc = topic_chunk_counts.get(tid, 0)
+            recomputed_dc = len(topic_doc_sets.get(tid, set()))
+            topic.chunk_count = recomputed_cc
+            topic.document_count = recomputed_dc
+            if recomputed_cc == 0 and recomputed_dc == 0:
+                logger.debug(f"Dropping orphan topic: {topic.name}")
+                continue
+            topics_lines.append(json.dumps(self._topic_to_dict(topic), default=str))
+        atomic_write_text(topics_path, "".join(line + "\n" for line in topics_lines))
 
         # Remove orphan archive folders (on disk but not in documents)
         archive_dir = self.output_dir / "archive"
         if archive_dir.exists():
             valid_folder_ids = set()
-            with open(docs_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            d = json.loads(line)
-                            if d.get("document_type") == "email" and d.get("doc_id"):
-                                valid_folder_ids.add(d["doc_id"][:16])
-                        except json.JSONDecodeError:
-                            pass
+            for line in docs_lines:
+                if line.strip():
+                    try:
+                        d = json.loads(line)
+                        if d.get("document_type") == "email" and d.get("doc_id"):
+                            valid_folder_ids.add(d["doc_id"][:16])
+                    except json.JSONDecodeError:
+                        pass
             import shutil
             for folder in archive_dir.iterdir():
                 if folder.is_dir() and folder.name not in valid_folder_ids:
