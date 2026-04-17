@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 _UPLOAD_MAX_ATTEMPTS = 3
 _UPLOAD_BACKOFF_BASE = 1.0  # seconds; delays: 1s, 2s
 
+# Upper bound on concurrent archive uploads. Bounded to avoid saturating
+# the Supabase Storage endpoint or the local disk while still overlapping
+# network I/O. Exposed as a module-level constant so tests can monkeypatch
+# and operators can tune at runtime.
+_ARCHIVE_UPLOAD_CONCURRENCY = 8
+
 
 def register(app: typer.Typer):
     """Register the import command on the app."""
@@ -546,14 +552,39 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
         console.print(f"Uploading {len(files_to_upload)} new archive files ({skipped} already exist)...")
         with make_progress() as progress:
             task_id = progress.add_task("Archives", total=len(files_to_upload))
-            for local_path, rel_key in files_to_upload:
-                content_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
-                payload = local_path.read_bytes()
-                if _upload_with_retry(storage, rel_key, payload, content_type):
+
+            # Bound concurrent uploads to avoid saturating Supabase Storage.
+            # Read and upload happen on threads via asyncio.to_thread so the
+            # event loop is never blocked on disk or network I/O.
+            semaphore = asyncio.Semaphore(_ARCHIVE_UPLOAD_CONCURRENCY)
+
+            async def _upload_one(local_path: Path, rel_key: str) -> bool:
+                async with semaphore:
+                    content_type = (
+                        mimetypes.guess_type(str(local_path))[0]
+                        or "application/octet-stream"
+                    )
+                    payload = await asyncio.to_thread(local_path.read_bytes)
+                    success = await asyncio.to_thread(
+                        _upload_with_retry, storage, rel_key, payload, content_type
+                    )
+                    progress.update(task_id, advance=1)
+                    return success
+
+            results = await asyncio.gather(
+                *(_upload_one(lp, rk) for lp, rk in files_to_upload),
+                return_exceptions=True,
+            )
+
+            for result in results:
+                if result is True:
                     changes["new_archive files"] += 1
                 else:
+                    # False or an exception (gather captured it because of
+                    # return_exceptions=True) — both count as a failed upload.
                     changes["failed"] += 1
-                progress.update(task_id, advance=1)
+                    if isinstance(result, BaseException):
+                        logger.warning(f"Archive upload raised: {result!r}")
 
     if orphan_keys:
         console.print(f"Removing {len(orphan_keys)} orphan archive files...")
