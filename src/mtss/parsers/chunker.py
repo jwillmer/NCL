@@ -19,6 +19,7 @@ from langchain_text_splitters import (
 )
 
 from ..config import get_settings
+from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..models.chunk import Chunk
 from ..models.document import Document
 
@@ -70,7 +71,10 @@ Document:
         for attempt in range(max_retries):
             try:
                 response = await litellm.acompletion(
-                    model=model, messages=messages, temperature=0.3
+                    model=model,
+                    messages=messages,
+                    temperature=0.3,
+                    extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
                 )
                 from ..cli._common import _service_counter
                 _service_counter.add("llm_context")

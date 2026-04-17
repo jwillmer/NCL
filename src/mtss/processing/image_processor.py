@@ -12,6 +12,7 @@ from litellm import acompletion
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
+from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,7 @@ class ImageProcessor:
             messages=[{"role": "system", "content": system_prompt}, message],
             response_format={"type": "json_object"},
             drop_params=True,
+            extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
         )
         return response.choices[0].message.content
 

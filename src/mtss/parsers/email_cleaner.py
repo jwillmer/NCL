@@ -16,6 +16,7 @@ from typing import Optional, Tuple
 from litellm import acompletion
 
 from ..config import get_settings
+from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ async def extract_content_bounds(
             max_tokens=600,
             reasoning_effort="minimal",
             drop_params=True,
+            extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
         )
 
         raw = response.choices[0].message.content or ""

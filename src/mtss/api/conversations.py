@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 litellm.drop_params = True
 
 from ..config import get_settings
+from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..storage.supabase_client import SupabaseClient
 from .middleware.auth import UserPayload, get_current_user
 
@@ -553,6 +554,7 @@ async def _generate_title_with_llm(content: str) -> str:
                 {"role": "user", "content": content[:300]},
             ],
             temperature=0.3,
+            extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
         )
         title = (response.choices[0].message.content or "").strip()
         # Remove quotes if present

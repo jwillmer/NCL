@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import httpx
 
 from ..config import get_settings
+from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 
 if TYPE_CHECKING:
     from ..models.chunk import RetrievalResult
@@ -85,6 +86,7 @@ class Reranker:
                         "query": query,
                         "documents": documents,
                         "top_n": top_n,
+                        **OPENROUTER_PRIVACY_EXTRA_BODY,
                     },
                     timeout=30.0,
                 )

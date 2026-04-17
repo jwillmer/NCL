@@ -11,6 +11,7 @@ from litellm import aembedding
 from litellm.exceptions import APIConnectionError, RateLimitError, Timeout
 
 from ..config import get_settings
+from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..models.chunk import Chunk
 from ..observability import get_langfuse_metadata
 
@@ -120,6 +121,7 @@ class EmbeddingGenerator:
                 input=[truncated],
                 dimensions=self.dimensions,
                 metadata=get_langfuse_metadata(),
+                extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
             )
 
         response = await _call_with_retry(_call)
@@ -155,6 +157,7 @@ class EmbeddingGenerator:
                     input=b,
                     dimensions=self.dimensions,
                     metadata=metadata,
+                    extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
                 )
 
             response = await _call_with_retry(_call)
@@ -223,6 +226,7 @@ class EmbeddingGenerator:
                     input=t,
                     dimensions=self.dimensions,
                     metadata=metadata,
+                    extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
                 )
 
             response = await _call_with_retry(_call)

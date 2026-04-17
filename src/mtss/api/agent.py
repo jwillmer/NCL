@@ -37,6 +37,7 @@ from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import Command
 
 from ..config import get_settings
+from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..models.chunk import RetrievalResult
 from ..models.vessel import Vessel
 from ..processing.topics import TopicExtractor, TopicMatcher
@@ -303,6 +304,7 @@ async def chat_node(
         model=model_name,
         base_url=settings.openrouter_base_url,
         api_key=settings.openrouter_api_key,
+        extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
     )
     model_with_tools = model.bind_tools([SEARCH_TOOL], parallel_tool_calls=False)
 

@@ -14,6 +14,7 @@ import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from uuid import UUID
 
+from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..models.topic import ExtractedTopic, Topic
 
 if TYPE_CHECKING:
@@ -148,6 +149,7 @@ User question: {query}"""
                 ],
                 "max_tokens": 1500,  # gpt-5-nano needs more tokens for full 1-5 topics
                 "metadata": get_langfuse_metadata(),
+                "extra_body": OPENROUTER_PRIVACY_EXTRA_BODY,
             }
             # Only add temperature for models that support it
             if "gpt-5" not in self.llm_model:
@@ -248,6 +250,7 @@ User question: {query}"""
                 ],
                 "max_tokens": 500,  # gpt-5-nano needs more tokens
                 "metadata": get_langfuse_metadata(),
+                "extra_body": OPENROUTER_PRIVACY_EXTRA_BODY,
             }
             # Only add temperature for models that support it
             if "gpt-5" not in self.llm_model:

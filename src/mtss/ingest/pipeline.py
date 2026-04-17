@@ -322,6 +322,7 @@ async def _generate_thread_digest(
     """
     from litellm import acompletion
 
+    from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
     from ..models.chunk import Chunk
 
     messages = split_into_messages(cleaned_body)
@@ -365,6 +366,7 @@ Date range: {date_start} to {date_end}
             messages=[{"role": "user", "content": prompt}],
             max_tokens=600,
             drop_params=True,
+            extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
         )
         digest_text = response.choices[0].message.content
         if not digest_text or not digest_text.strip():
