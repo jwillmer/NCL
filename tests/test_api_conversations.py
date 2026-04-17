@@ -120,6 +120,34 @@ class TestGetConversation:
         mock_table.execute.return_value = MagicMock(data=[], count=0)
 
 
+class TestThreadIdValidation:
+    """Path params validated as UUID (cache-key pollution guard)."""
+
+    @pytest.mark.asyncio
+    async def test_conversations_rejects_non_uuid_thread_id(self, client, auth_headers):
+        """GET /api/conversations/{thread_id} with non-UUID path param → 422."""
+        response = await client.get(
+            "/api/conversations/not-a-uuid", headers=auth_headers
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_conversations_patch_rejects_non_uuid_thread_id(self, client, auth_headers):
+        response = await client.patch(
+            "/api/conversations/not-a-uuid",
+            headers=auth_headers,
+            json={"title": "new"},
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_conversations_delete_rejects_non_uuid_thread_id(self, client, auth_headers):
+        response = await client.delete(
+            "/api/conversations/not-a-uuid", headers=auth_headers
+        )
+        assert response.status_code == 422
+
+
 class TestDeleteConversation:
     """DELETE /api/conversations/{thread_id}"""
 

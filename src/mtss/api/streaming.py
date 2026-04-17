@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import AsyncGenerator, List, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -70,7 +71,7 @@ class AgentRequest(BaseModel):
     """POST body accepted by /api/agent."""
 
     messages: List[Message] = Field(..., min_length=1)
-    thread_id: str
+    thread_id: UUID
     filters: VesselFilters = Field(default_factory=VesselFilters)
 
 
@@ -86,7 +87,9 @@ async def _stream_agent(
     """Run the LangGraph agent and yield Vercel AI SDK v1 stream chunks."""
 
     graph = request.app.state.agent_graph
-    thread_id = body.thread_id
+    # LangGraph/Langfuse expect a string thread_id in config/metadata;
+    # Pydantic validated it as a UUID — convert to string for downstream.
+    thread_id = str(body.thread_id)
 
     # -- Langfuse tracing (mirrors patches/__init__.py) ---------------------
     set_session_id(thread_id)
