@@ -48,12 +48,22 @@ class AttachmentProcessor:
     LlamaParse is the default parser for all document types.
     """
 
-    # Mapping of MIME types to DocumentType
+    # Mapping of MIME types to DocumentType.
+    # Image set must mirror ImageProcessor.SUPPORTED_TYPES and
+    # lane_classifier.IMAGE_MIMETYPES — otherwise a format reaches the
+    # vision pipeline (producing an image_description chunk) while its
+    # parent document stays classified as ATTACHMENT_OTHER, which
+    # Check 7 (_check_context_summary) then flags for missing
+    # context_summary/embedding_text even though image chunks skip that
+    # enrichment by design.
     MIME_TO_DOC_TYPE: Dict[str, DocumentType] = {
         "application/pdf": DocumentType.ATTACHMENT_PDF,
         "image/png": DocumentType.ATTACHMENT_IMAGE,
+        "image/x-png": DocumentType.ATTACHMENT_IMAGE,
         "image/jpeg": DocumentType.ATTACHMENT_IMAGE,
         "image/jpg": DocumentType.ATTACHMENT_IMAGE,
+        "image/gif": DocumentType.ATTACHMENT_IMAGE,
+        "image/webp": DocumentType.ATTACHMENT_IMAGE,
         "image/tiff": DocumentType.ATTACHMENT_IMAGE,
         "image/bmp": DocumentType.ATTACHMENT_IMAGE,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": DocumentType.ATTACHMENT_DOCX,

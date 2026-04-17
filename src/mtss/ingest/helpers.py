@@ -27,8 +27,11 @@ logger = logging.getLogger(__name__)
 MIME_FORMAT_MAP: dict[str, str] = {
     "application/pdf": "PDF",
     "image/png": "PNG",
+    "image/x-png": "PNG",
     "image/jpeg": "JPEG",
     "image/jpg": "JPEG",
+    "image/gif": "GIF",
+    "image/webp": "WEBP",
     "image/tiff": "TIFF",
     "image/bmp": "BMP",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",

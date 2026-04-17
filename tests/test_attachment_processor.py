@@ -457,3 +457,65 @@ class TestLocalParserEmptyContentError:
         from mtss.parsers.base import EmptyContentError
 
         assert issubclass(EmptyContentError, ValueError)
+
+
+class TestImageMimeDocTypeParity:
+    """Every MIME type the image/vision pipeline accepts must also resolve to
+    ``DocumentType.ATTACHMENT_IMAGE`` via ``AttachmentProcessor.MIME_TO_DOC_TYPE``.
+
+    Regression: 2026-04-17 validate run flagged 2 ``.gif`` attachments as
+    "text chunks missing context_summary/embedding_text". Their content was
+    a valid image description — the chunks were fine, but their parent docs
+    had been typed ``attachment_other`` because ``image/gif`` was absent from
+    ``MIME_TO_DOC_TYPE``. Check 7 (``_check_context_summary``) excludes
+    ``attachment_image`` chunks by design, so the mislabel leaked them into
+    the check. WEBP had the same gap even though ``ImageProcessor`` and
+    ``lane_classifier`` already supported it.
+
+    This test anchors the three registries to the same set so a future
+    contributor adding HEIC, AVIF, SVG, etc. to vision can't forget one spot.
+    """
+
+    def test_every_vision_supported_image_maps_to_attachment_image(self):
+        from mtss.models.document import DocumentType
+        from mtss.parsers.attachment_processor import AttachmentProcessor
+        from mtss.processing.image_processor import ImageProcessor
+
+        missing = [
+            mt
+            for mt in ImageProcessor.SUPPORTED_TYPES
+            if AttachmentProcessor.MIME_TO_DOC_TYPE.get(mt)
+            is not DocumentType.ATTACHMENT_IMAGE
+        ]
+        assert missing == [], (
+            "ImageProcessor.SUPPORTED_TYPES must be a subset of "
+            "AttachmentProcessor.MIME_TO_DOC_TYPE with ATTACHMENT_IMAGE; "
+            f"drifted: {missing}"
+        )
+
+    def test_lane_classifier_image_mimetypes_match_vision_support(self):
+        from mtss.ingest.lane_classifier import IMAGE_MIMETYPES
+        from mtss.processing.image_processor import ImageProcessor
+
+        assert IMAGE_MIMETYPES == ImageProcessor.SUPPORTED_TYPES, (
+            "lane_classifier.IMAGE_MIMETYPES must stay in lockstep with "
+            "ImageProcessor.SUPPORTED_TYPES — a drift routes images through "
+            "the slow (LlamaParse) lane unnecessarily."
+        )
+
+    def test_mime_format_map_covers_every_supported_image(self):
+        from mtss.ingest.helpers import MIME_FORMAT_MAP
+        from mtss.processing.image_processor import ImageProcessor
+
+        missing = [mt for mt in ImageProcessor.SUPPORTED_TYPES if mt not in MIME_FORMAT_MAP]
+        assert missing == [], (
+            f"MIME_FORMAT_MAP missing display names for: {missing}"
+        )
+
+    def test_get_document_type_gif_and_webp(self):
+        from mtss.models.document import DocumentType
+        from mtss.parsers.attachment_processor import AttachmentProcessor
+
+        processor = AttachmentProcessor()
+        assert processor.get_document_type("image/gif") is DocumentType.ATTACHMENT_IMAGE
+        assert processor.get_document_type("image/webp") is DocumentType.ATTACHMENT_IMAGE

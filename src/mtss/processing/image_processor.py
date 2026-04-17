@@ -124,9 +124,13 @@ class ImageProcessor:
     - Description generation
     """
 
-    # Supported image MIME types for Vision API
+    # Supported image MIME types for Vision API.
+    # ``image/x-png`` is a legacy Outlook alias for PNG; the actual bytes
+    # are PNG so vision handles them once the extension-based lookup in
+    # ``_get_mime_type`` normalises the outbound MIME.
     SUPPORTED_TYPES = {
         "image/png",
+        "image/x-png",
         "image/jpeg",
         "image/jpg",
         "image/gif",

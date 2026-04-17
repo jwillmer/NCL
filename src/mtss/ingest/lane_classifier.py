@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Image MIME types that don't require LlamaParse (from ImageProcessor)
 IMAGE_MIMETYPES = {
     "image/png",
+    "image/x-png",
     "image/jpeg",
     "image/jpg",
     "image/gif",
