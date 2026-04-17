@@ -7,8 +7,9 @@ Uses Supabase Storage API directly (no DB tracking needed).
 from __future__ import annotations
 
 import logging
+import time
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 
 from storage3.utils import StorageException
 from supabase import Client, create_client
@@ -16,6 +17,12 @@ from supabase import Client, create_client
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Retry policy for paginated list calls. Supabase Storage occasionally returns
+# non-JSON bodies (gateway errors, transient 5xx) which surface as
+# JSONDecodeError in storage3. Retry with exponential backoff.
+_LIST_MAX_ATTEMPTS = 3
+_LIST_BACKOFF_BASE = 1.0  # seconds; delays: 1s, 2s
 
 
 @lru_cache(maxsize=1)
@@ -247,21 +254,52 @@ class ArchiveStorage:
 
         return result
 
-    def _list_paginated(self, folder: str, files_only: bool = True) -> List[dict]:
+    def list_folder(
+        self,
+        folder: str,
+        files_only: bool = True,
+        max_attempts: int = _LIST_MAX_ATTEMPTS,
+        backoff_base: float = _LIST_BACKOFF_BASE,
+    ) -> List[dict]:
         """List entries in a folder, paginating past the 100-item default.
 
+        Retries each page fetch with exponential backoff on transient errors
+        (e.g. JSONDecodeError when the storage gateway returns a non-JSON body).
+        Raises ArchiveStorageError if a page cannot be fetched after all retries.
+
         Args:
-            folder: Folder path to list.
+            folder: Folder path to list (empty string = bucket root).
             files_only: If True, skip subfolder placeholders (id=None).
+            max_attempts: Per-page retry budget.
+            backoff_base: Seconds; delay is backoff_base * 2**attempt.
         """
         page_size = 100
         offset = 0
         results: List[dict] = []
         while True:
-            try:
-                page = self.bucket.list(folder, {"limit": page_size, "offset": offset})
-            except StorageException:
-                break
+            page: Optional[List[dict]] = None
+            last_error: Optional[Exception] = None
+            for attempt in range(max_attempts):
+                try:
+                    page = self.bucket.list(
+                        folder, {"limit": page_size, "offset": offset}
+                    )
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_attempts - 1:
+                        delay = backoff_base * (2 ** attempt)
+                        logger.warning(
+                            f"List failed for {folder!r} offset={offset} "
+                            f"(attempt {attempt + 1}/{max_attempts}): {e}. "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        time.sleep(delay)
+            if page is None:
+                raise ArchiveStorageError(
+                    f"Failed to list {folder!r} at offset={offset} "
+                    f"after {max_attempts} attempts: {last_error}"
+                ) from last_error
             if files_only:
                 results.extend(f for f in page if f.get("id"))
             else:
@@ -279,17 +317,17 @@ class ArchiveStorage:
         """
         try:
             # List root level entries (doc_id folders) — paginated
-            root_entries = self._list_paginated("", files_only=False)
+            root_entries = self.list_folder("", files_only=False)
             count = 0
 
             for entry in root_entries:
                 folder_name = entry["name"]
                 paths: List[str] = []
 
-                for f in self._list_paginated(folder_name):
+                for f in self.list_folder(folder_name):
                     paths.append(f"{folder_name}/{f['name']}")
 
-                for f in self._list_paginated(f"{folder_name}/attachments"):
+                for f in self.list_folder(f"{folder_name}/attachments"):
                     paths.append(f"{folder_name}/attachments/{f['name']}")
 
                 if paths:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,8 @@ import typer
 from rich.table import Table
 
 from ._common import console, make_progress
+
+logger = logging.getLogger(__name__)
 
 # Hidden/system files to exclude from archive file counts
 _HIDDEN_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
@@ -919,23 +922,16 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
             from ..storage.archive_storage import ArchiveStorage
             storage = ArchiveStorage()
 
-            # List all root-level folders in the bucket (paginated)
+            # List all root-level folders in the bucket (paginated + retried)
             all_remote_folders: set[str] = set()
             try:
-                offset = 0
-                page_size = 100
-                while True:
-                    page = storage.bucket.list("", {"limit": page_size, "offset": offset})
-                    for f in page:
-                        name = f.get("name")
-                        if name and not f.get("id"):  # folders have id=null
-                            all_remote_folders.add(name)
-                    if len(page) < page_size:
-                        break
-                    offset += page_size
+                for f in storage.list_folder("", files_only=False):
+                    name = f.get("name")
+                    if name and not f.get("id"):  # folders have id=null
+                        all_remote_folders.add(name)
                 remote_archive_folders = len(all_remote_folders)
-            except Exception:
-                pass
+            except Exception as e:
+                warnings.append(f"Could not list root archive folders: {e}")
 
             root_docs = [d for d in local_docs if d.get("depth", 0) == 0]
             local_folder_ids = {d["doc_id"][:16] for d in root_docs}
@@ -943,20 +939,34 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
 
             folder_ids = [d["doc_id"][:16] for d in root_docs]
             remote_keys_by_folder: Dict[str, set[str]] = {}
+            incomplete_folders: List[str] = []
             with make_progress() as progress:
                 task_id = progress.add_task(f"Checking {len(folder_ids)} archive folders", total=len(folder_ids))
                 for folder_id in folder_ids:
                     keys: set[str] = set()
+                    folder_ok = True
                     for subfolder in (folder_id, f"{folder_id}/attachments"):
                         try:
-                            for f in storage.bucket.list(subfolder):
+                            for f in storage.list_folder(subfolder):
                                 name = f.get("name")
-                                if name and f.get("id"):
+                                if name:
                                     keys.add(f"{subfolder}/{name}")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            folder_ok = False
+                            logger.warning(
+                                f"Could not list remote archive {subfolder!r}: {e}"
+                            )
+                    if not folder_ok:
+                        incomplete_folders.append(folder_id)
                     remote_keys_by_folder[folder_id] = keys
                     progress.advance(task_id)
+            if incomplete_folders:
+                sample = ", ".join(incomplete_folders[:3])
+                more = f" (+{len(incomplete_folders) - 3} more)" if len(incomplete_folders) > 3 else ""
+                warnings.append(
+                    f"{len(incomplete_folders)} archive folders could not be fully listed "
+                    f"after retries — counts may be understated: {sample}{more}"
+                )
 
             for folder_id, remote_keys in remote_keys_by_folder.items():
                 remote_count = len(remote_keys)

@@ -483,8 +483,8 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
     storage = ArchiveStorage()
 
     # Pre-fetch existing files per folder to skip already-uploaded files.
-    # List root and attachments/ separately to build correct full paths.
-    # Uses thread pool since storage3 SDK is synchronous.
+    # list_folder handles pagination (>100 files) and retries transient
+    # gateway errors — silent truncation here causes phantom re-uploads.
     existing_keys: set[str] = set()
     subfolders = []
     for folder_id in local_by_folder:
@@ -495,12 +495,12 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
         task_id = progress.add_task(f"Checking {len(local_by_folder)} folders", total=len(subfolders))
         for subfolder in subfolders:
             try:
-                for f in storage.bucket.list(subfolder):
+                for f in storage.list_folder(subfolder):
                     name = f.get("name")
-                    if name and f.get("id"):
+                    if name:
                         existing_keys.add(f"{subfolder}/{name}")
-            except Exception:
-                pass  # Folder may not exist yet
+            except Exception as e:
+                logger.warning(f"Could not list existing archive files in {subfolder!r}: {e}")
             progress.advance(task_id)
 
     # Build set of expected local keys for orphan detection
@@ -519,17 +519,13 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
     # Detect orphan folders: list all root-level folders in bucket, compare to local
     orphan_folder_ids: List[str] = []
     all_remote_folders: set[str] = set()
-    offset = 0
-    page_size = 100
-    while True:
-        page = storage.bucket.list("", {"limit": page_size, "offset": offset})
-        for f in page:
+    try:
+        for f in storage.list_folder("", files_only=False):
             name = f.get("name")
             if name and not f.get("id"):  # folders have id=null
                 all_remote_folders.add(name)
-        if len(page) < page_size:
-            break
-        offset += page_size
+    except Exception as e:
+        logger.warning(f"Could not list root archive folders: {e}")
     # Compare against documents.jsonl doc_ids, not just disk folders
     orphan_folder_ids = sorted(all_remote_folders - local_doc_folder_ids)
 
