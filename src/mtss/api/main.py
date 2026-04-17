@@ -86,12 +86,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Skip auth for static frontend files (Vite static build)
-        # Allow root, .html files, and frontend page routes (chat, conversations)
+        # Allow root and .html files
         if path == "/" or path.endswith(".html"):
-            return await call_next(request)
-        # Allow frontend page routes (these are served as directory index.html)
-        # e.g., /chat, /chat/, /conversations, /conversations/
-        if path in ("/chat", "/chat/", "/conversations", "/conversations/"):
             return await call_next(request)
         if path.startswith(self.STATIC_PREFIXES):
             return await call_next(request)
@@ -101,6 +97,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Skip auth for CORS preflight requests (OPTIONS)
         # These don't include auth headers and are handled by CORSMiddleware
         if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # SPA fallback: any non-/api/ path is a client-side React Router route.
+        # SPAStaticFiles serves index.html for unknown paths, so auth is not
+        # required here — the JWT is enforced on the /api/* XHR calls the SPA
+        # makes after hydration. This avoids the need to maintain a hardcoded
+        # list of frontend routes (e.g. /chat, /conversations, /settings, ...).
+        if not path.startswith("/api/"):
             return await call_next(request)
 
         # Validate JWT for all other routes
