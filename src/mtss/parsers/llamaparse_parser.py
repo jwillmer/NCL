@@ -16,9 +16,14 @@ logger = logging.getLogger(__name__)
 def strip_llamaparse_image_refs(text: str) -> str:
     """Strip LlamaParse image refs, preserving alt-text.
 
-    Covers both image (`![alt](...)`) and link (`[alt](...)`) forms, since
-    LlamaParse emits figure references in either depending on layout. Known
-    target patterns include:
+    Defense-in-depth: new ingests pass `inline_images_in_markdown=False`,
+    so refs should not appear in fresh output. This function is still applied
+    after every parse to catch layout placeholders that bypass that flag, and
+    is the engine behind `mtss clean-archive-md` for retroactively cleaning
+    archives produced before the flag was set.
+
+    Covers both image (`![alt](...)`) and link (`[alt](...)`) forms. Known
+    target patterns:
       - page_N_image_N / page_N_chart_N / page_N_seal_N / page_N_table_N
       - page_N_layout_ocr_* (newer LlamaParse output; bounding-box suffix)
       - layout_id_not_provided / layout_* placeholders
@@ -140,7 +145,11 @@ class LlamaParseParser(BaseParser):
 
         from llama_cloud_services import LlamaParse
 
-        # Hardcoded configuration as per plan
+        # Hardcoded configuration as per plan.
+        # inline_images_in_markdown=False: suppress `![alt](page_N_image_N.jpg)` refs
+        # in the markdown output. Combined with specialized_image_parsing=True, image
+        # content (charts, scanned text, diagrams) is transcribed inline as text instead
+        # of left as a dangling tag. Avoids the need to strip refs downstream.
         parser = LlamaParse(
             api_key=self.settings.llama_cloud_api_key,
             tier="cost_effective",
@@ -153,6 +162,7 @@ class LlamaParseParser(BaseParser):
             auto_mode_configuration_json='[{"trigger_mode":"or","table_in_page":true,"layout_element_in_page":"chart","full_page_image_in_page":true,"parsing_conf":{"tier":"agentic","version":"latest"}}]',
             max_pages=0,  # No limit
             specialized_image_parsing=True,
+            inline_images_in_markdown=False,
         )
 
         sem = _get_llamaparse_semaphore()
