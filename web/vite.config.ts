@@ -35,5 +35,32 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (!id.includes("node_modules")) {
+            return undefined;
+          }
+          if (id.includes("@radix-ui/")) {
+            return "radix";
+          }
+          if (
+            id.includes("react-markdown") ||
+            id.includes("remark-") ||
+            id.includes("rehype-")
+          ) {
+            return "markdown";
+          }
+          if (id.includes("@ai-sdk/")) {
+            return "ai-sdk";
+          }
+          // Match the top-level `ai` package but not paths like `chai` or `ai-sdk`.
+          if (/[\\/]node_modules[\\/]ai[\\/]/.test(id)) {
+            return "ai-sdk";
+          }
+          return undefined;
+        },
+      },
+    },
   },
 });
