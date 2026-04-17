@@ -934,6 +934,90 @@ class TestZipAttachmentContextGeneration:
 
     @pytest.mark.asyncio
     @pytest.mark.unit
+    async def test_zip_member_original_is_uploaded_before_md(
+        self,
+        zip_attachment,
+        sample_document,
+        sample_attachment_document,
+        attach_chunk,
+        mock_components,
+    ):
+        """Regression: extracted ZIP members must have their original uploaded
+        to archive storage before update_attachment_markdown is called.
+
+        Without this, the `file_exists` guard in update_attachment_markdown
+        short-circuits and the `.md` preview is never written — which was
+        the root cause of the "Original file not found, skipping .md creation"
+        warnings flooding the retry-failed ingest run.
+        """
+        self._wire_attach_doc(mock_components, sample_attachment_document, [attach_chunk])
+        sample_document.doc_id = "doc123abc4567890"  # 16+ chars so [:16] is valid
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=mock_components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        storage = mock_components.archive_generator.storage
+        storage.upload_file.assert_called_once()
+        args, _ = storage.upload_file.call_args
+        uploaded_path, uploaded_bytes, uploaded_ct = args
+        # Goes into the email's archive folder as <folder_id>/attachments/<member>
+        assert uploaded_path == "doc123abc4567890/attachments/notes.txt"
+        assert uploaded_bytes == b"Some extracted content from a ZIP member."
+        assert uploaded_ct == "text/plain"
+
+        # And update_attachment_markdown was called AFTER (both called once, upload first).
+        assert mock_components.archive_generator.update_attachment_markdown.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_zip_member_upload_failure_does_not_abort_processing(
+        self,
+        zip_attachment,
+        sample_document,
+        sample_attachment_document,
+        attach_chunk,
+        mock_components,
+    ):
+        """If the extracted-original upload fails, we still attempt the .md
+        write (existing update_attachment_markdown has its own file_exists
+        guard and will return None gracefully). Processing must not crash.
+        """
+        self._wire_attach_doc(mock_components, sample_attachment_document, [attach_chunk])
+        sample_document.doc_id = "doc123abc4567890"
+        mock_components.archive_generator.storage.upload_file = MagicMock(
+            side_effect=RuntimeError("disk full")
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        chunks = await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=mock_components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        assert len(chunks) == 1  # chunk still produced despite upload failure
+        mock_components.archive_generator.update_attachment_markdown.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_zip_context_generation_failure_non_fatal(
         self,
         zip_attachment,

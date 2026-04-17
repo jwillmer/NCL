@@ -420,8 +420,26 @@ async def process_zip_attachment(
                 chunks.extend(attach_chunks)
                 attach_doc.status = ProcessingStatus.COMPLETED
 
-                # Update archive with .md file for this extracted file
+                # Update archive with .md file for this extracted file.
+                # Must first upload the extracted original into the email's
+                # archive folder — update_attachment_markdown refuses to
+                # write a preview without its backing file. The email-level
+                # archive generator only uploads top-level attachments
+                # (the ZIP itself), so ZIP members need their own upload here.
                 if components.archive_generator and parsed_content and email_doc.doc_id:
+                    folder_id = email_doc.doc_id[:16]
+                    safe_member_name = _sanitize_storage_key(extracted_path.name)
+                    original_archive_path = f"{folder_id}/attachments/{safe_member_name}"
+                    try:
+                        with open(extracted_path, "rb") as mf:
+                            components.archive_generator.storage.upload_file(
+                                original_archive_path,
+                                mf.read(),
+                                extracted_content_type,
+                            )
+                    except Exception as e:
+                        vprint(f"  -> Failed to upload ZIP member original {safe_member_name}: {e}", file_ctx)
+
                     md_path = components.archive_generator.update_attachment_markdown(
                         doc_id=email_doc.doc_id,
                         filename=extracted_path.name,
