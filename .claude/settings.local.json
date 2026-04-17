@@ -123,7 +123,11 @@
       "Bash(mtss -?)",
       "WebFetch(domain:supabase.com)",
       "Bash(OPENROUTER_API_KEY=test-key SUPABASE_URL=https://test.supabase.co SUPABASE_KEY=test-key SUPABASE_DB_URL=postgresql://test:test@localhost/test SUPABASE_JWT_SECRET=test-secret python -m pytest tests/test_archive_sync.py -v --tb=short)",
-      "Bash(python3)"
+      "Bash(python3)",
+      "Bash(tee /tmp/validate-baseline.txt)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(.venv/Scripts/pip.exe show *)"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\MTSS\\web\\src\\app\\chat\\[threadId]"

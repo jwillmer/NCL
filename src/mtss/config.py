@@ -193,6 +193,14 @@ class Settings(BaseSettings):
         default=300, validation_alias="PER_FILE_TIMEOUT_SECONDS"
     )
 
+    # Concurrency for processing members of a single ZIP attachment.
+    # Each member can trigger a vision/LLM call (images) or LlamaParse (docs).
+    # Image-heavy ZIPs (e.g. 48 inspection photos) serialise badly at 1 and
+    # easily exceed the per-file timeout.
+    zip_member_concurrency: int = Field(
+        default=5, validation_alias="ZIP_MEMBER_CONCURRENCY"
+    )
+
     # Failure Report Configuration
     failure_reports_dir: Path = Field(
         default=Path("./data/reports"), validation_alias="FAILURE_REPORTS_DIR"

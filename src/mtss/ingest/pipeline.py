@@ -24,7 +24,7 @@ from ..parsers.email_cleaner import (
 )
 from ..processing.topics import sanitize_input
 from ..utils import compute_chunk_id, compute_doc_id, normalize_source_id
-from .attachment_handler import process_attachment
+from .attachment_handler import _count_zip_members, process_attachment
 from .helpers import noop_verbose
 
 if TYPE_CHECKING:
@@ -48,6 +48,30 @@ class EmailResult:
 
 
 _noop_verbose = noop_verbose  # backward compat alias
+
+
+def _count_progress_units(attachments) -> int:
+    """Progress-bar denominator for a list of top-level email attachments.
+
+    Each non-ZIP attachment counts as 1 unit. Each ZIP contributes one unit
+    per contained member (fallback 1 if the ZIP can't be opened). This keeps
+    the progress total aligned with the per-member ticks emitted during ZIP
+    processing, so image-heavy ZIPs show ``0/49`` that ticks steadily rather
+    than ``0/2`` that freezes for minutes.
+    """
+    _ZIP_TYPES = {"application/zip", "application/x-zip-compressed"}
+    total = 0
+    for att in attachments:
+        ct = (getattr(att, "content_type", "") or "").lower()
+        name = (getattr(att, "filename", "") or "").lower()
+        saved = getattr(att, "saved_path", None)
+        looks_zip = ct in _ZIP_TYPES or name.endswith(".zip")
+        if looks_zip and saved:
+            n = _count_zip_members(Path(saved))
+            total += max(1, n)
+        else:
+            total += 1
+    return total
 
 
 async def _resolve_existing_document(
@@ -450,8 +474,11 @@ async def process_email(
     parsed_email = components.eml_parser.parse_file(eml_path)
     vprint(f"Parsed: \"{parsed_email.metadata.subject}\" - {len(parsed_email.attachments)} attachments", file_ctx)
 
-    # Notify progress callback with attachment count
-    attachment_count = len(parsed_email.attachments)
+    # Notify progress callback with attachment count.
+    # Pre-expand ZIPs: each ZIP contributes N progress units (one per member),
+    # not just 1. Without this, an email with a 48-image ZIP shows "0/2" and
+    # sits idle for minutes while the bar ticks once per whole ZIP.
+    attachment_count = _count_progress_units(parsed_email.attachments)
     result.attachment_count = attachment_count
     if on_progress:
         on_progress(0, max(1, attachment_count), file_ctx)
@@ -555,8 +582,13 @@ async def process_email(
     # Process attachments concurrently (LlamaParse calls run in parallel)
     _att_completed = 0
 
-    async def _run_attachment(i: int, attachment):
+    def _tick():
         nonlocal _att_completed
+        _att_completed += 1
+        if on_progress:
+            on_progress(_att_completed, max(1, attachment_count), file_ctx)
+
+    async def _run_attachment(i: int, attachment):
         safe_name = _sanitize_storage_key(attachment.filename)
         archive_file_result = archive_file_map.get(safe_name)
 
@@ -577,10 +609,8 @@ async def process_email(
             issue_tracker=issue_tracker,
             email_context_summary=context_summary,
             collect_docs=attachment_docs,
+            on_member_complete=_tick,
         )
-        _att_completed += 1
-        if on_progress:
-            on_progress(_att_completed, max(1, attachment_count), file_ctx)
         return chunks
 
     att_results = await asyncio.gather(

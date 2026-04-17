@@ -610,6 +610,54 @@ class TestMarkFailedCommand:
         assert reloaded._entries[entries[1]["file_path"]]["status"] == "FAILED"
 
     @pytest.mark.asyncio
+    async def test_get_failed_files_returns_all_failed_regardless_of_attempts(self, tmp_path):
+        """`--retry-failed` is an explicit user command and must retry *every*
+        FAILED entry regardless of how many prior attempts accumulated.
+
+        Regression: an earlier implementation filtered ``attempts < 3``, which
+        made ``ingest --retry-failed`` silently say "Retrying 0 failed files"
+        once every FAILED entry had exhausted its auto-retry budget. The
+        attempts counter stays on the entry for visibility, but does not
+        gate retry eligibility.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        from mtss.storage.local_progress_tracker import LocalProgressTracker
+
+        output = tmp_path / "output"
+        output.mkdir()
+        entries = [
+            # Fresh failure — previously visible anyway.
+            {
+                "file_path": str(tmp_path / "emails" / "fresh.eml"),
+                "file_hash": "f1", "status": "FAILED", "error": "x", "attempts": 1,
+            },
+            # Stuck at the old cap — previously invisible to retry.
+            {
+                "file_path": str(tmp_path / "emails" / "stuck.eml"),
+                "file_hash": "f2", "status": "FAILED", "error": "Timed out", "attempts": 3,
+            },
+            # Way past the old cap.
+            {
+                "file_path": str(tmp_path / "emails" / "very_stuck.eml"),
+                "file_hash": "f3", "status": "FAILED", "error": "x", "attempts": 99,
+            },
+            # COMPLETED — must NOT appear.
+            {
+                "file_path": str(tmp_path / "emails" / "ok.eml"),
+                "file_hash": "f4", "status": "COMPLETED", "attempts": 1,
+            },
+        ]
+        with open(output / "processing_log.jsonl", "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(_json.dumps(e) + "\n")
+
+        tracker = LocalProgressTracker(output)
+        result = sorted(p.name for p in await tracker.get_failed_files())
+        assert result == ["fresh.eml", "stuck.eml", "very_stuck.eml"]
+
+    @pytest.mark.asyncio
     async def test_compacts_log_to_one_entry_per_file(self, seeded_output):
         from pathlib import Path as _Path
 
@@ -702,3 +750,86 @@ class TestCleanArchiveMdCommand:
         first = md_a.read_text(encoding="utf-8")
         _clean_archive_md(output, dry_run=False)
         assert md_a.read_text(encoding="utf-8") == first
+
+
+class TestDeleteDocumentForReprocessClearsIndexes:
+    """Regression: prior-loaded docs must be evicted from the in-memory
+    dedup indexes when reprocessed, otherwise insert_document early-returns
+    on re-insert and the replacement email row is never written.
+
+    Real-world symptom: retry-failed run for an email marked the email
+    COMPLETED in processing_log but the email's row was missing from
+    documents.jsonl, leaving its attachment children orphaned with
+    root_id pointing to a non-existent UUID.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reprocess_after_restart_writes_new_email_row(self, tmp_path):
+        """Simulate: prior run wrote an email, fresh process loads prior data,
+        reprocesses the same email via delete + insert. The new row must appear
+        in documents.jsonl, not be silently dropped by the doc_id index."""
+        import json as _json
+        from uuid import uuid4
+
+        from mtss.models.document import Document, DocumentType, ProcessingStatus
+        from mtss.storage.local_client import LocalStorageClient
+
+        output_dir = tmp_path / "output"
+
+        # --- Prior run: write an email doc, flush ---
+        client_a = LocalStorageClient(output_dir)
+        old_id = uuid4()
+        old_email = Document(
+            id=old_id,
+            doc_id="deadbeefcafebabe",
+            source_id="same.eml",
+            file_hash="hash_v1",
+            document_type=DocumentType.EMAIL,
+            file_path="/same.eml",
+            file_name="same.eml",
+            depth=0,
+            status=ProcessingStatus.COMPLETED,
+        )
+        await client_a.insert_document(old_email)
+        client_a.flush()
+
+        # --- Fresh process: load prior data, then reprocess same email ---
+        client_b = LocalStorageClient(output_dir)
+        assert "deadbeefcafebabe" in client_b._documents_by_doc_id, \
+            "precondition: prior doc must be indexed by doc_id"
+
+        # Force-reparse cleanup path: lookup by doc_id -> call delete by UUID
+        existing = await client_b.get_document_by_doc_id("deadbeefcafebabe")
+        assert existing is not None
+        client_b.delete_document_for_reprocess(existing.id)
+
+        # After cleanup, index must not resurrect the stale doc
+        assert "deadbeefcafebabe" not in client_b._documents_by_doc_id, \
+            "delete_document_for_reprocess must evict prior doc from doc_id index"
+
+        # Now insert the NEW email (same doc_id, different uuid)
+        new_id = uuid4()
+        new_email = Document(
+            id=new_id,
+            doc_id="deadbeefcafebabe",
+            source_id="same.eml",
+            file_hash="hash_v1",
+            document_type=DocumentType.EMAIL,
+            file_path="/same.eml",
+            file_name="same.eml",
+            depth=0,
+            status=ProcessingStatus.COMPLETED,
+        )
+        stored = await client_b.insert_document(new_email)
+        # insert_document must store the NEW doc, not return the stale one
+        assert stored.id == new_id, \
+            "insert_document returned stale prior doc instead of writing the new one"
+
+        client_b.flush()
+
+        docs_path = output_dir / "documents.jsonl"
+        lines = [_json.loads(ln) for ln in docs_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        emails = [d for d in lines if d.get("doc_id") == "deadbeefcafebabe"]
+        assert len(emails) == 1
+        assert emails[0]["id"] == str(new_id), \
+            "documents.jsonl contains stale email row after reprocess; new row missing"

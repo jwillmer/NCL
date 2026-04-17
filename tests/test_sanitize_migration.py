@@ -684,3 +684,42 @@ class TestLlamaParseImageStripping:
     def test_preserves_link_form_to_http(self):
         md = "[docs](https://example.com/page)"
         assert self._strip(md) == md
+
+    # ---- Bare-token LlamaParse placeholders (no page_/layout_ prefix) ----
+
+    @pytest.mark.unit
+    def test_strips_short_alpha_token_image_form(self):
+        # Real example: tro_troubleshooting_1.pdf.md had ![Screen...](doge)
+        md = "![Screen showing alarm](doge)"
+        assert self._strip(md) == "Screen showing alarm"
+
+    @pytest.mark.unit
+    def test_strips_short_alpha_token_with_space(self):
+        # Real example: same file had ![Images...](pfzo nefh)
+        md = "![Images showing preparation](pfzo nefh)"
+        assert self._strip(md) == "Images showing preparation"
+
+    @pytest.mark.unit
+    def test_bare_token_preserves_real_image_filename(self):
+        # Must not over-match file refs with extensions.
+        assert self._strip("![diagram](chart.png)") == "![diagram](chart.png)"
+
+    @pytest.mark.unit
+    def test_bare_token_preserves_relative_path(self):
+        assert self._strip("![img](sub/foo)") == "![img](sub/foo)"
+
+    # ---- Nested square brackets inside alt-text ----
+
+    @pytest.mark.unit
+    def test_strips_bare_token_when_alt_contains_nested_brackets(self):
+        # Real example: tro_troubleshooting_1.pdf.md had
+        #   ![Screen showing [CODE75]EM'CY Mode. TSU1 and Stripping](doge)
+        # The old regex `[^\]]*` stopped at the inner `]` and missed the
+        # real closing bracket, leaving the broken ref in place.
+        md = "![Screen showing [CODE75]EM'CY Mode. TSU1 and Stripping](doge)"
+        assert self._strip(md) == "Screen showing [CODE75]EM'CY Mode. TSU1 and Stripping"
+
+    @pytest.mark.unit
+    def test_strips_page_ref_when_alt_contains_nested_brackets(self):
+        md = "![Figure [1] overview](page_3_image_2.png)"
+        assert self._strip(md) == "Figure [1] overview"

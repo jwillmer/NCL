@@ -32,7 +32,16 @@ def strip_llamaparse_image_refs(text: str) -> str:
       - page_N_layout_ocr_* (newer LlamaParse output; bounding-box suffix)
       - layout_id_not_provided / layout_* placeholders
       - the literal string "image"
+      - bare short tokens without path/extension (e.g. `doge`, `pfzo nefh`)
+
+    Alt-text can contain nested square brackets (e.g. ``[CODE75]`` in a screen
+    caption) — the inner pattern accepts any ``]`` that is *not* followed by
+    ``(``, so the match only terminates at the real closing ``](``.
     """
+    # Alt-text: any run of chars that isn't a `]` followed by `(`. Tolerates
+    # nested `[...]` sequences, which are common in technical alt captions.
+    _ALT = r"(?:[^\]]|\](?!\())*"
+
     text = re.sub(
         r'<img\s+[^>]*alt="([^"]*)"[^>]*/?>',
         r"\1",
@@ -41,19 +50,29 @@ def strip_llamaparse_image_refs(text: str) -> str:
     # Any page-prefixed LlamaParse artifact (image, chart, seal, table, layout_ocr, ...)
     # in either image-form (`![...]`) or link-form (`[...]`).
     text = re.sub(
-        r"!?\[([^\]]*)\]\(page_\d+_\w+(?:_\w+)*[^)]*\)",
+        rf"!?\[({_ALT})\]\(page_\d+_\w+(?:_\w+)*[^)]*\)",
         r"\1",
         text,
     )
     # Layout placeholders emitted when LlamaParse can't resolve a figure id.
     text = re.sub(
-        r"!?\[([^\]]*)\]\(layout(?:_\w+)*\)",
+        rf"!?\[({_ALT})\]\(layout(?:_\w+)*\)",
         r"\1",
         text,
     )
     # Literal "image" placeholder.
     text = re.sub(
-        r"!?\[([^\]]*)\]\(image\)",
+        rf"!?\[({_ALT})\]\(image\)",
+        r"\1",
+        text,
+    )
+    # Image-form refs whose target has no path separator and no extension
+    # (i.e. no `/` or `.`). LlamaParse occasionally emits short random tokens
+    # like `doge` or `pfzo nefh` that slip through the more specific patterns.
+    # Scoped to image form (`![...]`) to avoid mangling link-form references
+    # to valid anchors or relative file names that happen to lack extensions.
+    text = re.sub(
+        rf"!\[({_ALT})\]\(([^)/.\#:?&]+)\)",
         r"\1",
         text,
     )

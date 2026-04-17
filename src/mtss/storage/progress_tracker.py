@@ -218,26 +218,21 @@ class ProgressTracker:
             on_conflict="file_path"
         ).execute()
 
-    async def get_failed_files(self, max_attempts: int = 3) -> List[Path]:
-        """Get files that failed but haven't exceeded retry limit.
+    async def get_failed_files(self) -> List[Path]:
+        """Return every file currently in FAILED state.
 
-        Args:
-            max_attempts: Maximum number of retry attempts.
-
-        Returns:
-            List of file paths eligible for retry.
+        ``--retry-failed`` is an explicit, user-driven command; it always
+        retries whatever is FAILED. The ``attempts`` counter is kept on
+        entries for visibility but does not gate retry eligibility.
         """
-        return await anyio.to_thread.run_sync(
-            partial(self._get_failed_files_sync, max_attempts)
-        )
+        return await anyio.to_thread.run_sync(self._get_failed_files_sync)
 
-    def _get_failed_files_sync(self, max_attempts: int) -> List[Path]:
+    def _get_failed_files_sync(self) -> List[Path]:
         """Synchronous implementation of get_failed_files."""
         result = (
             self.db.client.table("processing_log")
             .select("file_path")
             .eq("status", ProcessingStatus.FAILED.value)
-            .lt("attempts", max_attempts)
             .execute()
         )
 

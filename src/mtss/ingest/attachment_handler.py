@@ -6,9 +6,11 @@ extracted from cli.py for better modularity.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from ..config import get_settings
 from ..ingest.archive_generator import _sanitize_storage_key
 from ..ingest.helpers import (
     enrich_chunks_with_document_metadata,
@@ -66,6 +68,7 @@ async def process_attachment(
     issue_tracker: "IssueTracker | None" = None,
     email_context_summary: str | None = None,
     collect_docs: list["Document"] | None = None,
+    on_member_complete: Callable[[], None] | None = None,
 ) -> list["Chunk"]:
     """Process a single attachment and return its chunks.
 
@@ -79,69 +82,133 @@ async def process_attachment(
     vessel_types = vessel_types or []
     vessel_classes = vessel_classes or []
     file_path = Path(attachment.saved_path)
+    # Progress accounting: non-ZIP attachments tick once on function exit,
+    # regardless of outcome (skip / success / error). ZIP branch ticks per
+    # extracted member internally and sets this flag to suppress the outer
+    # single tick.
+    _suppress_tick = False
 
-    # Format size for display
-    size_kb = attachment.size_bytes / 1024 if attachment.size_bytes else 0
-    size_str = f"{size_kb:.0f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
-    format_name = get_format_name(attachment.content_type or "unknown")
+    try:
+        # Format size for display
+        size_kb = attachment.size_bytes / 1024 if attachment.size_bytes else 0
+        size_str = f"{size_kb:.0f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
+        format_name = get_format_name(attachment.content_type or "unknown")
 
-    # Preprocess to get routing decision (classify_images=True for email-level attachments)
-    result = await components.attachment_processor.preprocess(
-        file_path, attachment.content_type, classify_images=True
-    )
+        # Preprocess to get routing decision (classify_images=True for email-level attachments)
+        result = await components.attachment_processor.preprocess(
+            file_path, attachment.content_type, classify_images=True
+        )
 
-    # Determine processor type for display
-    if result.is_zip:
-        processor = "ZIP"
-    elif result.is_image:
-        processor = "Vision"
-    elif result.parser_name:
-        processor = result.parser_name.capitalize()
-    else:
-        processor = "unsupported"
-
-    vprint(f"Attachment: {attachment.filename} ({format_name}, {size_str}) [{processor}]", file_ctx)
-
-    # Handle based on preprocess result
-    if not result.should_process:
-        # Log skipped file
-        reason = result.skip_reason or "unsupported_format"
-        if "non_content" in reason.lower() or result.is_image:
-            vprint("  -> Skipped: non-content image (logo/banner/signature)", file_ctx)
-            reason = "classified_as_non_content"
+        # Determine processor type for display
+        if result.is_zip:
+            processor = "ZIP"
+        elif result.is_image:
+            processor = "Vision"
+        elif result.parser_name:
+            processor = result.parser_name.capitalize()
         else:
-            vprint(f"  -> Skipped: {reason}", file_ctx)
-        await unsupported_logger.log_unsupported_file(
-            file_path=file_path,
-            reason=reason,
-            source_eml_path=source_eml_path,
-            parent_document_id=email_doc.id,
-        )
-        return chunks
+            processor = "unsupported"
 
-    # Handle ZIP files
-    if result.is_zip:
-        chunks.extend(
-            await process_zip_attachment(
-                attachment=attachment,
-                email_doc=email_doc,
+        vprint(f"Attachment: {attachment.filename} ({format_name}, {size_str}) [{processor}]", file_ctx)
+
+        # Handle based on preprocess result
+        if not result.should_process:
+            # Log skipped file
+            reason = result.skip_reason or "unsupported_format"
+            if "non_content" in reason.lower() or result.is_image:
+                vprint("  -> Skipped: non-content image (logo/banner/signature)", file_ctx)
+                reason = "classified_as_non_content"
+            else:
+                vprint(f"  -> Skipped: {reason}", file_ctx)
+            await unsupported_logger.log_unsupported_file(
+                file_path=file_path,
+                reason=reason,
                 source_eml_path=source_eml_path,
-                file_ctx=file_ctx,
-                components=components,
-                unsupported_logger=unsupported_logger,
-                vessel_ids=vessel_ids,
-                vessel_types=vessel_types,
-                vessel_classes=vessel_classes,
-                force_reparse=force_reparse,
-                lenient=lenient,
-                on_verbose=on_verbose,
-                issue_tracker=issue_tracker,
-                email_context_summary=email_context_summary,
-                collect_docs=collect_docs,
+                parent_document_id=email_doc.id,
             )
-        )
-        return chunks
+            return chunks
 
+        # Handle ZIP files
+        if result.is_zip:
+            _suppress_tick = True
+            chunks.extend(
+                await process_zip_attachment(
+                    attachment=attachment,
+                    email_doc=email_doc,
+                    source_eml_path=source_eml_path,
+                    file_ctx=file_ctx,
+                    components=components,
+                    unsupported_logger=unsupported_logger,
+                    vessel_ids=vessel_ids,
+                    vessel_types=vessel_types,
+                    vessel_classes=vessel_classes,
+                    force_reparse=force_reparse,
+                    lenient=lenient,
+                    on_verbose=on_verbose,
+                    issue_tracker=issue_tracker,
+                    email_context_summary=email_context_summary,
+                    collect_docs=collect_docs,
+                    on_member_complete=on_member_complete,
+                )
+            )
+            return chunks
+
+        # ── Non-ZIP main body ──────────────────────────────────────────
+        return await _process_non_zip_attachment(
+            attachment=attachment,
+            file_path=file_path,
+            email_doc=email_doc,
+            source_eml_path=source_eml_path,
+            file_ctx=file_ctx,
+            components=components,
+            unsupported_logger=unsupported_logger,
+            archive_file_result=archive_file_result,
+            vessel_ids=vessel_ids,
+            vessel_types=vessel_types,
+            vessel_classes=vessel_classes,
+            force_reparse=force_reparse,
+            on_verbose=on_verbose,
+            issue_tracker=issue_tracker,
+            collect_docs=collect_docs,
+            result=result,
+            chunks=chunks,
+            vprint=vprint,
+        )
+    finally:
+        if on_member_complete and not _suppress_tick:
+            try:
+                on_member_complete()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def _process_non_zip_attachment(
+    *,
+    attachment,
+    file_path: Path,
+    email_doc: "Document",
+    source_eml_path: str,
+    file_ctx: str,
+    components: "IngestComponents",
+    unsupported_logger: "UnsupportedFileLogger",
+    archive_file_result,
+    vessel_ids: list[str],
+    vessel_types: list[str],
+    vessel_classes: list[str],
+    force_reparse: bool,
+    on_verbose: Callable[[str, str | None], None] | None,
+    issue_tracker: "IssueTracker | None",
+    collect_docs: list["Document"] | None,
+    result,
+    chunks: list["Chunk"],
+    vprint: Callable[[str, str | None], None],
+) -> list["Chunk"]:
+    """Main body of process_attachment for non-ZIP attachments.
+
+    Extracted so that process_attachment's outer try/finally can wrap the
+    entire non-ZIP code path (for a single progress tick on exit) without
+    requiring a single-try-with-body-inside rewrite.
+    """
     # Build attachment document (deferred DB insert - caller persists atomically)
     attach_doc = components.hierarchy_manager.build_attachment_document(
         parent_doc=email_doc,
@@ -321,6 +388,7 @@ async def process_zip_attachment(
     issue_tracker: "IssueTracker | None" = None,
     email_context_summary: str | None = None,
     collect_docs: list["Document"] | None = None,
+    on_member_complete: Callable[[], None] | None = None,
 ) -> list["Chunk"]:
     """Extract and process files from a ZIP attachment.
 
@@ -332,142 +400,49 @@ async def process_zip_attachment(
     vessel_ids = vessel_ids or []
     vessel_types = vessel_types or []
     vessel_classes = vessel_classes or []
+    member_count = 0
 
     try:
         extracted_files = components.attachment_processor.extract_zip(
             Path(attachment.saved_path), lenient=lenient
         )
-        for extracted_path, extracted_content_type in extracted_files:
-            # Preprocess extracted file (classify_images=False - trust ZIP contents)
-            result = await components.attachment_processor.preprocess(
-                extracted_path, extracted_content_type, classify_images=False
-            )
+        member_count = len(extracted_files)
 
-            if not result.should_process:
-                await unsupported_logger.log_unsupported_file(
-                    file_path=extracted_path,
-                    reason=result.skip_reason or "unsupported_format",
-                    source_eml_path=source_eml_path,
-                    source_zip_path=attachment.saved_path,
-                    parent_document_id=email_doc.id,
-                )
-                continue
+        settings = get_settings()
+        sem = asyncio.Semaphore(max(1, settings.zip_member_concurrency))
 
-            # Build document for each extracted file (deferred DB insert)
-            attach_doc = components.hierarchy_manager.build_attachment_document(
-                parent_doc=email_doc,
-                attachment_path=extracted_path,
-                content_type=extracted_content_type,
-                size_bytes=extracted_path.stat().st_size,
-                original_filename=extracted_path.name,
-            )
-
-            # Process extracted file based on preprocess result
-            try:
-                parsed_content = None
-                if result.is_image:
-                    # Images from ZIPs - describe without classification
-                    attach_chunks = await components.attachment_processor.process_document_image(
-                        extracted_path, attach_doc.id
+        async def _run_one(extracted_path: Path, extracted_content_type: str):
+            async with sem:
+                try:
+                    return await _process_zip_member(
+                        extracted_path=extracted_path,
+                        extracted_content_type=extracted_content_type,
+                        attachment=attachment,
+                        email_doc=email_doc,
+                        source_eml_path=source_eml_path,
+                        file_ctx=file_ctx,
+                        components=components,
+                        unsupported_logger=unsupported_logger,
+                        vessel_ids=vessel_ids,
+                        vessel_types=vessel_types,
+                        vessel_classes=vessel_classes,
+                        vprint=vprint,
+                        issue_tracker=issue_tracker,
                     )
-                    if attach_chunks:
-                        parsed_content = attach_chunks[0].content
-                else:
-                    # Documents - use parser registry
-                    attach_chunks = await components.attachment_processor.process_attachment(
-                        extracted_path, attach_doc.id, extracted_content_type
-                    )
-                    if attach_chunks:
-                        parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
-                    else:
-                        components.db.log_ingest_event(
-                            document_id=attach_doc.id,
-                            event_type="no_body_chunks",
-                            severity="info",
-                            message="ZIP-extracted attachment produced 0 chunks (no extractable text)",
-                            file_path=str(extracted_path),
-                            file_name=extracted_path.name,
-                            source_eml_path=source_eml_path,
-                        )
+                finally:
+                    if on_member_complete:
+                        try:
+                            on_member_complete()
+                        except Exception:  # noqa: BLE001
+                            pass
 
-                if attach_chunks and components.context_generator and parsed_content:
-                    try:
-                        attach_context = await components.context_generator.generate_context(
-                            attach_doc, parsed_content[:4000]
-                        )
-                        if attach_context:
-                            for chunk in attach_chunks:
-                                chunk.context_summary = attach_context
-                                chunk.embedding_text = components.context_generator.build_embedding_text(
-                                    attach_context, chunk.content
-                                )
-                    except Exception as e:
-                        vprint(f"  -> Context generation failed: {e}", file_ctx)
-
-                # Enrich chunks with document citation metadata
-                enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
-                # Add vessel metadata to chunk metadata for filtering
-                if vessel_ids or vessel_types or vessel_classes:
-                    for chunk in attach_chunks:
-                        if chunk.metadata is None:
-                            chunk.metadata = {}
-                        if vessel_ids:
-                            chunk.metadata["vessel_ids"] = vessel_ids
-                        if vessel_types:
-                            chunk.metadata["vessel_types"] = vessel_types
-                        if vessel_classes:
-                            chunk.metadata["vessel_classes"] = vessel_classes
+        results = await asyncio.gather(
+            *(_run_one(ep, ct) for ep, ct in extracted_files)
+        )
+        for attach_doc, attach_chunks in results:
+            if attach_chunks:
                 chunks.extend(attach_chunks)
-                attach_doc.status = ProcessingStatus.COMPLETED
-
-                # Update archive with .md file for this extracted file.
-                # Must first upload the extracted original into the email's
-                # archive folder — update_attachment_markdown refuses to
-                # write a preview without its backing file. The email-level
-                # archive generator only uploads top-level attachments
-                # (the ZIP itself), so ZIP members need their own upload here.
-                if components.archive_generator and parsed_content and email_doc.doc_id:
-                    folder_id = email_doc.doc_id[:16]
-                    safe_member_name = _sanitize_storage_key(extracted_path.name)
-                    original_archive_path = f"{folder_id}/attachments/{safe_member_name}"
-                    try:
-                        with open(extracted_path, "rb") as mf:
-                            components.archive_generator.storage.upload_file(
-                                original_archive_path,
-                                mf.read(),
-                                extracted_content_type,
-                            )
-                    except Exception as e:
-                        vprint(f"  -> Failed to upload ZIP member original {safe_member_name}: {e}", file_ctx)
-
-                    md_path = components.archive_generator.update_attachment_markdown(
-                        doc_id=email_doc.doc_id,
-                        filename=extracted_path.name,
-                        content_type=extracted_content_type,
-                        size_bytes=extracted_path.stat().st_size,
-                        parsed_content=parsed_content,
-                    )
-                    if md_path:
-                        browse_uri = f"/archive/{md_path}"
-                        download_path = md_path.removesuffix('.md')
-                        download_uri = f"/archive/{download_path}"
-                        attach_doc.archive_browse_uri = browse_uri
-                        attach_doc.archive_download_uri = download_uri
-            except Exception as e:
-                if issue_tracker:
-                    await issue_tracker.track_async(file_ctx, f"{attachment.filename}/{extracted_path.name}", str(e))
-                attach_doc.status = ProcessingStatus.FAILED
-                attach_doc.error_message = sanitize_error_message(str(e))
-                await unsupported_logger.log_unsupported_file(
-                    file_path=extracted_path,
-                    reason="extraction_failed",
-                    source_eml_path=source_eml_path,
-                    source_zip_path=attachment.saved_path,
-                    parent_document_id=email_doc.id,
-                )
-
-            # Collect document for atomic persist (after try/except so it's always collected)
-            if collect_docs is not None:
+            if attach_doc is not None and collect_docs is not None:
                 collect_docs.append(attach_doc)
 
     except Exception as e:
@@ -479,5 +454,180 @@ async def process_zip_attachment(
             source_eml_path=source_eml_path,
             parent_document_id=email_doc.id,
         )
+        # ZIP failed before/during extraction: the caller pre-sized progress
+        # by expected member count. Catch up remaining ticks so the bar
+        # doesn't stall.
+        if on_member_complete:
+            expected = _count_zip_members(Path(attachment.saved_path))
+            for _ in range(max(0, expected - member_count)):
+                try:
+                    on_member_complete()
+                except Exception:  # noqa: BLE001
+                    pass
 
     return chunks
+
+
+def _count_zip_members(zip_path: Path) -> int:
+    """Best-effort count of top-level ZIP members for progress pre-sizing.
+
+    Nested ZIPs are not recursed — the outer ZIP's top-level entries are
+    close enough for a progress bar. Returns 0 on any read error (callers
+    treat a 0-member ZIP as a single tick).
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            return sum(1 for m in zf.infolist() if not m.is_dir())
+    except Exception:
+        return 0
+
+
+async def _process_zip_member(
+    extracted_path: Path,
+    extracted_content_type: str,
+    attachment,
+    email_doc: "Document",
+    source_eml_path: str,
+    file_ctx: str,
+    components: "IngestComponents",
+    unsupported_logger: "UnsupportedFileLogger",
+    vessel_ids: list[str],
+    vessel_types: list[str],
+    vessel_classes: list[str],
+    vprint: Callable[[str, str | None], None],
+    issue_tracker: "IssueTracker | None",
+) -> tuple["Document | None", list["Chunk"]]:
+    """Process a single ZIP member.
+
+    Returns (attach_doc, chunks). ``attach_doc`` is None when the member was
+    preprocess-rejected (unsupported / classified as non-content). Callers
+    run multiple invocations concurrently bounded by a semaphore, so this
+    helper must not mutate shared state beyond the returned values. The only
+    external side effects it performs are append-only logs (unsupported
+    logger, ingest events) and per-path archive writes — both are safe
+    against concurrent distinct-path callers.
+    """
+    result = await components.attachment_processor.preprocess(
+        extracted_path, extracted_content_type, classify_images=False
+    )
+
+    if not result.should_process:
+        await unsupported_logger.log_unsupported_file(
+            file_path=extracted_path,
+            reason=result.skip_reason or "unsupported_format",
+            source_eml_path=source_eml_path,
+            source_zip_path=attachment.saved_path,
+            parent_document_id=email_doc.id,
+        )
+        return None, []
+
+    attach_doc = components.hierarchy_manager.build_attachment_document(
+        parent_doc=email_doc,
+        attachment_path=extracted_path,
+        content_type=extracted_content_type,
+        size_bytes=extracted_path.stat().st_size,
+        original_filename=extracted_path.name,
+    )
+
+    attach_chunks: list["Chunk"] = []
+    try:
+        parsed_content = None
+        if result.is_image:
+            attach_chunks = await components.attachment_processor.process_document_image(
+                extracted_path, attach_doc.id
+            )
+            if attach_chunks:
+                parsed_content = attach_chunks[0].content
+        else:
+            attach_chunks = await components.attachment_processor.process_attachment(
+                extracted_path, attach_doc.id, extracted_content_type
+            )
+            if attach_chunks:
+                parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
+            else:
+                components.db.log_ingest_event(
+                    document_id=attach_doc.id,
+                    event_type="no_body_chunks",
+                    severity="info",
+                    message="ZIP-extracted attachment produced 0 chunks (no extractable text)",
+                    file_path=str(extracted_path),
+                    file_name=extracted_path.name,
+                    source_eml_path=source_eml_path,
+                )
+
+        if attach_chunks and components.context_generator and parsed_content:
+            try:
+                attach_context = await components.context_generator.generate_context(
+                    attach_doc, parsed_content[:4000]
+                )
+                if attach_context:
+                    for chunk in attach_chunks:
+                        chunk.context_summary = attach_context
+                        chunk.embedding_text = components.context_generator.build_embedding_text(
+                            attach_context, chunk.content
+                        )
+            except Exception as e:
+                vprint(f"  -> Context generation failed: {e}", file_ctx)
+
+        enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
+        if vessel_ids or vessel_types or vessel_classes:
+            for chunk in attach_chunks:
+                if chunk.metadata is None:
+                    chunk.metadata = {}
+                if vessel_ids:
+                    chunk.metadata["vessel_ids"] = vessel_ids
+                if vessel_types:
+                    chunk.metadata["vessel_types"] = vessel_types
+                if vessel_classes:
+                    chunk.metadata["vessel_classes"] = vessel_classes
+        attach_doc.status = ProcessingStatus.COMPLETED
+
+        # Update archive with .md file for this extracted file.
+        # Must first upload the extracted original into the email's archive
+        # folder — update_attachment_markdown refuses to write a preview
+        # without its backing file. The email-level archive generator only
+        # uploads top-level attachments (the ZIP itself), so ZIP members
+        # need their own upload here.
+        if components.archive_generator and parsed_content and email_doc.doc_id:
+            folder_id = email_doc.doc_id[:16]
+            safe_member_name = _sanitize_storage_key(extracted_path.name)
+            original_archive_path = f"{folder_id}/attachments/{safe_member_name}"
+            try:
+                with open(extracted_path, "rb") as mf:
+                    components.archive_generator.storage.upload_file(
+                        original_archive_path,
+                        mf.read(),
+                        extracted_content_type,
+                    )
+            except Exception as e:
+                vprint(f"  -> Failed to upload ZIP member original {safe_member_name}: {e}", file_ctx)
+
+            md_path = components.archive_generator.update_attachment_markdown(
+                doc_id=email_doc.doc_id,
+                filename=extracted_path.name,
+                content_type=extracted_content_type,
+                size_bytes=extracted_path.stat().st_size,
+                parsed_content=parsed_content,
+            )
+            if md_path:
+                browse_uri = f"/archive/{md_path}"
+                download_path = md_path.removesuffix('.md')
+                download_uri = f"/archive/{download_path}"
+                attach_doc.archive_browse_uri = browse_uri
+                attach_doc.archive_download_uri = download_uri
+    except Exception as e:
+        if issue_tracker:
+            await issue_tracker.track_async(file_ctx, f"{attachment.filename}/{extracted_path.name}", str(e))
+        attach_doc.status = ProcessingStatus.FAILED
+        attach_doc.error_message = sanitize_error_message(str(e))
+        await unsupported_logger.log_unsupported_file(
+            file_path=extracted_path,
+            reason="extraction_failed",
+            source_eml_path=source_eml_path,
+            source_zip_path=attachment.saved_path,
+            parent_document_id=email_doc.id,
+        )
+
+    return attach_doc, attach_chunks

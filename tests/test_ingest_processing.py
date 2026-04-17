@@ -1237,3 +1237,341 @@ class TestEmptyAttachmentEventEmission:
         assert kwargs["event_type"] == "no_body_chunks"
         assert kwargs["document_id"] == sample_attachment_document.id
         assert kwargs["file_name"] == "empty.docx"
+
+
+class TestProgressUnitsExpandZipMembers:
+    """_count_progress_units must pre-size the progress denominator to one
+    tick per ZIP member so image-heavy ZIPs don't freeze the bar at a tiny
+    denominator while 48 vision calls run inside."""
+
+    @pytest.mark.unit
+    def test_non_zip_attachment_counts_as_one(self, tmp_path):
+        from mtss.ingest.pipeline import _count_progress_units
+        from mtss.models.document import ParsedAttachment
+
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        att = ParsedAttachment(
+            filename="doc.pdf",
+            content_type="application/pdf",
+            size_bytes=pdf.stat().st_size,
+            saved_path=str(pdf),
+        )
+        assert _count_progress_units([att]) == 1
+
+    @pytest.mark.unit
+    def test_zip_contributes_one_per_member(self, tmp_path):
+        import zipfile
+
+        from mtss.ingest.pipeline import _count_progress_units
+        from mtss.models.document import ParsedAttachment
+
+        zip_path = tmp_path / "photos.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for i in range(7):
+                zf.writestr(f"photo_{i}.jpg", b"fake-jpeg")
+        att = ParsedAttachment(
+            filename="photos.zip",
+            content_type="application/zip",
+            size_bytes=zip_path.stat().st_size,
+            saved_path=str(zip_path),
+        )
+        assert _count_progress_units([att]) == 7
+
+    @pytest.mark.unit
+    def test_mixed_attachments_sum_correctly(self, tmp_path):
+        import zipfile
+
+        from mtss.ingest.pipeline import _count_progress_units
+        from mtss.models.document import ParsedAttachment
+
+        zip_path = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for i in range(4):
+                zf.writestr(f"m_{i}.jpg", b"x")
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF")
+
+        atts = [
+            ParsedAttachment(
+                filename="doc.pdf", content_type="application/pdf",
+                size_bytes=pdf.stat().st_size, saved_path=str(pdf),
+            ),
+            ParsedAttachment(
+                filename="bundle.zip", content_type="application/zip",
+                size_bytes=zip_path.stat().st_size, saved_path=str(zip_path),
+            ),
+        ]
+        # 1 (pdf) + 4 (zip members) = 5
+        assert _count_progress_units(atts) == 5
+
+    @pytest.mark.unit
+    def test_unreadable_zip_falls_back_to_one(self, tmp_path):
+        from mtss.ingest.pipeline import _count_progress_units
+        from mtss.models.document import ParsedAttachment
+
+        corrupted = tmp_path / "broken.zip"
+        corrupted.write_bytes(b"not a zip")
+        att = ParsedAttachment(
+            filename="broken.zip", content_type="application/zip",
+            size_bytes=corrupted.stat().st_size, saved_path=str(corrupted),
+        )
+        assert _count_progress_units([att]) == 1
+
+
+class TestZipMemberConcurrency:
+    """Members of a single ZIP must process concurrently.
+
+    Sequential processing of image-heavy ZIPs (~48 photos) serialises ~48
+    vision-API calls and blows past the per-file timeout. The handler uses a
+    bounded semaphore (``settings.zip_member_concurrency``) to run members in
+    parallel. These tests lock the concurrency contract in place.
+    """
+
+    @pytest.fixture
+    def zip_attachment(self, tmp_path):
+        from mtss.models.document import ParsedAttachment
+
+        zip_path = tmp_path / "bundle.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake-zip")
+        return ParsedAttachment(
+            filename="bundle.zip",
+            content_type="application/zip",
+            size_bytes=zip_path.stat().st_size,
+            saved_path=str(zip_path),
+        )
+
+    def _make_extracted_files(self, tmp_path, count: int):
+        paths = []
+        for i in range(count):
+            p = tmp_path / "extracted" / f"member_{i}.txt"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(f"content {i}")
+            paths.append((p, "text/plain"))
+        return paths
+
+    def _build_components(self, extracted_files, per_call_delay: float = 0.0):
+        """Mock components; each process_attachment call sleeps per_call_delay."""
+        import asyncio as _asyncio
+        from uuid import uuid4
+
+        from mtss.models.chunk import Chunk
+
+        components = MagicMock()
+
+        components.attachment_processor = MagicMock()
+        components.attachment_processor.extract_zip = MagicMock(return_value=extracted_files)
+
+        preprocess = MagicMock(
+            should_process=True, is_image=False, is_zip=False,
+            skip_reason=None, parser_name=None, image_description=None,
+        )
+        components.attachment_processor.preprocess = AsyncMock(return_value=preprocess)
+
+        async def slow_parse(path, doc_id, content_type):
+            if per_call_delay:
+                await _asyncio.sleep(per_call_delay)
+            return [Chunk(
+                id=uuid4(), document_id=doc_id, chunk_id=f"c_{path.name}",
+                content=f"parsed {path.name}", chunk_index=0, section_path=[],
+            )]
+
+        components.attachment_processor.process_attachment = AsyncMock(side_effect=slow_parse)
+
+        def build_attach_doc(**kwargs):
+            from mtss.models.document import Document, DocumentType, ProcessingStatus
+            return Document(
+                id=uuid4(),
+                doc_id=f"att_{kwargs['attachment_path'].name}",
+                document_type=DocumentType.ATTACHMENT_OTHER,
+                file_path=str(kwargs['attachment_path']),
+                file_name=kwargs['attachment_path'].name,
+                depth=1,
+                parent_id=kwargs['parent_doc'].id,
+                root_id=kwargs['parent_doc'].id,
+                status=ProcessingStatus.PENDING,
+            )
+        components.hierarchy_manager = MagicMock()
+        components.hierarchy_manager.build_attachment_document = MagicMock(side_effect=build_attach_doc)
+
+        components.context_generator = None
+        components.archive_generator = None
+        components.db = MagicMock()
+        components.db.log_ingest_event = MagicMock()
+        return components
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_members_processed_concurrently(
+        self, tmp_path, zip_attachment, sample_document, monkeypatch
+    ):
+        """With 8 members each sleeping 0.1s and concurrency=5, wall-clock
+        should be close to 2 × 0.1s (two batches), not 8 × 0.1s (serial)."""
+        import time
+
+        from mtss.config import get_settings
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        settings = get_settings()
+        monkeypatch.setattr(settings, "zip_member_concurrency", 5)
+
+        extracted = self._make_extracted_files(tmp_path, count=8)
+        components = self._build_components(extracted, per_call_delay=0.1)
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        t0 = time.perf_counter()
+        chunks = await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+        elapsed = time.perf_counter() - t0
+
+        assert len(chunks) == 8
+        # Sequential would be ~0.8s; concurrency=5 with 8 members = 2 batches → ~0.2s.
+        # Allow generous slack for Windows event-loop jitter, but fail on anything
+        # even close to sequential.
+        assert elapsed < 0.55, f"zip members look serial: {elapsed:.2f}s for 8×0.1s with concurrency=5"
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_concurrency_limit_is_respected(
+        self, tmp_path, zip_attachment, sample_document, monkeypatch
+    ):
+        """At concurrency=2 with 6 members of 0.1s each → ~3 batches ≈ 0.3s.
+        This guards against the other failure mode: unbounded parallelism that
+        would hammer the vision API."""
+        import time
+
+        from mtss.config import get_settings
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        settings = get_settings()
+        monkeypatch.setattr(settings, "zip_member_concurrency", 2)
+
+        extracted = self._make_extracted_files(tmp_path, count=6)
+        components = self._build_components(extracted, per_call_delay=0.1)
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        t0 = time.perf_counter()
+        await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+        elapsed = time.perf_counter() - t0
+
+        # Must NOT be fully parallel: 6 parallel × 0.1s ≈ 0.1s.
+        # Must NOT be fully serial: 6 × 0.1s = 0.6s.
+        # Target: ~3 batches ≈ 0.3s. Allow wide band for jitter.
+        assert 0.2 < elapsed < 0.5, (
+            f"expected bounded concurrency (~0.3s), got {elapsed:.2f}s "
+            f"— may be unbounded (too fast) or serial (too slow)"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_on_member_complete_fires_once_per_member(
+        self, tmp_path, zip_attachment, sample_document
+    ):
+        """Progress tick callback must fire once per ZIP member so the outer
+        progress bar shows real progress (not a single bump at the end).
+
+        Regression: image-heavy ZIPs (e.g. 48 inspection photos) previously
+        bumped progress by 1 after the whole ZIP finished, leaving the bar
+        showing "0/2" while a single email processed for ~8 minutes.
+        """
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        extracted = self._make_extracted_files(tmp_path, count=6)
+        components = self._build_components(extracted, per_call_delay=0.0)
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        ticks = []
+        await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+            on_member_complete=lambda: ticks.append(1),
+        )
+        assert len(ticks) == 6
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_on_member_complete_fires_for_rejected_members(
+        self, tmp_path, zip_attachment, sample_document
+    ):
+        """Even members preprocess-rejected (classified_as_non_content) must
+        tick, otherwise the bar stalls for every skipped image."""
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        extracted = self._make_extracted_files(tmp_path, count=3)
+        components = self._build_components(extracted)
+        # All three members get rejected.
+        components.attachment_processor.preprocess = AsyncMock(
+            return_value=MagicMock(
+                should_process=False, is_image=False, is_zip=False,
+                skip_reason="classified_as_non_content",
+            )
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        ticks = []
+        await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+            on_member_complete=lambda: ticks.append(1),
+        )
+        assert len(ticks) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_collect_docs_receives_all_successful_members(
+        self, tmp_path, zip_attachment, sample_document
+    ):
+        """Concurrent processing must still collect every successful member
+        into collect_docs — order not guaranteed, but count and content must match."""
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        extracted = self._make_extracted_files(tmp_path, count=4)
+        components = self._build_components(extracted, per_call_delay=0.0)
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        collected: list = []
+        chunks = await process_zip_attachment(
+            attachment=zip_attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+            collect_docs=collected,
+        )
+
+        assert len(chunks) == 4
+        assert len(collected) == 4
+        collected_names = {d.file_name for d in collected}
+        assert collected_names == {f"member_{i}.txt" for i in range(4)}

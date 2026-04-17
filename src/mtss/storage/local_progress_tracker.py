@@ -112,11 +112,16 @@ class LocalProgressTracker:
                 pending.append(eml)
         return pending
 
-    async def get_failed_files(self, max_attempts: int = 3) -> List[Path]:
-        """Get files that failed but haven't exceeded retry limit."""
+    async def get_failed_files(self) -> List[Path]:
+        """Return every file currently in FAILED state.
+
+        ``--retry-failed`` is an explicit, user-driven command; it always
+        retries whatever is FAILED. The ``attempts`` counter is kept on
+        entries for visibility but does not gate retry eligibility.
+        """
         return [
             Path(e["file_path"]) for e in self._entries.values()
-            if e.get("status") == "FAILED" and e.get("attempts", 0) < max_attempts
+            if e.get("status") == "FAILED"
         ]
 
     async def get_processing_stats(self) -> Dict[str, int]:

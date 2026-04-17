@@ -207,6 +207,18 @@ class LocalStorageClient:
             if pd.get("root_id") == doc_id_str:
                 doc_ids_to_remove.add(pd.get("id", ""))
 
+        # Evict prior-loaded index entries BEFORE mutating _prior_documents so
+        # a subsequent insert_document for the same doc_id doesn't early-return
+        # against a stale SimpleNamespace wrapper and skip writing the replacement.
+        for pd in self._prior_documents:
+            if pd.get("id") in doc_ids_to_remove:
+                if pd.get("doc_id"):
+                    self._documents_by_doc_id.pop(pd["doc_id"], None)
+                if pd.get("file_hash"):
+                    self._documents_by_hash.pop(pd["file_hash"], None)
+                if pd.get("source_id"):
+                    self._documents_by_source_id.pop(pd["source_id"], None)
+
         # Remove from in-memory caches (try both UUID and string keys)
         for did in doc_ids_to_remove:
             doc = self._documents.pop(did, None)
