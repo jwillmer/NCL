@@ -9,11 +9,12 @@ from __future__ import annotations
 import logging
 import time
 from functools import lru_cache
-from typing import List, Optional
+from typing import List
 
 from storage3.utils import StorageException
 from supabase import Client, create_client
 
+from .._io import retry_with_backoff
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -274,29 +275,35 @@ class ArchiveStorage:
         offset = 0
         results: List[dict] = []
         while True:
-            page: Optional[List[dict]] = None
-            last_error: Optional[Exception] = None
-            for attempt in range(max_attempts):
-                try:
-                    page = self.bucket.list(
-                        folder, {"limit": page_size, "offset": offset}
-                    )
-                    break
-                except Exception as e:
-                    last_error = e
-                    if attempt < max_attempts - 1:
-                        delay = backoff_base * (2 ** attempt)
-                        logger.warning(
-                            f"List failed for {folder!r} offset={offset} "
-                            f"(attempt {attempt + 1}/{max_attempts}): {e}. "
-                            f"Retrying in {delay:.1f}s..."
-                        )
-                        time.sleep(delay)
-            if page is None:
+            def _fetch_page(_folder: str = folder, _offset: int = offset) -> List[dict]:
+                return self.bucket.list(
+                    _folder, {"limit": page_size, "offset": _offset}
+                )
+
+            def _log_retry(attempt: int, exc: BaseException, delay: float,
+                           _folder: str = folder, _offset: int = offset) -> None:
+                logger.warning(
+                    f"List failed for {_folder!r} offset={_offset} "
+                    f"(attempt {attempt}/{max_attempts}): {exc}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+
+            try:
+                page = retry_with_backoff(
+                    _fetch_page,
+                    max_attempts=max_attempts,
+                    backoff_base=backoff_base,
+                    on_retry=_log_retry,
+                    # Route through the module's `time` attribute so tests that
+                    # patch `archive_storage.time` continue to observe sleeps.
+                    sleep=lambda d: time.sleep(d),
+                )
+            except Exception as last_error:
                 raise ArchiveStorageError(
                     f"Failed to list {folder!r} at offset={offset} "
                     f"after {max_attempts} attempts: {last_error}"
                 ) from last_error
+
             if files_only:
                 results.extend(f for f in page if f.get("id"))
             else:

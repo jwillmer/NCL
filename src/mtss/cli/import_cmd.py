@@ -16,6 +16,7 @@ from uuid import UUID
 import typer
 
 from ._common import console, make_progress
+from .._io import retry_with_backoff
 from ..models.serializers import dict_to_chunk as _dict_to_chunk
 from ..models.serializers import dict_to_document as _dict_to_document
 from ..models.serializers import dict_to_topic as _dict_to_topic
@@ -420,24 +421,31 @@ def _upload_with_retry(storage, rel_key: str, payload: bytes, content_type: str)
     transient Supabase Storage failures (non-JSON gateway responses,
     temporary 5xx) that surface as JSONDecodeError in storage3.
     """
-    last_error: Optional[Exception] = None
-    for attempt in range(_UPLOAD_MAX_ATTEMPTS):
-        try:
-            storage.upload_file(rel_key, payload, content_type)
-            return True
-        except Exception as e:
-            last_error = e
-            if attempt < _UPLOAD_MAX_ATTEMPTS - 1:
-                delay = _UPLOAD_BACKOFF_BASE * (2 ** attempt)
-                logger.warning(
-                    f"Upload failed for {rel_key} (attempt {attempt + 1}/{_UPLOAD_MAX_ATTEMPTS}): {e}. "
-                    f"Retrying in {delay:.1f}s..."
-                )
-                time.sleep(delay)
-    logger.warning(
-        f"Failed to upload {rel_key} after {_UPLOAD_MAX_ATTEMPTS} attempts: {last_error}"
-    )
-    return False
+    def _upload() -> None:
+        storage.upload_file(rel_key, payload, content_type)
+
+    def _log_retry(attempt: int, exc: BaseException, delay: float) -> None:
+        logger.warning(
+            f"Upload failed for {rel_key} (attempt {attempt}/{_UPLOAD_MAX_ATTEMPTS}): {exc}. "
+            f"Retrying in {delay:.1f}s..."
+        )
+
+    try:
+        retry_with_backoff(
+            _upload,
+            max_attempts=_UPLOAD_MAX_ATTEMPTS,
+            backoff_base=_UPLOAD_BACKOFF_BASE,
+            on_retry=_log_retry,
+            # Route through the module's `time` attribute so tests that
+            # patch `import_cmd.time` continue to observe sleeps.
+            sleep=lambda d: time.sleep(d),
+        )
+        return True
+    except Exception as last_error:
+        logger.warning(
+            f"Failed to upload {rel_key} after {_UPLOAD_MAX_ATTEMPTS} attempts: {last_error}"
+        )
+        return False
 
 
 async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals, changes, dry_run, verbose):
