@@ -73,5 +73,8 @@ Targeted repair commands — preferred over full reingest (API costs).
 ## User preferences (see also `.claude/.../memory/`)
 
 - Always ask before starting an ingest run.
-- Never remove anything from `./data/` without explicit confirmation — reprocessing costs time and money.
 - Prefer targeted repair over full reingest.
+- **Treat `./data/` as irreplaceable production state.** It is not in git and has no backups; regeneration costs real API money and hours of wall-clock time.
+  - No modifications — delete, move, rename, in-place edit — without explicit confirmation of the specific change.
+  - **Small issues** (one or a few emails): `mtss mark-failed <file.eml>...` then `mtss ingest --retry-failed`, or an existing idempotent maintenance command.
+  - **Large / structural changes**: write a dedicated migration script under `scripts/`, test it (dry-run, unit tests, or a copied subset) before running against `./data/`, confirm with the user before executing, and fix the root cause in the pipeline with a regression unit test so the drift can't reappear.
