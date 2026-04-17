@@ -118,13 +118,18 @@ async def extract_content_bounds(
         from ..cli._common import _service_counter
         _service_counter.add("llm_cleaner")
 
+        # 300 truncated mid-string when `last_words` contained a long URL
+        # (e.g. a Proton Mail tracking link embedded in a signature), yielding
+        # unterminated-JSON warnings and full-text fallback. 600 comfortably
+        # fits realistic 5-8 word anchors plus URL-bearing signature phrases
+        # with headroom, without meaningfully raising cost.
         response = await acompletion(
             model=model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
                 {"role": "user", "content": text},
             ],
-            max_tokens=300,
+            max_tokens=600,
             reasoning_effort="minimal",
             drop_params=True,
         )
