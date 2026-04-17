@@ -391,35 +391,53 @@ class LocalStorageClient:
         Returns:
             List of (absorbed_name, kept_name, similarity) tuples.
         """
+        import numpy as np
+
         topics = list(self._topics.values())
         if len(topics) < 2:
             return []
 
-        # Build similarity matrix for all topic pairs
-        merges = []
-        absorbed_ids: set = set()
-
         # Sort by chunk_count descending so larger topics absorb smaller ones
         topics.sort(key=lambda t: getattr(t, "chunk_count", 0) or 0, reverse=True)
 
-        for i, topic_a in enumerate(topics):
+        # Collect topics with valid embeddings (preserve sorted order via parallel index list)
+        valid_idx: list[int] = []
+        embeddings: list[list[float]] = []
+        dim: int | None = None
+        for i, t in enumerate(topics):
+            emb = getattr(t, "embedding", None)
+            if not emb:
+                continue
+            if dim is None:
+                dim = len(emb)
+            elif len(emb) != dim:
+                continue  # mismatched dimensions — skip rather than crash matmul
+            valid_idx.append(i)
+            embeddings.append(emb)
+
+        if len(valid_idx) < 2:
+            return []
+
+        # Vectorized cosine similarity: L2-normalize then M @ M.T
+        M = np.asarray(embeddings, dtype=np.float32)
+        norms = np.linalg.norm(M, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        M = M / norms
+        sims = M @ M.T
+
+        merges = []
+        absorbed_ids: set = set()
+        n = len(valid_idx)
+        for ii in range(n):
+            topic_a = topics[valid_idx[ii]]
             if str(topic_a.id) in absorbed_ids:
                 continue
-            emb_a = getattr(topic_a, "embedding", None)
-            if emb_a is None:
-                continue
-
-            for j in range(i + 1, len(topics)):
-                topic_b = topics[j]
+            for jj in range(ii + 1, n):
+                topic_b = topics[valid_idx[jj]]
                 if str(topic_b.id) in absorbed_ids:
                     continue
-                emb_b = getattr(topic_b, "embedding", None)
-                if emb_b is None:
-                    continue
-
-                sim = self._cosine_similarity(emb_a, emb_b)
+                sim = float(sims[ii, jj])
                 if sim >= threshold:
-                    # Merge topic_b into topic_a (topic_a is larger)
                     self._merge_topic_into(topic_a, topic_b)
                     absorbed_ids.add(str(topic_b.id))
                     merges.append((topic_b.name, topic_a.name, round(sim, 3)))

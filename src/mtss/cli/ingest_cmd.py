@@ -465,6 +465,7 @@ async def _ingest(
             pass
 
         # Merge near-duplicate topics before flushing
+        console.print("[dim]Merging similar topics…[/dim]")
         try:
             merges = db.merge_similar_topics(threshold=0.78)
             if merges:
@@ -474,6 +475,7 @@ async def _ingest(
         except Exception as e:
             console.print(f"[yellow]Topic merge failed (non-fatal): {e}[/yellow]")
 
+        console.print("[dim]Flushing documents/chunks/topics to disk…[/dim]")
         db.flush()
         db.write_manifest()
         console.print(f"[green]Manifest written to {resolved_output / 'manifest.json'}[/green]")
