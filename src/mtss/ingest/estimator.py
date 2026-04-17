@@ -9,6 +9,7 @@ Three-phase extraction + scan:
 from __future__ import annotations
 
 import base64
+import binascii
 import email
 import hashlib
 import io
@@ -478,6 +479,7 @@ class IngestEstimator:
         4. Regex: count /Type /Page objects in the raw/decoded data
         """
         from pypdf import PdfReader
+        from pypdf.errors import PyPdfError
 
         raw = path.read_bytes()
         pdf_data = raw
@@ -487,7 +489,7 @@ class IngestEstimator:
             valid_len = (len(raw) // 4) * 4
             try:
                 pdf_data = base64.b64decode(raw[:valid_len])
-            except Exception:
+            except (binascii.Error, ValueError):
                 pass  # not actually valid base64, use raw
 
         # Strategy 1: pypdf
@@ -497,7 +499,7 @@ class IngestEstimator:
             if count > 0:
                 complexity = self._classify_pdf_from_reader(reader)
                 return count, None, complexity
-        except Exception:
+        except (PyPdfError, OSError, ValueError):
             pass
 
         # Strategy 2: linearized PDF /N value (fast, reliable when present)
@@ -525,18 +527,20 @@ class IngestEstimator:
         Mirrors the logic in parsers.pdf_classifier.classify_pdf but reuses
         the reader that _count_pdf_pages already created.
         """
+        from pypdf.errors import PyPdfError
+
         if not reader.pages:
             return "complex"
         try:
             if reader.get_fields():
                 return "complex"
-        except Exception:
+        except (PyPdfError, KeyError, AttributeError, TypeError):
             return "complex"
 
         for page in reader.pages:
             try:
                 text = page.extract_text() or ""
-            except Exception:
+            except (PyPdfError, KeyError, AttributeError, TypeError, ValueError):
                 return "complex"
             if len(text.strip()) < 50:
                 return "complex"
