@@ -264,3 +264,155 @@ class TestRepairZipArchivesExecution:
         member = next(d for d in docs if d["id"] == sample_output_dir["member_uuid"])
         assert member["archive_browse_uri"] is None
         assert member["archive_download_uri"] is None
+
+
+class TestRepairDetectsRealPipelineParentage:
+    """Regression: the live pipeline's process_zip_attachment builds
+    extracted-member docs with parent_id = email (not the ZIP doc).
+    Detection must match docs via sibling ZIPs under the same root_id,
+    not via parent_id equality.
+    """
+
+    def test_member_with_parent_id_eq_email_still_detected(self, tmp_path):
+        mod = _load_repair_module()
+        output_dir = tmp_path / "output"
+        archive_dir = output_dir / "archive"
+
+        email_uuid = str(uuid4())
+        zip_uuid = str(uuid4())
+        member_uuid = str(uuid4())
+
+        email_doc_id = "e" * 32
+        folder_id = email_doc_id[:16]
+
+        folder = archive_dir / folder_id / "attachments"
+        folder.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(folder / "bundle.zip", "w") as zf:
+            zf.writestr("report.pdf", b"PDF BYTES")
+
+        docs = [
+            {
+                "id": email_uuid,
+                "doc_id": email_doc_id,
+                "document_type": "email",
+                "file_name": "src.eml",
+                "source_id": "src.eml",
+                "root_id": email_uuid,
+                "parent_id": None,
+                "status": "completed",
+                "archive_browse_uri": f"/archive/{folder_id}/email.eml.md",
+                "archive_download_uri": f"/archive/{folder_id}/email.eml",
+            },
+            {
+                "id": zip_uuid,
+                "doc_id": "z" * 32,
+                "document_type": "attachment_other",
+                "file_name": "bundle.zip",
+                "source_id": "src.eml/bundle.zip",
+                "root_id": email_uuid,
+                # NB: ZIP-member and ZIP both have parent_id = email.
+                "parent_id": email_uuid,
+                "status": "completed",
+                "attachment_metadata": {"content_type": "application/zip"},
+                "archive_browse_uri": None,
+                "archive_download_uri": f"/archive/{folder_id}/attachments/bundle.zip",
+            },
+            {
+                "id": member_uuid,
+                "doc_id": "m" * 32,
+                "document_type": "attachment_pdf",
+                "file_name": "report.pdf",
+                "source_id": "src.eml/bundle.zip/report.pdf",
+                "root_id": email_uuid,
+                # THE CRITICAL BIT: parent_id is the EMAIL, not the ZIP doc.
+                "parent_id": email_uuid,
+                "status": "completed",
+                "attachment_metadata": {"content_type": "application/pdf"},
+                "archive_browse_uri": None,
+                "archive_download_uri": None,
+            },
+        ]
+        _write_jsonl(output_dir / "documents.jsonl", docs)
+
+        chunks = [
+            {
+                "id": str(uuid4()),
+                "document_id": member_uuid,
+                "chunk_id": "c1",
+                "content": "Reconstructed content.",
+                "chunk_index": 0,
+            },
+        ]
+        _write_jsonl(output_dir / "chunks.jsonl", chunks)
+
+        candidates, _ = mod.build_candidates(output_dir, verbose=False)
+        assert len(candidates) == 1
+        assert candidates[0].member_basename == "report.pdf"
+        assert candidates[0].source_zip_path.name == "bundle.zip"
+        assert candidates[0].folder_id == folder_id
+
+    def test_member_detected_even_when_zip_has_no_doc_row(self, tmp_path):
+        """Live pipeline reality: process_zip_attachment never creates a
+        doc row for the ZIP itself. Detection must find the source ZIP
+        by enumerating the archive folder on disk, not by looking up
+        sibling doc rows.
+        """
+        mod = _load_repair_module()
+        output_dir = tmp_path / "output"
+        archive_dir = output_dir / "archive"
+
+        email_uuid = str(uuid4())
+        member_uuid = str(uuid4())
+        email_doc_id = "f" * 32
+        folder_id = email_doc_id[:16]
+
+        folder = archive_dir / folder_id / "attachments"
+        folder.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(folder / "only-on-disk.zip", "w") as zf:
+            zf.writestr("INCINERATOR FLUE GAS FAN.docx", b"DOCX")
+
+        docs = [
+            {
+                "id": email_uuid,
+                "doc_id": email_doc_id,
+                "document_type": "email",
+                "file_name": "src.eml",
+                "source_id": "src.eml",
+                "root_id": email_uuid,
+                "parent_id": None,
+                "status": "completed",
+                "archive_browse_uri": f"/archive/{folder_id}/email.eml.md",
+                "archive_download_uri": f"/archive/{folder_id}/email.eml",
+            },
+            # No ZIP doc row — matches live pipeline.
+            {
+                "id": member_uuid,
+                "doc_id": "m" * 32,
+                "document_type": "attachment_docx",
+                "file_name": "INCINERATOR FLUE GAS FAN.docx",
+                "source_id": "src.eml/only-on-disk.zip/incinerator flue gas fan.docx",
+                "root_id": email_uuid,
+                "parent_id": email_uuid,
+                "status": "completed",
+                "attachment_metadata": {
+                    "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                },
+                "archive_browse_uri": None,
+                "archive_download_uri": None,
+            },
+        ]
+        _write_jsonl(output_dir / "documents.jsonl", docs)
+        _write_jsonl(
+            output_dir / "chunks.jsonl",
+            [{
+                "id": str(uuid4()),
+                "document_id": member_uuid,
+                "chunk_id": "c1",
+                "content": "Body content for the extracted docx.",
+                "chunk_index": 0,
+            }],
+        )
+
+        candidates, _ = mod.build_candidates(output_dir, verbose=False)
+        assert len(candidates) == 1
+        assert candidates[0].source_zip_path.name == "only-on-disk.zip"

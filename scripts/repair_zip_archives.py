@@ -59,7 +59,7 @@ logger = logging.getLogger("repair_zip_archives")
 @dataclass
 class RepairCandidate:
     doc: Dict
-    parent_zip_doc: Dict
+    source_zip_path: Path
     folder_id: str
     member_basename: str
     safe_member_name: str
@@ -110,27 +110,67 @@ def _is_missing_archive(doc: Dict) -> bool:
     return not doc.get("archive_browse_uri") and not doc.get("archive_download_uri")
 
 
-def _is_zip_member(doc: Dict, docs_by_id: Dict[str, Dict]) -> Optional[Dict]:
-    """Return the parent ZIP doc if `doc` is a ZIP-extracted attachment.
+def _find_source_zip_on_disk(
+    doc: Dict,
+    docs_by_id: Dict[str, Dict],
+    archive_dir: Path,
+    zip_namelist_cache: Dict[str, "tuple[Path, List[str]]"],
+) -> Optional[Path]:
+    """Return the on-disk ZIP containing `doc`'s basename as a member.
 
-    Heuristic: parent (via parent_id) exists, is itself an attachment, and
-    points at a .zip file. Falls back to checking parent_doc's file_name
-    extension if content_type is missing.
+    Context: in the current pipeline, process_zip_attachment never creates
+    a document row for the ZIP itself — only for its extracted members
+    (with parent_id = email). So the ZIP isn't a sibling doc we can find
+    via documents.jsonl. We instead enumerate the email's archive folder
+    directly for `.zip` files and match by namelist.
+
+    Strategy:
+      1. Resolve the email's folder_id from the doc's root_id.
+      2. Glob `<archive>/<folder_id>/attachments/*.zip` on disk.
+      3. For each, read + cache its namelist, test basename match.
+      4. Return the first ZIP that contains our doc's basename, or None.
     """
-    parent_id = doc.get("parent_id")
-    if not parent_id:
+    # Skip non-candidates: emails, images, the ZIP itself.
+    if doc.get("document_type") == "email":
         return None
-    parent = docs_by_id.get(str(parent_id))
-    if not parent:
+    filename = (doc.get("file_name") or "").lower()
+    if filename.endswith(".zip"):
         return None
-    parent_name = (parent.get("file_name") or "").lower()
-    parent_ct = (
-        parent.get("attachment_metadata", {}).get("content_type", "")
-        if isinstance(parent.get("attachment_metadata"), dict)
-        else ""
-    ).lower()
-    if parent_name.endswith(".zip") or parent_ct in ("application/zip", "application/x-zip-compressed"):
-        return parent
+
+    root_id = doc.get("root_id")
+    if not root_id:
+        return None
+    email_doc = docs_by_id.get(str(root_id))
+    if not email_doc:
+        return None
+    folder_id = (email_doc.get("doc_id") or "")[:16]
+    if not folder_id:
+        return None
+
+    target_basename = Path(doc.get("file_name") or "").name.lower()
+    if not target_basename:
+        return None
+
+    attachments_dir = archive_dir / folder_id / "attachments"
+    if not attachments_dir.exists():
+        return None
+
+    for zip_path in sorted(attachments_dir.glob("*.zip")):
+        cache_key = str(zip_path)
+        if cache_key not in zip_namelist_cache:
+            try:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    names = [
+                        Path(info.filename).name.lower()
+                        for info in zf.infolist()
+                        if not info.is_dir()
+                    ]
+                zip_namelist_cache[cache_key] = (zip_path, names)
+            except zipfile.BadZipFile:
+                zip_namelist_cache[cache_key] = (zip_path, [])
+        _, names = zip_namelist_cache[cache_key]
+        if target_basename in names:
+            return zip_path
     return None
 
 
@@ -217,26 +257,31 @@ def build_candidates(
     skipped_no_chunks = 0
     skipped_not_zip = 0
 
+    # Cache ZIP namelists across candidate detection to avoid reopening each ZIP.
+    zip_namelist_cache: Dict[str, "tuple[Path, List[str]]"] = {}
+
     for doc in docs:
         if not _is_missing_archive(doc):
             continue
-        parent_zip = _is_zip_member(doc, docs_by_id)
-        if not parent_zip:
+        root_id = doc.get("root_id")
+        root_doc = docs_by_id.get(str(root_id)) if root_id else None
+        if not root_doc:
+            skipped_no_parent += 1
+            continue
+        folder_id = (root_doc.get("doc_id") or "")[:16]
+        if not folder_id:
+            skipped_no_parent += 1
+            continue
+        source_zip = _find_source_zip_on_disk(
+            doc, docs_by_id, archive_dir, zip_namelist_cache
+        )
+        if not source_zip:
             skipped_not_zip += 1
             continue
         doc_chunks = chunks_by_doc.get(doc["id"], [])
         if not doc_chunks:
             skipped_no_chunks += 1
             continue
-        folder_id = (parent_zip.get("doc_id") or doc.get("doc_id") or "")[:16]
-        if not folder_id:
-            skipped_no_parent += 1
-            continue
-        # Root folder comes from the email ancestor (depth=0)
-        root_id = doc.get("root_id")
-        root_doc = docs_by_id.get(str(root_id)) if root_id else None
-        if root_doc:
-            folder_id = (root_doc.get("doc_id") or folder_id)[:16]
 
         parsed_content = "\n\n".join(
             (c.get("content") or "").strip() for c in doc_chunks if c.get("content")
@@ -253,7 +298,7 @@ def build_candidates(
         candidates.append(
             RepairCandidate(
                 doc=doc,
-                parent_zip_doc=parent_zip,
+                source_zip_path=source_zip,
                 folder_id=folder_id,
                 member_basename=member_basename,
                 safe_member_name=safe_member_name,
@@ -306,15 +351,14 @@ def repair(
 
     for idx, cand in enumerate(candidates, 1):
         doc = cand.doc
-        zip_path = _find_zip_on_disk(archive_dir, cand.folder_id, cand.parent_zip_doc)
-        if not zip_path:
+        zip_path = cand.source_zip_path
+        if not zip_path.exists():
+            # Detected at candidate time but gone now — skip without failing.
             skipped_zip_missing += 1
             if verbose:
                 logger.info(
-                    "[%d/%d] ZIP missing on disk for %s (parent=%s)",
-                    idx, len(candidates),
-                    cand.member_basename,
-                    cand.parent_zip_doc.get("file_name"),
+                    "[%d/%d] ZIP missing on disk for %s at %s",
+                    idx, len(candidates), cand.member_basename, zip_path,
                 )
             continue
 
