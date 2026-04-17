@@ -710,6 +710,64 @@ def test_check_broken_markdown_links_all_valid(tmp_path):
     assert _check_broken_markdown_links(docs, archive_dir) == ([], [])
 
 
+@pytest.mark.unit
+def test_check_broken_markdown_links_ignores_prose_matches(tmp_path):
+    """Engineer-prose artifacts like "[PC-JB1](17&18)" and Outlook-flattened
+    "[cid:...](sample)" accidentally match markdown syntax but aren't real
+    links. The check must skip them; otherwise every maritime technical
+    email with bracketed component labels reports as a broken link.
+
+    Regression source: 2026-04-17 1000-email validate run surfaced 4 such
+    cases from 4 distinct emails — none were actually broken, just prose
+    literally present in the source ``text/plain`` body.
+    """
+    archive_dir = tmp_path / "archive"
+    folder = archive_dir / "prose"
+    folder.mkdir(parents=True)
+    (folder / "email.md").write_text(
+        "Report from M/T Vessel\n\n"
+        "The cables to the Kyma JB [PC-JB1](17&18) are connected.\n\n"
+        "[cid:17336829136755e6e11dffa694867792@fleet.marantankers.com](sample)\n"
+    )
+    docs = [_make_doc(archive_path="prose")]
+    assert _check_broken_markdown_links(docs, archive_dir) == ([], [])
+
+
+@pytest.mark.unit
+def test_check_broken_markdown_links_still_flags_image_form_bare_tokens(tmp_path):
+    """Image-form broken targets (``![alt](doge)``) must NOT be filtered as
+    prose — they should have been removed by ``strip_llamaparse_image_refs``.
+    If one surfaces here, the strip regex needs another pattern, so keep
+    reporting it so we notice.
+    """
+    archive_dir = tmp_path / "archive"
+    folder = archive_dir / "img"
+    folder.mkdir(parents=True)
+    (folder / "email.md").write_text("![Screen showing alarm](doge)\n")
+    docs = [_make_doc(archive_path="img")]
+    _, warnings = _check_broken_markdown_links(docs, archive_dir)
+    assert any("1 broken markdown links" in w for w in warnings)
+
+
+@pytest.mark.unit
+def test_check_broken_markdown_links_still_flags_real_missing_attachment(tmp_path):
+    """A link-form reference to a path that looks like a real file
+    (has an extension or a path separator) must still be flagged. Only the
+    prose-shape (no sep, no extension, no scheme) false positives get
+    filtered."""
+    archive_dir = tmp_path / "archive"
+    folder = archive_dir / "real"
+    folder.mkdir(parents=True)
+    (folder / "email.md").write_text(
+        "- [Attachment](real/attachments/gone.pdf)\n"
+        "- [Nested](sub/dir/also-missing)\n"
+    )
+    docs = [_make_doc(archive_path="real")]
+    _, warnings = _check_broken_markdown_links(docs, archive_dir)
+    # Both remain broken: one has an extension, the other has a path separator.
+    assert any("2 broken markdown links" in w for w in warnings)
+
+
 # ---------------------------------------------------------------------------
 # Check 21: chunk positions
 # ---------------------------------------------------------------------------

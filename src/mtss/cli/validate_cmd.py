@@ -584,6 +584,37 @@ def _check_encoded_uris(
     return issues, warnings
 
 
+def _looks_like_prose_match(text: str, target: str) -> bool:
+    """Return True when a `[text](target)` pair is prose that accidentally
+    matches markdown link syntax, not a real link to a missing file.
+
+    Two real-world patterns from maritime technical emails:
+
+    - ``[cid:17336...@fleet.marantankers.com](sample)`` — Outlook's plain-text
+      rendering of an inline ``<img>`` followed by a parenthesised caption.
+      The ``cid:`` signals an email content-id reference, never a filesystem
+      path.
+    - ``[PC-JB1](17&18)`` — engineer prose: component label in brackets,
+      terminal numbers in parens. The target has no URL scheme, no path
+      separator, and no extension.
+
+    Caller should only consult this for *link-form* (``[...]``) matches;
+    image-form (``![...]``) broken targets are always worth reporting, since
+    they should have been stripped by ``strip_llamaparse_image_refs``.
+    """
+    if target.startswith("cid:") or text.startswith("cid:"):
+        return True
+    # Bare-token target: no URL scheme, no path separator, no file extension.
+    if (
+        "://" not in target
+        and "/" not in target
+        and "\\" not in target
+        and not Path(target).suffix
+    ):
+        return True
+    return False
+
+
 def _check_broken_markdown_links(
     docs: List[Dict[str, Any]], archive_dir: Path
 ) -> Tuple[List[str], List[str]]:
@@ -596,11 +627,18 @@ def _check_broken_markdown_links(
     broken_md_links: Dict[str, List[str]] = {}
     for md_file in archive_dir.rglob("*.md"):
         content = md_file.read_text(encoding="utf-8", errors="replace")
-        for link in _re.findall(r"\[.*?\]\(([^)]+)\)", content):
+        for img_mark, link_text, link in _re.findall(
+            r"(!?)\[(.*?)\]\(([^)]+)\)", content
+        ):
             if link.startswith(("http", "#", "mailto:")):
                 continue
             # Skip LlamaParse page images (not stored locally)
             if _re.match(r"page_\d+_(?:image|chart|seal)_\d+", link):
+                continue
+            # Link-form only: filter accidental prose matches so engineer
+            # notation like "[PC-JB1](17&18)" or Outlook-flattened cid refs
+            # don't masquerade as broken links.
+            if not img_mark and _looks_like_prose_match(link_text, link):
                 continue
             target = archive_dir / link
             rel_target = md_file.parent / link
