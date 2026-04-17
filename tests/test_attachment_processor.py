@@ -398,6 +398,113 @@ class TestLlamaParseFallback:
                 await processor.process_attachment(tmp_docx, uuid4())
 
 
+class TestLlamaParseParseCallKwargs:
+    """Lock the exact kwarg shape passed to ``client.parsing.parse``.
+
+    Regression: 2026-04-17 1000-email run silently failed 916 / 919 PDFs with
+    ``TypeError: AsyncParsingResource.parse() got an unexpected keyword
+    argument 'cost_optimizer'`` because ``cost_optimizer`` had been passed at
+    the top level. The llama-cloud 2.x SDK accepts it only inside
+    ``processing_options``. None of the fallback tests noticed because they
+    mock ``LlamaParseParser`` whole instead of the underlying SDK.
+
+    These tests mock the SDK client directly and cross-check every outbound
+    kwarg against the real ``AsyncLlamaCloud().parsing.parse`` signature, so
+    any future SDK migration that drops a kwarg we still pass fails in CI
+    instead of in production.
+    """
+
+    @pytest.fixture
+    def mock_llamaparse_settings(self):
+        settings = MagicMock()
+        settings.llamaparse_enabled = True
+        settings.llama_cloud_api_key = "test-key"
+        settings.max_concurrent_llamaparse = 2
+        return settings
+
+    @pytest.fixture
+    def sdk_parse_param_names(self) -> set:
+        """The real parameter names accepted by the installed SDK."""
+        import inspect
+
+        from llama_cloud import AsyncLlamaCloud
+
+        client = AsyncLlamaCloud(api_key="placeholder")
+        return set(inspect.signature(client.parsing.parse).parameters)
+
+    @pytest.mark.asyncio
+    async def test_cost_optimizer_nested_in_processing_options(
+        self, tmp_path, mock_llamaparse_settings
+    ):
+        from unittest.mock import AsyncMock
+
+        from mtss.parsers import llamaparse_parser
+        from mtss.parsers.llamaparse_parser import LlamaParseParser
+
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        fake_result = MagicMock()
+        fake_result.markdown.pages = [MagicMock(markdown="# Title\n\nContent.")]
+
+        fake_client = MagicMock()
+        fake_client.parsing.parse = AsyncMock(return_value=fake_result)
+
+        with patch.object(llamaparse_parser, "_get_llamaparse_client", return_value=fake_client), \
+             patch.object(llamaparse_parser, "_llamaparse_semaphore", None), \
+             patch.object(llamaparse_parser, "get_settings", return_value=mock_llamaparse_settings), \
+             patch("mtss.parsers.llamaparse_parser.get_settings", return_value=mock_llamaparse_settings):
+            parser = LlamaParseParser()
+            parser.settings = mock_llamaparse_settings
+            result = await parser.parse(pdf)
+
+        assert "Content" in result
+        fake_client.parsing.parse.assert_awaited_once()
+        _, kwargs = fake_client.parsing.parse.call_args
+
+        assert "cost_optimizer" not in kwargs, (
+            "cost_optimizer must NOT be a top-level kwarg — llama-cloud 2.x "
+            "rejects it and every PDF silently fell back to extraction_failed."
+        )
+        assert kwargs.get("processing_options", {}).get("cost_optimizer") == {"enable": True}, (
+            "cost_optimizer must sit inside processing_options per the SDK 2.x "
+            "TypedDict contract."
+        )
+
+    @pytest.mark.asyncio
+    async def test_every_outbound_kwarg_is_in_sdk_signature(
+        self, tmp_path, mock_llamaparse_settings, sdk_parse_param_names
+    ):
+        """The strongest guard: whatever we pass must exist in the installed
+        SDK's signature. Drops us out of "silently-caught-as-warning" territory
+        the next time the llama-cloud SDK renames or removes a parameter.
+        """
+        from unittest.mock import AsyncMock
+
+        from mtss.parsers import llamaparse_parser
+        from mtss.parsers.llamaparse_parser import LlamaParseParser
+
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        fake_result = MagicMock()
+        fake_result.markdown.pages = [MagicMock(markdown="content")]
+        fake_client = MagicMock()
+        fake_client.parsing.parse = AsyncMock(return_value=fake_result)
+
+        with patch.object(llamaparse_parser, "_get_llamaparse_client", return_value=fake_client), \
+             patch.object(llamaparse_parser, "_llamaparse_semaphore", None), \
+             patch("mtss.parsers.llamaparse_parser.get_settings", return_value=mock_llamaparse_settings):
+            parser = LlamaParseParser()
+            parser.settings = mock_llamaparse_settings
+            await parser.parse(pdf)
+
+        _, kwargs = fake_client.parsing.parse.call_args
+        unknown = set(kwargs) - sdk_parse_param_names
+        assert not unknown, (
+            f"LlamaParseParser passes kwargs the installed SDK rejects: {sorted(unknown)}"
+        )
+
+
 class TestLocalParserEmptyContentError:
     """Local parsers must raise EmptyContentError (not plain ValueError) when they
     open the file successfully but extract no content — enables fallback routing."""

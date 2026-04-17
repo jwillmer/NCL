@@ -188,6 +188,9 @@ class LlamaParseParser(BaseParser):
                 # tier="agentic" + cost_optimizer routes simple pages to cost_effective
                 # automatically; complex pages get true agentic processing. Cheaper than
                 # blanket agentic, smarter than blanket cost_effective + auto_mode.
+                # cost_optimizer lives inside processing_options in the llama-cloud 2.x
+                # SDK — passing it at top-level raised TypeError on every call and
+                # silently failed 916/919 PDFs across a 1000-email run.
                 # output_options.markdown.inline_images=False keeps image refs out of
                 # the markdown stream; agentic tier inlines image transcriptions on its
                 # own.
@@ -195,7 +198,7 @@ class LlamaParseParser(BaseParser):
                     upload_file=str(file_path),
                     tier="agentic",
                     version="latest",
-                    cost_optimizer={"enable": True},
+                    processing_options={"cost_optimizer": {"enable": True}},
                     expand=["markdown"],
                     output_options={
                         "markdown": {"inline_images": False},
