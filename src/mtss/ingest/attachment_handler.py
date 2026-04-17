@@ -217,6 +217,15 @@ async def process_attachment(
                     vprint(f"  -> {len(attach_chunks)} chunks created", file_ctx)
                 else:
                     vprint("  -> 0 chunks (document has no extractable text)", file_ctx)
+                    components.db.log_ingest_event(
+                        document_id=attach_doc.id,
+                        event_type="no_body_chunks",
+                        severity="info",
+                        message="Attachment produced 0 chunks (no extractable text)",
+                        file_path=str(file_path),
+                        file_name=attachment.filename,
+                        source_eml_path=source_eml_path,
+                    )
 
             # Generate context summary for better search relevance
             if attach_chunks and components.context_generator and parsed_content:
@@ -370,6 +379,16 @@ async def process_zip_attachment(
                     )
                     if attach_chunks:
                         parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
+                    else:
+                        components.db.log_ingest_event(
+                            document_id=attach_doc.id,
+                            event_type="no_body_chunks",
+                            severity="info",
+                            message="ZIP-extracted attachment produced 0 chunks (no extractable text)",
+                            file_path=str(extracted_path),
+                            file_name=extracted_path.name,
+                            source_eml_path=source_eml_path,
+                        )
 
                 if attach_chunks and components.context_generator and parsed_content:
                     try:

@@ -365,22 +365,79 @@ def test_check_orphan_attachments_clean():
 def test_check_failed_documents_flags_failed():
     failed_doc = _make_doc(status="failed")
     failed_doc["error_message"] = "boom"
-    _, warnings = _check_failed_documents([failed_doc, _make_doc()], verbose=False)
-    assert warnings == ["1 document(s) have status='failed' in documents.jsonl"]
+    _, warnings = _check_failed_documents(
+        [failed_doc, _make_doc()], events=[], verbose=False
+    )
+    assert warnings == [
+        "1 document(s) have status='failed' in documents.jsonl "
+        "(no matching extraction_failed event)"
+    ]
 
 
 @pytest.mark.unit
 def test_check_failed_documents_verbose_includes_error_detail():
     failed_doc = _make_doc(status="failed")
     failed_doc["error_message"] = "parser crashed"
-    _, warnings = _check_failed_documents([failed_doc], verbose=True)
+    _, warnings = _check_failed_documents([failed_doc], events=[], verbose=True)
     assert len(warnings) == 2
     assert "parser crashed" in warnings[1]
 
 
 @pytest.mark.unit
 def test_check_failed_documents_clean():
-    assert _check_failed_documents([_make_doc()], verbose=False) == ([], [])
+    assert _check_failed_documents([_make_doc()], events=[], verbose=False) == ([], [])
+
+
+@pytest.mark.unit
+def test_check_failed_documents_suppressed_by_matching_event():
+    """A failed doc with a matching extraction_failed event is expected — no warning.
+
+    Reproduces the live case: LlamaParse raised "produced no content" on a PDF,
+    which both (a) marked the attach_doc as failed-in-place and (b) logged an
+    extraction_failed event. The validator must cross-reference them instead
+    of double-reporting.
+    """
+    root_uuid = str(uuid4())
+    failed_doc = _make_doc(
+        status="failed",
+        doc_type="attachment_pdf",
+        root_id=root_uuid,
+        source_id="86547629_ese5irrf.r44.eml/5415da512a101_as_a4(61)a3(8).pdf",
+    )
+    matching_event = {
+        "event_type": "extraction_failed",
+        "parent_document_id": root_uuid,
+        "file_name": "5415DA512A101_AS_A4(61)A3(8).pdf",
+    }
+
+    _, warnings = _check_failed_documents(
+        [failed_doc], events=[matching_event], verbose=False
+    )
+
+    assert warnings == []
+
+
+@pytest.mark.unit
+def test_check_failed_documents_event_for_different_email_does_not_suppress():
+    """Event for a different email must not mask this doc's failure."""
+    failed_doc = _make_doc(
+        status="failed",
+        doc_type="attachment_pdf",
+        root_id=str(uuid4()),
+        source_id="real.eml/real.pdf",
+    )
+    unrelated_event = {
+        "event_type": "extraction_failed",
+        "parent_document_id": str(uuid4()),  # different email
+        "file_name": "real.pdf",
+    }
+
+    _, warnings = _check_failed_documents(
+        [failed_doc], events=[unrelated_event], verbose=False
+    )
+
+    assert len(warnings) == 1
+    assert "status='failed'" in warnings[0]
 
 
 # ---------------------------------------------------------------------------

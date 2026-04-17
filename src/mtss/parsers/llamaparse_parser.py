@@ -14,19 +14,37 @@ logger = logging.getLogger(__name__)
 
 
 def strip_llamaparse_image_refs(text: str) -> str:
-    """Strip LlamaParse image refs, preserving alt-text."""
+    """Strip LlamaParse image refs, preserving alt-text.
+
+    Covers both image (`![alt](...)`) and link (`[alt](...)`) forms, since
+    LlamaParse emits figure references in either depending on layout. Known
+    target patterns include:
+      - page_N_image_N / page_N_chart_N / page_N_seal_N / page_N_table_N
+      - page_N_layout_ocr_* (newer LlamaParse output; bounding-box suffix)
+      - layout_id_not_provided / layout_* placeholders
+      - the literal string "image"
+    """
     text = re.sub(
         r'<img\s+[^>]*alt="([^"]*)"[^>]*/?>',
         r"\1",
         text,
     )
+    # Any page-prefixed LlamaParse artifact (image, chart, seal, table, layout_ocr, ...)
+    # in either image-form (`![...]`) or link-form (`[...]`).
     text = re.sub(
-        r"!\[([^\]]*)\]\(page_\d+_(?:image|chart|seal|table)_\d+[^)]*\)",
+        r"!?\[([^\]]*)\]\(page_\d+_\w+(?:_\w+)*[^)]*\)",
         r"\1",
         text,
     )
+    # Layout placeholders emitted when LlamaParse can't resolve a figure id.
     text = re.sub(
-        r"!\[([^\]]*)\]\(image\)",
+        r"!?\[([^\]]*)\]\(layout(?:_\w+)*\)",
+        r"\1",
+        text,
+    )
+    # Literal "image" placeholder.
+    text = re.sub(
+        r"!?\[([^\]]*)\]\(image\)",
         r"\1",
         text,
     )

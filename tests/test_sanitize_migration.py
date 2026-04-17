@@ -649,3 +649,38 @@ class TestLlamaParseImageStripping:
     def test_multiple_bare_refs(self):
         text = "![one](image) and ![two](image) and ![three](image)"
         assert self._strip(text) == "one and two and three"
+
+    # ---- Observed in live archive data (2026-04 ingest) ----
+
+    @pytest.mark.unit
+    def test_strips_page_layout_ocr_link_form(self):
+        # Link form (no leading '!') that the old regex missed.
+        # Real example: "1de05933dc4e8da7/MARAN_PLATO_ARRG_T_...pdf.md"
+        md = "[HYUNDAI KRISTEN Watermark](page_3_layout_ocr_smqo_141_373_356_101.png)"
+        assert self._strip(md) == "HYUNDAI KRISTEN Watermark"
+
+    @pytest.mark.unit
+    def test_strips_page_layout_ocr_image_form(self):
+        md = "![Barcode](page_1_layout_ocr_tcjn_313_401_128_41.png)"
+        assert self._strip(md) == "Barcode"
+
+    @pytest.mark.unit
+    def test_strips_layout_id_not_provided(self):
+        # Real example: "3162b99f04f91109/DeServ_Profile.pdf.md"
+        md = "[Image of a ship](layout_id_not_provided)"
+        assert self._strip(md) == "Image of a ship"
+
+    @pytest.mark.unit
+    def test_strips_layout_placeholder_generic(self):
+        md = "[figure caption](layout_12_abc)"
+        assert self._strip(md) == "figure caption"
+
+    @pytest.mark.unit
+    def test_preserves_link_form_with_real_file(self):
+        md = "[spec](reports/spec.pdf)"
+        assert self._strip(md) == md
+
+    @pytest.mark.unit
+    def test_preserves_link_form_to_http(self):
+        md = "[docs](https://example.com/page)"
+        assert self._strip(md) == md

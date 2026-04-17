@@ -317,18 +317,46 @@ def _check_orphan_attachments(
 
 
 def _check_failed_documents(
-    docs: List[Dict[str, Any]], verbose: bool
+    docs: List[Dict[str, Any]],
+    events: List[Dict[str, Any]],
+    verbose: bool,
 ) -> Tuple[List[str], List[str]]:
-    """Check 10: Failed documents still in output."""
+    """Check 10: Failed documents still in output.
+
+    Cross-references `extraction_failed` events so that docs with a matching
+    event (same parent email UUID + same file_name as the event) are treated
+    as expected. Only failed docs *without* a matching event are warned about.
+    """
     issues: List[str] = []
     warnings: List[str] = []
+
+    # Build lookup: (parent_email_uuid, filename_lower) for extraction_failed events.
+    failed_attachment_keys: Set[Tuple[str, str]] = set()
+    for e in events:
+        if e.get("event_type") != "extraction_failed":
+            continue
+        parent = e.get("parent_document_id")
+        fname = e.get("file_name")
+        if parent and fname:
+            failed_attachment_keys.add((str(parent), fname.lower()))
+
+    def _is_explained(d: Dict[str, Any]) -> bool:
+        root = d.get("root_id")
+        src = d.get("source_id") or ""
+        # attachment source_id is "<email.eml>/<attachment_filename>"
+        tail = src.rsplit("/", 1)[-1] if src else ""
+        return bool(root and tail and (str(root), tail.lower()) in failed_attachment_keys)
+
     failed_docs = [d for d in docs if d.get("status") == "failed"]
-    if failed_docs:
+    unexplained = [d for d in failed_docs if not _is_explained(d)]
+
+    if unexplained:
         warnings.append(
-            f"{len(failed_docs)} document(s) have status='failed' in documents.jsonl"
+            f"{len(unexplained)} document(s) have status='failed' in documents.jsonl "
+            f"(no matching extraction_failed event)"
         )
         if verbose:
-            for d in failed_docs:
+            for d in unexplained:
                 err = d.get("error_message") or "no error message"
                 warnings.append(f"  {d.get('doc_id', '?')[:16]}: {err[:80]}")
     return issues, warnings
@@ -751,7 +779,7 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
         # === 9. Attachment -> Email parent chain ===
         _check_orphan_attachments(docs, email_uuids),
         # === 10. Failed documents still in output ===
-        _check_failed_documents(docs, verbose),
+        _check_failed_documents(docs, events, verbose),
         # === 11. Trailing-dot filenames (may cause parsing issues) ===
         _check_trailing_dot_filenames(docs, verbose),
         # === 12. Topic health ===

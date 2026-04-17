@@ -963,3 +963,193 @@ class TestZipAttachmentContextGeneration:
 
         assert len(chunks) == 1
         assert chunks[0].context_summary is None
+
+
+class TestEmptyAttachmentEventEmission:
+    """When an attachment parser returns 0 chunks, a no_body_chunks ingest
+    event must be emitted so the validator can distinguish an intentional
+    empty result from a silent bug.
+    """
+
+    def _build_components(self, chunks_return, is_zip: bool = False):
+        """Mock IngestComponents wired for process_attachment or zip variant."""
+        components = MagicMock()
+        components.attachment_processor = MagicMock()
+        components.attachment_processor.process_attachment = AsyncMock(
+            return_value=chunks_return
+        )
+        components.attachment_processor.chunker = MagicMock()
+
+        # preprocess is awaited in both attachment paths. Any attr not set
+        # here returns a truthy MagicMock, so is_zip / is_image must be
+        # explicit False to hit the document branch.
+        preprocess = MagicMock(
+            should_process=True,
+            is_image=False,
+            is_zip=False,
+            skip_reason=None,
+            parser_name=None,  # skip cached-md lookup branch
+            image_description=None,
+        )
+        components.attachment_processor.preprocess = AsyncMock(return_value=preprocess)
+
+        if is_zip:
+            components.attachment_processor.extract_zip = MagicMock()
+
+        components.hierarchy_manager = MagicMock()
+        components.archive_generator = MagicMock()
+        components.archive_generator.storage = MagicMock()
+        components.archive_generator.storage.file_exists = MagicMock(return_value=False)
+        components.context_generator = None
+
+        # db.log_ingest_event is what the pipeline calls to record no_body_chunks
+        components.db = MagicMock()
+        components.db.log_ingest_event = MagicMock()
+        return components
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_process_attachment_empty_chunks_emits_event(
+        self, tmp_path, sample_document, sample_attachment_document
+    ):
+        """Direct attachment that parses to 0 chunks → event with matching doc id."""
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_attachment
+
+        att_path = tmp_path / "Settings_Options.ini"
+        att_path.write_text("[settings]\n")
+        attachment = ParsedAttachment(
+            filename="Settings_Options.ini",
+            content_type="application/octet-stream",
+            size_bytes=att_path.stat().st_size,
+            saved_path=str(att_path),
+        )
+
+        components = self._build_components(chunks_return=[])
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        chunks = await process_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        assert chunks == []
+        components.db.log_ingest_event.assert_called_once()
+        kwargs = components.db.log_ingest_event.call_args.kwargs
+        assert kwargs["event_type"] == "no_body_chunks"
+        assert kwargs["document_id"] == sample_attachment_document.id
+        assert kwargs["file_name"] == "Settings_Options.ini"
+        assert kwargs["source_eml_path"] == "test.eml"
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_process_attachment_nonempty_chunks_no_event(
+        self, tmp_path, sample_document, sample_attachment_document, sample_document_id
+    ):
+        """Non-empty chunks must not emit the event (negative control)."""
+        from uuid import uuid4
+        from mtss.models.chunk import Chunk
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_attachment
+
+        att_path = tmp_path / "notes.txt"
+        att_path.write_text("something parseable")
+        attachment = ParsedAttachment(
+            filename="notes.txt",
+            content_type="text/plain",
+            size_bytes=att_path.stat().st_size,
+            saved_path=str(att_path),
+        )
+        chunk = Chunk(
+            id=uuid4(),
+            document_id=sample_document_id,
+            chunk_id="c1",
+            content="something parseable",
+            chunk_index=0,
+            section_path=[],
+            source_id="test.eml/notes.txt",
+        )
+
+        components = self._build_components(chunks_return=[chunk])
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        await process_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        components.db.log_ingest_event.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_zip_attachment_empty_chunks_emits_event(
+        self, tmp_path, sample_document, sample_attachment_document
+    ):
+        """ZIP-extracted attachment that parses to 0 chunks → event emitted.
+
+        Reproduces the real-world case where docx files extracted from a
+        container (e.g. SUMMARY OF ENGINE JOBS_extracted/*.docx) yielded
+        empty content with no explanatory event.
+        """
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        zip_path = tmp_path / "container.zip"
+        zip_path.write_bytes(b"PK")
+        extracted = tmp_path / "extracted" / "empty.docx"
+        extracted.parent.mkdir(parents=True, exist_ok=True)
+        extracted.write_bytes(b"")
+
+        attachment = ParsedAttachment(
+            filename="container.zip",
+            content_type="application/zip",
+            size_bytes=zip_path.stat().st_size,
+            saved_path=str(zip_path),
+        )
+
+        components = self._build_components(chunks_return=[], is_zip=True)
+        components.attachment_processor.extract_zip.return_value = [
+            (
+                extracted,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ]
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        await process_zip_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        components.db.log_ingest_event.assert_called_once()
+        kwargs = components.db.log_ingest_event.call_args.kwargs
+        assert kwargs["event_type"] == "no_body_chunks"
+        assert kwargs["document_id"] == sample_attachment_document.id
+        assert kwargs["file_name"] == "empty.docx"
