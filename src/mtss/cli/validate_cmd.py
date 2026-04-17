@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re as _re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import typer
 from rich.table import Table
@@ -18,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 # Hidden/system files to exclude from archive file counts
 _HIDDEN_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
+_ARCHIVE_URI_FIELDS = ("archive_path", "archive_browse_uri", "archive_download_uri")
+_ENCODED_FILENAME_RE = _re.compile(r"%[0-9A-Fa-f]{2}")
 
 validate_app = typer.Typer(
     help="Validate ingest output and Supabase import integrity",
@@ -118,6 +122,545 @@ def validate_ingest(
     _run_ingest_validation(resolved, verbose)
 
 
+# ---------------------------------------------------------------------------
+# Per-check functions (extracted from _run_ingest_validation)
+#
+# Each function corresponds to one numbered check (1..22). All share the same
+# signature convention: take only the pre-loaded, pre-indexed data they need,
+# return (issues, warnings) — two lists of user-facing strings.
+#
+# The strings are part of the public contract (regression coverage:
+# tests/test_sanitize_migration.py::TestValidateNewChecks and
+# tests/test_validate_checks.py) — do not edit message wording casually.
+# ---------------------------------------------------------------------------
+
+
+def _check_duplicate_uuids(
+    docs: List[Dict[str, Any]], doc_by_uuid: Dict[str, Dict[str, Any]]
+) -> Tuple[List[str], List[str]]:
+    """Check 1: Duplicate UUID detection."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    if len(doc_by_uuid) != len(docs):
+        issues.append(
+            f"Duplicate document UUIDs: {len(docs)} rows but {len(doc_by_uuid)} unique ids"
+        )
+    return issues, warnings
+
+
+def _check_processing_log(
+    proc_by_file: Dict[str, Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 2: Processing log — every file should be COMPLETED."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    failed = [p for p in proc_by_file.values() if p.get("status") != "COMPLETED"]
+    if failed:
+        issues.append(f"{len(failed)} files not COMPLETED in processing log")
+        for f_entry in failed:
+            issues.append(
+                f"  {f_entry.get('file_path', '?')}: "
+                f"status={f_entry.get('status')}, error={f_entry.get('error')}"
+            )
+    return issues, warnings
+
+
+def _check_document_types(
+    docs: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 3: Document type breakdown.
+
+    No issues/warnings emitted — this is a purely informational summary,
+    surfaced in the summary table. Preserved as a dedicated check so the
+    numbering remains aligned with the documented 22-check contract.
+    """
+    return [], []
+
+
+def _check_orphan_chunks(
+    chunks: List[Dict[str, Any]], doc_by_uuid: Dict[str, Dict[str, Any]]
+) -> Tuple[List[str], List[str]]:
+    """Check 4: Chunk -> Document linkage."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    orphan_chunks = [c for c in chunks if c["document_id"] not in doc_by_uuid]
+    if orphan_chunks:
+        issues.append(
+            f"{len(orphan_chunks)} chunks reference non-existent documents"
+        )
+    return issues, warnings
+
+
+def _check_embedding_completeness(
+    chunks: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 5: Embedding completeness + dimension consistency."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    no_embedding = [c for c in chunks if not c.get("embedding")]
+    if no_embedding:
+        issues.append(f"{len(no_embedding)}/{len(chunks)} chunks missing embeddings")
+
+    dims: Set[int] = set()
+    for c in chunks:
+        emb = c.get("embedding")
+        if emb:
+            dims.add(len(emb))
+    if len(dims) > 1:
+        issues.append(f"Inconsistent embedding dimensions: {dims}")
+    return issues, warnings
+
+
+def _check_empty_content(
+    chunks: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 6: Empty content in chunks."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    empty_content = [
+        c for c in chunks if not c.get("content") or not c["content"].strip()
+    ]
+    if empty_content:
+        issues.append(f"{len(empty_content)} chunks have empty content")
+    return issues, warnings
+
+
+def _check_context_summary(
+    chunks: List[Dict[str, Any]],
+    docs: List[Dict[str, Any]],
+    doc_by_uuid: Dict[str, Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 7: Context summary / embedding_text presence.
+
+    Image chunks skip LLM context generation by design — only flag non-image chunks.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    image_doc_uuids = {
+        d["id"] for d in docs if d.get("document_type") == "attachment_image"
+    }
+    text_chunks = [c for c in chunks if c["document_id"] not in image_doc_uuids]
+    incomplete_chunks = [
+        c for c in text_chunks if not c.get("context_summary") or not c.get("embedding_text")
+    ]
+    if incomplete_chunks:
+        # Group by source email for actionable output
+        affected_docs: Dict[str, int] = {}
+        for c in incomplete_chunks:
+            did = c["document_id"]
+            affected_docs[did] = affected_docs.get(did, 0) + 1
+        affected_emails: Dict[str, int] = {}
+        for d in docs:
+            if d["id"] in affected_docs:
+                root = d.get("root_id", d["id"])
+                email = doc_by_uuid.get(root, d)
+                eml = email.get("source_id", "?")
+                affected_emails[eml] = affected_emails.get(eml, 0) + affected_docs[d["id"]]
+        warnings.append(
+            f"{len(incomplete_chunks)}/{len(text_chunks)} text chunks missing context_summary/embedding_text "
+            f"({len(affected_emails)} emails)"
+        )
+        for eml, cnt in sorted(affected_emails.items()):
+            warnings.append(f"    {eml} ({cnt} chunks)")
+    return issues, warnings
+
+
+def _check_docs_without_chunks(
+    docs: List[Dict[str, Any]],
+    chunk_doc_ids: "Counter[str]",
+    filtered_doc_uuids: Set[str],
+) -> Tuple[List[str], List[str]]:
+    """Check 8: Documents without chunks (excluding filtered / images / failed)."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    docs_without_chunks: List[Dict[str, Any]] = []
+    for d in docs:
+        if d["id"] not in chunk_doc_ids:
+            # Skip emails explicitly filtered (forwarding/cover emails)
+            if d["id"] in filtered_doc_uuids:
+                continue
+            # Images may legitimately have no chunks (non-content)
+            if d.get("document_type") == "attachment_image":
+                continue
+            # Failed documents have 0 chunks by definition — already surfaced by status=failed check
+            if d.get("status") == "failed":
+                continue
+            docs_without_chunks.append(d)
+
+    if docs_without_chunks:
+        issues.append(
+            f"{len(docs_without_chunks)} document(s) have no chunks (not explained by events)"
+        )
+        for d in docs_without_chunks:
+            issues.append(
+                f"  {d.get('document_type')}: {d.get('file_path', '?')[:70]}"
+            )
+    return issues, warnings
+
+
+def _check_orphan_attachments(
+    docs: List[Dict[str, Any]], email_uuids: Set[str]
+) -> Tuple[List[str], List[str]]:
+    """Check 9: Attachment -> Email parent chain."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    orphan_attachments = []
+    for d in docs:
+        if d.get("document_type") != "email" and d.get("root_id"):
+            if d["root_id"] not in email_uuids:
+                orphan_attachments.append(d)
+    if orphan_attachments:
+        warnings.append(
+            f"{len(orphan_attachments)} attachments have root_id not matching any email"
+        )
+    return issues, warnings
+
+
+def _check_failed_documents(
+    docs: List[Dict[str, Any]], verbose: bool
+) -> Tuple[List[str], List[str]]:
+    """Check 10: Failed documents still in output."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    failed_docs = [d for d in docs if d.get("status") == "failed"]
+    if failed_docs:
+        warnings.append(
+            f"{len(failed_docs)} document(s) have status='failed' in documents.jsonl"
+        )
+        if verbose:
+            for d in failed_docs:
+                err = d.get("error_message") or "no error message"
+                warnings.append(f"  {d.get('doc_id', '?')[:16]}: {err[:80]}")
+    return issues, warnings
+
+
+def _check_trailing_dot_filenames(
+    docs: List[Dict[str, Any]], verbose: bool
+) -> Tuple[List[str], List[str]]:
+    """Check 11: Trailing-dot filenames (may cause parsing issues)."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    trailing_dot_docs = [
+        d for d in docs if d.get("source_id") and d["source_id"].endswith(".")
+    ]
+    if trailing_dot_docs:
+        warnings.append(
+            f"{len(trailing_dot_docs)} document(s) have source_id ending in '.' "
+            f"(potential parsing issues)"
+        )
+        if verbose:
+            for d in trailing_dot_docs:
+                warnings.append(
+                    f"  {d.get('document_type')}: {d.get('source_id', '')[:70]}"
+                )
+    return issues, warnings
+
+
+def _check_topic_health(
+    topics: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 12: Topic embeddings + document_count sanity."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    no_topic_embedding = sum(1 for t in topics if not t.get("embedding"))
+    if no_topic_embedding:
+        warnings.append(f"{no_topic_embedding}/{len(topics)} topics missing embeddings")
+
+    zero_count_topics = [t for t in topics if (t.get("document_count") or 0) == 0]
+    if zero_count_topics:
+        warnings.append(
+            f"{len(zero_count_topics)}/{len(topics)} topics have document_count=0"
+        )
+    return issues, warnings
+
+
+def _check_archive_uris(
+    docs: List[Dict[str, Any]],
+    email_uuids: Set[str],
+    archive_folders_on_disk: Set[str],
+    verbose: bool,
+) -> Tuple[List[str], List[str]]:
+    """Check 13: Archive directory and URI checks."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    emails_missing_archive: List[Tuple[Dict[str, Any], List[str]]] = []
+    emails_without_folder: List[Dict[str, Any]] = []
+    for d in docs:
+        if d.get("document_type") != "email":
+            continue
+        missing_fields = [f for f in _ARCHIVE_URI_FIELDS if not d.get(f)]
+        if missing_fields:
+            emails_missing_archive.append((d, missing_fields))
+        if archive_folders_on_disk:
+            folder_id = d.get("archive_path") or d["doc_id"][:16]
+            if folder_id not in archive_folders_on_disk:
+                emails_without_folder.append(d)
+
+    if emails_missing_archive:
+        issues.append(
+            f"{len(emails_missing_archive)}/{len(email_uuids)} "
+            f"emails missing archive URIs (UI will show broken links)"
+        )
+        if verbose:
+            for d, fields in emails_missing_archive:
+                issues.append(
+                    f"  {d.get('doc_id', '?')[:16]}: missing {', '.join(fields)}"
+                )
+
+    if emails_without_folder:
+        warnings.append(
+            f"{len(emails_without_folder)} emails have no archive folder on disk"
+        )
+    return issues, warnings
+
+
+def _check_stale_topic_refs(
+    chunks: List[Dict[str, Any]], topics: List[Dict[str, Any]]
+) -> Tuple[List[str], List[str]]:
+    """Check 14: Stale topic references in chunk metadata."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    topic_id_set = {t["id"] for t in topics}
+    stale_topic_chunks = 0
+    stale_topic_ids: Set[str] = set()
+    for c in chunks:
+        tids = (c.get("metadata") or {}).get("topic_ids", [])
+        for tid in tids:
+            if tid not in topic_id_set:
+                stale_topic_chunks += 1
+                stale_topic_ids.add(tid)
+    if stale_topic_chunks:
+        issues.append(
+            f"{stale_topic_chunks} chunk topic_ids reference {len(stale_topic_ids)} "
+            f"non-existent topics (stale from merges)"
+        )
+    return issues, warnings
+
+
+def _check_topic_count_accuracy(
+    chunks: List[Dict[str, Any]], topics: List[Dict[str, Any]]
+) -> Tuple[List[str], List[str]]:
+    """Check 15: Topic count accuracy (JSONL counts vs actual chunk refs)."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    topic_cc: "Counter[str]" = Counter()
+    topic_ds: Dict[str, set] = {}
+    for c in chunks:
+        for tid in (c.get("metadata") or {}).get("topic_ids", []):
+            topic_cc[tid] += 1
+            topic_ds.setdefault(tid, set()).add(c.get("document_id", ""))
+    stale_count_topics = 0
+    for t in topics:
+        tid = t["id"]
+        actual_cc = topic_cc.get(tid, 0)
+        actual_dc = len(topic_ds.get(tid, set()))
+        if (t.get("chunk_count", 0) or 0) != actual_cc or (
+            t.get("document_count", 0) or 0
+        ) != actual_dc:
+            stale_count_topics += 1
+    if stale_count_topics:
+        issues.append(
+            f"{stale_count_topics}/{len(topics)} topics have stale counts "
+            f"(JSONL counts don't match actual chunk references)"
+        )
+    return issues, warnings
+
+
+def _check_broken_archive_uris(
+    docs: List[Dict[str, Any]], archive_dir: Path
+) -> Tuple[List[str], List[str]]:
+    """Check 16: Archive URIs point to existing files on disk."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    broken_uris: List[Tuple[str, str, str]] = []
+    for d in docs:
+        for key in ("archive_browse_uri", "archive_download_uri"):
+            uri = d.get(key)
+            if uri:
+                rel = uri.removeprefix("/archive/")
+                if not (archive_dir / rel).exists():
+                    broken_uris.append((d.get("file_name", "?"), key, rel))
+    if broken_uris:
+        issues.append(
+            f"{len(broken_uris)} archive URIs point to missing files on disk"
+        )
+        for fn, key, rel in broken_uris[:5]:
+            issues.append(f"  {fn}: {rel}")
+        if len(broken_uris) > 5:
+            issues.append(f"  ... and {len(broken_uris) - 5} more")
+    return issues, warnings
+
+
+def _check_duplicate_ids(
+    docs: List[Dict[str, Any]],
+    chunks: List[Dict[str, Any]],
+    verbose: bool,
+) -> Tuple[List[str], List[str]]:
+    """Check 17: Duplicate doc_ids and chunk_ids."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    doc_id_counts = Counter(d.get("doc_id") for d in docs if d.get("doc_id"))
+    dup_doc_ids = {did: cnt for did, cnt in doc_id_counts.items() if cnt > 1}
+    if dup_doc_ids:
+        issues.append(f"{len(dup_doc_ids)} duplicate doc_ids in documents.jsonl")
+        if verbose:
+            for did, cnt in list(dup_doc_ids.items())[:5]:
+                issues.append(f"  {did[:16]}: {cnt}x")
+
+    chunk_id_counts = Counter(c.get("chunk_id") for c in chunks if c.get("chunk_id"))
+    dup_chunk_ids = {cid: cnt for cid, cnt in chunk_id_counts.items() if cnt > 1}
+    if dup_chunk_ids:
+        issues.append(f"{len(dup_chunk_ids)} duplicate chunk_ids in chunks.jsonl")
+    return issues, warnings
+
+
+def _check_encoded_filenames(
+    archive_dir: Path, verbose: bool
+) -> Tuple[List[str], List[str]]:
+    """Check 18: Encoded filenames on disk (should use underscores, not %XX)."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    encoded_disk_files: List[str] = []
+    if archive_dir.exists():
+        for f in archive_dir.rglob("*"):
+            if f.is_file() and _ENCODED_FILENAME_RE.search(f.name):
+                encoded_disk_files.append(f.name)
+    if encoded_disk_files:
+        issues.append(
+            f"{len(encoded_disk_files)} archive files have URL-encoded names "
+            f"(run migration script to fix)"
+        )
+        if verbose:
+            for name in encoded_disk_files[:5]:
+                issues.append(f"  {name}")
+    return issues, warnings
+
+
+def _check_encoded_uris(
+    docs: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 19: Encoded URIs in documents.jsonl."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    encoded_uris: List[Tuple[str, str, str]] = []
+    for d in docs:
+        for key in ("archive_browse_uri", "archive_download_uri"):
+            uri = d.get(key) or ""
+            if _ENCODED_FILENAME_RE.search(uri):
+                encoded_uris.append((d.get("file_name", "?"), key, uri))
+    if encoded_uris:
+        issues.append(
+            f"{len(encoded_uris)} archive URIs contain URL-encoding "
+            f"(run migration script to fix)"
+        )
+    return issues, warnings
+
+
+def _check_broken_markdown_links(
+    docs: List[Dict[str, Any]], archive_dir: Path
+) -> Tuple[List[str], List[str]]:
+    """Check 20: Broken markdown internal links."""
+    issues: List[str] = []
+    warnings: List[str] = []
+    if not archive_dir.exists():
+        return issues, warnings
+
+    broken_md_links: Dict[str, List[str]] = {}
+    for md_file in archive_dir.rglob("*.md"):
+        content = md_file.read_text(encoding="utf-8", errors="replace")
+        for link in _re.findall(r"\[.*?\]\(([^)]+)\)", content):
+            if link.startswith(("http", "#", "mailto:")):
+                continue
+            # Skip LlamaParse page images (not stored locally)
+            if _re.match(r"page_\d+_(?:image|chart|seal)_\d+", link):
+                continue
+            target = archive_dir / link
+            rel_target = md_file.parent / link
+            if not target.exists() and not rel_target.exists():
+                folder = str(md_file.relative_to(archive_dir)).split("/")[0].split("\\")[0]
+                broken_md_links.setdefault(folder, []).append(link)
+
+    total_broken = sum(len(v) for v in broken_md_links.values())
+    if total_broken:
+        folder_to_email = build_folder_to_email_map(docs)
+        truncated = sum(
+            1 for links in broken_md_links.values() for l in links if not Path(l).suffix
+        )
+        unicode_broken = sum(
+            1 for links in broken_md_links.values() for l in links if not l.isascii()
+        )
+        other = total_broken - truncated - unicode_broken
+        parts = []
+        if truncated:
+            parts.append(f"{truncated} truncated by parens")
+        if unicode_broken:
+            parts.append(f"{unicode_broken} unicode-mangled")
+        if other:
+            parts.append(f"{other} other")
+        detail = ", ".join(parts)
+        warnings.append(
+            f"{total_broken} broken markdown links in {len(broken_md_links)} archive folders "
+            f"({detail})"
+        )
+        for folder_id, links in sorted(broken_md_links.items())[:10]:
+            email = folder_to_email.get(folder_id, "unknown email")
+            warnings.append(f"    {folder_id} ({email}): {len(links)} broken")
+        if len(broken_md_links) > 10:
+            warnings.append(f"    ... and {len(broken_md_links) - 10} more folders")
+    return issues, warnings
+
+
+def _check_chunk_positions(
+    chunks: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 21: Chunk position validity.
+
+    Thread digest chunks legitimately use (-1, -1) — skip those.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    invalid_positions: List[str] = []
+    for c in chunks:
+        cs = c.get("char_start")
+        ce = c.get("char_end")
+        if cs is not None and ce is not None and not (cs == -1 and ce == -1):
+            if cs < 0 or ce < 0 or cs > ce:
+                invalid_positions.append(c.get("chunk_id", "?"))
+    if invalid_positions:
+        warnings.append(
+            f"{len(invalid_positions)} chunks have invalid char positions "
+            f"(negative or start > end)"
+        )
+    return issues, warnings
+
+
+def _check_email_metadata(
+    docs: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 22: Email metadata consistency.
+
+    JSONL keys use email_ prefix (see serializers.py doc_to_dict).
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    bad_dates = 0
+    missing_participants = 0
+    for d in docs:
+        if d.get("document_type") != "email":
+            continue
+        ds = d.get("email_date_start")
+        de = d.get("email_date_end")
+        if ds and de and ds > de:
+            bad_dates += 1
+        if not d.get("email_participants"):
+            missing_participants += 1
+    if bad_dates:
+        warnings.append(f"{bad_dates} emails have date_start > date_end")
+    if missing_participants:
+        warnings.append(f"{missing_participants} emails have no participants")
+    return issues, warnings
+
+
 def _run_ingest_validation(output_dir: Path, verbose: bool):
     if not output_dir.exists():
         console.print(f"[red]Output directory not found: {output_dir}[/red]")
@@ -143,160 +686,33 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
     email_uuids = {d["id"] for d in docs if d.get("document_type") == "email"}
     chunk_doc_ids = Counter(c["document_id"] for c in chunks)
 
-    # === 1. Duplicate UUID detection ===
-    if len(doc_by_uuid) != len(docs):
-        issues.append(f"Duplicate document UUIDs: {len(docs)} rows but {len(doc_by_uuid)} unique ids")
-
     # Event source tracking (for expected missing chunks)
-    filtered_doc_uuids = set()
+    filtered_doc_uuids: Set[str] = set()
     for e in events:
         if e.get("event_type") in ("message_filtered", "no_body_chunks"):
             if e.get("document_id"):
                 filtered_doc_uuids.add(e["document_id"])
 
-    # === 2. Processing log checks (deduplicate by file_path, keep last entry) ===
-    proc_by_file: Dict[str, Dict] = {}
+    # Processing log — deduplicate by file_path, keep last entry
+    proc_by_file: Dict[str, Dict[str, Any]] = {}
     for p in proc_log:
         proc_by_file[p.get("file_path", "")] = p
     failed = [p for p in proc_by_file.values() if p.get("status") != "COMPLETED"]
-    if failed:
-        issues.append(f"{len(failed)} files not COMPLETED in processing log")
-        for f_entry in failed:
-            issues.append(
-                f"  {f_entry.get('file_path', '?')}: "
-                f"status={f_entry.get('status')}, error={f_entry.get('error')}"
-            )
 
-    # === 3. Document type breakdown ===
+    # Document type breakdown (for summary table)
     doc_types = Counter(d.get("document_type", "unknown") for d in docs)
 
-    # === 4. Chunk -> Document linkage ===
-    orphan_chunks = [c for c in chunks if c["document_id"] not in doc_by_uuid]
-    if orphan_chunks:
-        issues.append(
-            f"{len(orphan_chunks)} chunks reference non-existent documents"
-        )
-
-    # === 5. Embedding completeness ===
+    # Embedding presence (for summary table)
     no_embedding = [c for c in chunks if not c.get("embedding")]
-    if no_embedding:
-        issues.append(f"{len(no_embedding)}/{len(chunks)} chunks missing embeddings")
-
-    # Embedding dimension consistency
-    dims = set()
+    dims: Set[int] = set()
     for c in chunks:
         emb = c.get("embedding")
         if emb:
             dims.add(len(emb))
-    if len(dims) > 1:
-        issues.append(f"Inconsistent embedding dimensions: {dims}")
 
-    # === 6. Empty content ===
-    empty_content = [
-        c for c in chunks if not c.get("content") or not c["content"].strip()
-    ]
-    if empty_content:
-        issues.append(f"{len(empty_content)} chunks have empty content")
-
-    # === 7. Context summary / embedding_text presence ===
-    # Image chunks skip LLM context generation by design — only flag non-image chunks
-    image_doc_uuids = {d["id"] for d in docs if d.get("document_type") == "attachment_image"}
-    text_chunks = [c for c in chunks if c["document_id"] not in image_doc_uuids]
-    incomplete_chunks = [c for c in text_chunks if not c.get("context_summary") or not c.get("embedding_text")]
-    if incomplete_chunks:
-        # Group by source email for actionable output
-        affected_docs: Dict[str, int] = {}
-        for c in incomplete_chunks:
-            did = c["document_id"]
-            affected_docs[did] = affected_docs.get(did, 0) + 1
-        affected_emails: Dict[str, int] = {}
-        for d in docs:
-            if d["id"] in affected_docs:
-                root = d.get("root_id", d["id"])
-                email = doc_by_uuid.get(root, d)
-                eml = email.get("source_id", "?")
-                affected_emails[eml] = affected_emails.get(eml, 0) + affected_docs[d["id"]]
-        warnings.append(
-            f"{len(incomplete_chunks)}/{len(text_chunks)} text chunks missing context_summary/embedding_text "
-            f"({len(affected_emails)} emails)"
-        )
-        for eml, cnt in sorted(affected_emails.items()):
-            warnings.append(f"    {eml} ({cnt} chunks)")
-
-    # === 8. Documents without chunks ===
-    docs_without_chunks = []
-    for d in docs:
-        if d["id"] not in chunk_doc_ids:
-            # Skip emails explicitly filtered (forwarding/cover emails)
-            if d["id"] in filtered_doc_uuids:
-                continue
-            # Images may legitimately have no chunks (non-content)
-            if d.get("document_type") == "attachment_image":
-                continue
-            # Failed documents have 0 chunks by definition — already surfaced by status=failed check
-            if d.get("status") == "failed":
-                continue
-            docs_without_chunks.append(d)
-
-    if docs_without_chunks:
-        issues.append(
-            f"{len(docs_without_chunks)} document(s) have no chunks (not explained by events)"
-        )
-        for d in docs_without_chunks:
-            issues.append(
-                f"  {d.get('document_type')}: {d.get('file_path', '?')[:70]}"
-            )
-
-    # === 9. Attachment -> Email parent chain ===
-    orphan_attachments = []
-    for d in docs:
-        if d.get("document_type") != "email" and d.get("root_id"):
-            if d["root_id"] not in email_uuids:
-                orphan_attachments.append(d)
-    if orphan_attachments:
-        warnings.append(
-            f"{len(orphan_attachments)} attachments have root_id not matching any email"
-        )
-
-    # === 10. Failed documents still in output ===
-    failed_docs = [d for d in docs if d.get("status") == "failed"]
-    if failed_docs:
-        warnings.append(
-            f"{len(failed_docs)} document(s) have status='failed' in documents.jsonl"
-        )
-        if verbose:
-            for d in failed_docs:
-                err = d.get("error_message") or "no error message"
-                warnings.append(f"  {d.get('doc_id', '?')[:16]}: {err[:80]}")
-
-    # === 11. Trailing-dot filenames (may cause parsing issues) ===
-    trailing_dot_docs = [
-        d for d in docs if d.get("source_id") and d["source_id"].endswith(".")
-    ]
-    if trailing_dot_docs:
-        warnings.append(
-            f"{len(trailing_dot_docs)} document(s) have source_id ending in '.' "
-            f"(potential parsing issues)"
-        )
-        if verbose:
-            for d in trailing_dot_docs:
-                warnings.append(f"  {d.get('document_type')}: {d.get('source_id', '')[:70]}")
-
-    # === 12. Topic health ===
-    no_topic_embedding = sum(1 for t in topics if not t.get("embedding"))
-    if no_topic_embedding:
-        warnings.append(f"{no_topic_embedding}/{len(topics)} topics missing embeddings")
-
-    zero_count_topics = [t for t in topics if (t.get("document_count") or 0) == 0]
-    if zero_count_topics:
-        warnings.append(
-            f"{len(zero_count_topics)}/{len(topics)} topics have document_count=0"
-        )
-
-    # === 13. Archive directory and URI checks ===
+    # Archive directory + folders on disk (shared across several checks)
     archive_dir = output_dir / "archive"
-    _ARCHIVE_URI_FIELDS = ("archive_path", "archive_browse_uri", "archive_download_uri")
-    archive_folders_on_disk: set[str] = set()
+    archive_folders_on_disk: Set[str] = set()
     total_archive_files = 0
     if archive_dir.exists():
         for p in archive_dir.iterdir():
@@ -304,207 +720,66 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
                 archive_folders_on_disk.add(p.name)
                 total_archive_files += _count_archive_files(p)
 
-    # URI + folder checks in a single pass over email docs
-    emails_missing_archive = []
-    emails_without_folder = []
+    # Emails missing archive URIs — also needed for the summary table
+    emails_missing_archive: List[Tuple[Dict[str, Any], List[str]]] = []
     for d in docs:
         if d.get("document_type") != "email":
             continue
         missing_fields = [f for f in _ARCHIVE_URI_FIELDS if not d.get(f)]
         if missing_fields:
             emails_missing_archive.append((d, missing_fields))
-        if archive_folders_on_disk:
-            folder_id = d.get("archive_path") or d["doc_id"][:16]
-            if folder_id not in archive_folders_on_disk:
-                emails_without_folder.append(d)
 
-    if emails_missing_archive:
-        issues.append(
-            f"{len(emails_missing_archive)}/{len(email_uuids)} "
-            f"emails missing archive URIs (UI will show broken links)"
-        )
-        if verbose:
-            for d, fields in emails_missing_archive:
-                issues.append(f"  {d.get('doc_id', '?')[:16]}: missing {', '.join(fields)}")
-
-    if emails_without_folder:
-        warnings.append(
-            f"{len(emails_without_folder)} emails have no archive folder on disk"
-        )
-
-    # === 14. Stale topic references in chunk metadata ===
-    topic_id_set = {t["id"] for t in topics}
-    stale_topic_chunks = 0
-    stale_topic_ids: set[str] = set()
-    for c in chunks:
-        tids = (c.get("metadata") or {}).get("topic_ids", [])
-        for tid in tids:
-            if tid not in topic_id_set:
-                stale_topic_chunks += 1
-                stale_topic_ids.add(tid)
-    if stale_topic_chunks:
-        issues.append(
-            f"{stale_topic_chunks} chunk topic_ids reference {len(stale_topic_ids)} "
-            f"non-existent topics (stale from merges)"
-        )
-
-    # === 15. Topic count accuracy (JSONL counts vs actual chunk refs) ===
-    _topic_cc = Counter()
-    _topic_ds: Dict[str, set] = {}
-    for c in chunks:
-        for tid in (c.get("metadata") or {}).get("topic_ids", []):
-            _topic_cc[tid] += 1
-            _topic_ds.setdefault(tid, set()).add(c.get("document_id", ""))
-    stale_count_topics = 0
-    for t in topics:
-        tid = t["id"]
-        actual_cc = _topic_cc.get(tid, 0)
-        actual_dc = len(_topic_ds.get(tid, set()))
-        if (t.get("chunk_count", 0) or 0) != actual_cc or (t.get("document_count", 0) or 0) != actual_dc:
-            stale_count_topics += 1
-    if stale_count_topics:
-        issues.append(
-            f"{stale_count_topics}/{len(topics)} topics have stale counts "
-            f"(JSONL counts don't match actual chunk references)"
-        )
-
-    # === 16. Archive URIs point to existing files on disk ===
-    broken_uris = []
-    for d in docs:
-        for key in ("archive_browse_uri", "archive_download_uri"):
-            uri = d.get(key)
-            if uri:
-                rel = uri.removeprefix("/archive/")
-                if not (archive_dir / rel).exists():
-                    broken_uris.append((d.get("file_name", "?"), key, rel))
-    if broken_uris:
-        issues.append(
-            f"{len(broken_uris)} archive URIs point to missing files on disk"
-        )
-        for fn, key, rel in broken_uris[:5]:
-            issues.append(f"  {fn}: {rel}")
-        if len(broken_uris) > 5:
-            issues.append(f"  ... and {len(broken_uris) - 5} more")
-
-    # === 17. Duplicate doc_ids and chunk_ids ===
-    doc_id_counts = Counter(d.get("doc_id") for d in docs if d.get("doc_id"))
-    dup_doc_ids = {did: cnt for did, cnt in doc_id_counts.items() if cnt > 1}
-    if dup_doc_ids:
-        issues.append(f"{len(dup_doc_ids)} duplicate doc_ids in documents.jsonl")
-        if verbose:
-            for did, cnt in list(dup_doc_ids.items())[:5]:
-                issues.append(f"  {did[:16]}: {cnt}x")
-
-    chunk_id_counts = Counter(c.get("chunk_id") for c in chunks if c.get("chunk_id"))
-    dup_chunk_ids = {cid: cnt for cid, cnt in chunk_id_counts.items() if cnt > 1}
-    if dup_chunk_ids:
-        issues.append(f"{len(dup_chunk_ids)} duplicate chunk_ids in chunks.jsonl")
-
-    # === 18. Encoded filenames on disk (should use underscores, not %XX) ===
-    import re as _re
-    _enc_re = _re.compile(r"%[0-9A-Fa-f]{2}")
-    encoded_disk_files = []
-    if archive_dir.exists():
-        for f in archive_dir.rglob("*"):
-            if f.is_file() and _enc_re.search(f.name):
-                encoded_disk_files.append(f.name)
-    if encoded_disk_files:
-        issues.append(
-            f"{len(encoded_disk_files)} archive files have URL-encoded names "
-            f"(run migration script to fix)"
-        )
-        if verbose:
-            for name in encoded_disk_files[:5]:
-                issues.append(f"  {name}")
-
-    # === 19. Encoded URIs in documents.jsonl ===
-    encoded_uris = []
-    for d in docs:
-        for key in ("archive_browse_uri", "archive_download_uri"):
-            uri = d.get(key) or ""
-            if _enc_re.search(uri):
-                encoded_uris.append((d.get("file_name", "?"), key, uri))
-    if encoded_uris:
-        issues.append(
-            f"{len(encoded_uris)} archive URIs contain URL-encoding "
-            f"(run migration script to fix)"
-        )
-
-    # === 20. Broken markdown internal links ===
-    if archive_dir.exists():
-        broken_md_links: Dict[str, List[str]] = {}
-        for md_file in archive_dir.rglob("*.md"):
-            content = md_file.read_text(encoding="utf-8", errors="replace")
-            for link in _re.findall(r"\[.*?\]\(([^)]+)\)", content):
-                if link.startswith(("http", "#", "mailto:")):
-                    continue
-                # Skip LlamaParse page images (not stored locally)
-                if _re.match(r"page_\d+_(?:image|chart|seal)_\d+", link):
-                    continue
-                target = archive_dir / link
-                rel_target = md_file.parent / link
-                if not target.exists() and not rel_target.exists():
-                    folder = str(md_file.relative_to(archive_dir)).split("/")[0].split("\\")[0]
-                    broken_md_links.setdefault(folder, []).append(link)
-
-        total_broken = sum(len(v) for v in broken_md_links.values())
-        if total_broken:
-            folder_to_email = build_folder_to_email_map(docs)
-            truncated = sum(1 for links in broken_md_links.values()
-                           for l in links if not Path(l).suffix)
-            unicode_broken = sum(1 for links in broken_md_links.values()
-                                for l in links if not l.isascii())
-            other = total_broken - truncated - unicode_broken
-            parts = []
-            if truncated:
-                parts.append(f"{truncated} truncated by parens")
-            if unicode_broken:
-                parts.append(f"{unicode_broken} unicode-mangled")
-            if other:
-                parts.append(f"{other} other")
-            detail = ", ".join(parts)
-            warnings.append(
-                f"{total_broken} broken markdown links in {len(broken_md_links)} archive folders "
-                f"({detail})"
-            )
-            for folder_id, links in sorted(broken_md_links.items())[:10]:
-                email = folder_to_email.get(folder_id, "unknown email")
-                warnings.append(f"    {folder_id} ({email}): {len(links)} broken")
-            if len(broken_md_links) > 10:
-                warnings.append(f"    ... and {len(broken_md_links) - 10} more folders")
-
-    # === 21. Chunk position validity ===
-    # Thread digest chunks legitimately use (-1, -1) — skip those
-    invalid_positions = []
-    for c in chunks:
-        cs = c.get("char_start")
-        ce = c.get("char_end")
-        if cs is not None and ce is not None and not (cs == -1 and ce == -1):
-            if cs < 0 or ce < 0 or cs > ce:
-                invalid_positions.append(c.get("chunk_id", "?"))
-    if invalid_positions:
-        warnings.append(
-            f"{len(invalid_positions)} chunks have invalid char positions "
-            f"(negative or start > end)"
-        )
-
-    # === 22. Email metadata consistency ===
-    # JSONL keys use email_ prefix (see serializers.py doc_to_dict)
-    bad_dates = 0
-    missing_participants = 0
-    for d in docs:
-        if d.get("document_type") != "email":
-            continue
-        ds = d.get("email_date_start")
-        de = d.get("email_date_end")
-        if ds and de and ds > de:
-            bad_dates += 1
-        if not d.get("email_participants"):
-            missing_participants += 1
-    if bad_dates:
-        warnings.append(f"{bad_dates} emails have date_start > date_end")
-    if missing_participants:
-        warnings.append(f"{missing_participants} emails have no participants")
+    # === Run all 22 checks in order ===
+    # Each check appends to the shared issues/warnings lists.
+    _check_results: List[Tuple[List[str], List[str]]] = [
+        # === 1. Duplicate UUID detection ===
+        _check_duplicate_uuids(docs, doc_by_uuid),
+        # === 2. Processing log checks ===
+        _check_processing_log(proc_by_file),
+        # === 3. Document type breakdown ===
+        _check_document_types(docs),
+        # === 4. Chunk -> Document linkage ===
+        _check_orphan_chunks(chunks, doc_by_uuid),
+        # === 5. Embedding completeness ===
+        _check_embedding_completeness(chunks),
+        # === 6. Empty content ===
+        _check_empty_content(chunks),
+        # === 7. Context summary / embedding_text presence ===
+        _check_context_summary(chunks, docs, doc_by_uuid),
+        # === 8. Documents without chunks ===
+        _check_docs_without_chunks(docs, chunk_doc_ids, filtered_doc_uuids),
+        # === 9. Attachment -> Email parent chain ===
+        _check_orphan_attachments(docs, email_uuids),
+        # === 10. Failed documents still in output ===
+        _check_failed_documents(docs, verbose),
+        # === 11. Trailing-dot filenames (may cause parsing issues) ===
+        _check_trailing_dot_filenames(docs, verbose),
+        # === 12. Topic health ===
+        _check_topic_health(topics),
+        # === 13. Archive directory and URI checks ===
+        _check_archive_uris(docs, email_uuids, archive_folders_on_disk, verbose),
+        # === 14. Stale topic references in chunk metadata ===
+        _check_stale_topic_refs(chunks, topics),
+        # === 15. Topic count accuracy (JSONL counts vs actual chunk refs) ===
+        _check_topic_count_accuracy(chunks, topics),
+        # === 16. Archive URIs point to existing files on disk ===
+        _check_broken_archive_uris(docs, archive_dir),
+        # === 17. Duplicate doc_ids and chunk_ids ===
+        _check_duplicate_ids(docs, chunks, verbose),
+        # === 18. Encoded filenames on disk (should use underscores, not %XX) ===
+        _check_encoded_filenames(archive_dir, verbose),
+        # === 19. Encoded URIs in documents.jsonl ===
+        _check_encoded_uris(docs),
+        # === 20. Broken markdown internal links ===
+        _check_broken_markdown_links(docs, archive_dir),
+        # === 21. Chunk position validity ===
+        _check_chunk_positions(chunks),
+        # === 22. Email metadata consistency ===
+        _check_email_metadata(docs),
+    ]
+    for check_issues, check_warnings in _check_results:
+        issues.extend(check_issues)
+        warnings.extend(check_warnings)
 
     # === Display results ===
     summary = Table(title="Ingest Validation Summary")
