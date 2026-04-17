@@ -177,9 +177,9 @@ class ArchiveStorage:
         decoded_filename = unquote(filename)
 
         try:
-            files = self.bucket.list(folder)
+            files = self.list_folder(folder)
             return any(f["name"] == decoded_filename for f in files)
-        except StorageException:
+        except (StorageException, ArchiveStorageError):
             return False
 
     def delete_folder(self, doc_id: str, preserve_md: bool = False) -> None:
@@ -196,28 +196,25 @@ class ArchiveStorage:
             folder = doc_id
             paths: List[str] = []
 
-            # List files in root folder (skip subfolder entries which have id=null)
+            # List files in root folder (list_folder already filters subfolder
+            # placeholders when files_only=True, the default).
             try:
-                files = self.bucket.list(folder)
+                files = self.list_folder(folder)
                 for f in files:
-                    if not f.get("id"):
-                        continue
                     if preserve_md and f["name"].endswith(".md"):
                         continue
                     paths.append(f"{folder}/{f['name']}")
-            except StorageException:
+            except (StorageException, ArchiveStorageError):
                 pass  # Folder may not exist
 
             # List files in attachments subfolder
             try:
-                att_files = self.bucket.list(f"{folder}/attachments")
+                att_files = self.list_folder(f"{folder}/attachments")
                 for f in att_files:
-                    if not f.get("id"):
-                        continue
                     if preserve_md and f["name"].endswith(".md"):
                         continue
                     paths.append(f"{folder}/attachments/{f['name']}")
-            except StorageException:
+            except (StorageException, ArchiveStorageError):
                 pass  # Attachments folder may not exist
 
             if paths:
@@ -240,16 +237,16 @@ class ArchiveStorage:
         result: List[dict] = []
 
         try:
-            files = self.bucket.list(folder)
+            files = self.list_folder(folder)
             result.extend(files)
 
             # Also list attachments subfolder
             try:
-                att_files = self.bucket.list(f"{folder}/attachments")
+                att_files = self.list_folder(f"{folder}/attachments")
                 result.extend(att_files)
-            except StorageException:
+            except (StorageException, ArchiveStorageError):
                 pass
-        except StorageException:
+        except (StorageException, ArchiveStorageError):
             pass
 
         return result

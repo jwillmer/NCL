@@ -162,3 +162,132 @@ class TestListFolderRetry:
         # second attempt at offset=100 after failure, then offset=200
         offsets = [c.args[1]["offset"] for c in bucket.list.call_args_list]
         assert offsets == [0, 100, 100, 200]
+
+
+class TestFileExistsPagination:
+    """file_exists must look past the 100-item storage3 default."""
+
+    def test_finds_file_past_first_page(self):
+        """Folder with 150 entries, target at index 120 → returns True."""
+        entries = [_file_entry(f"file-{i:03d}.jpg") for i in range(150)]
+        # Target filename at index 120 (well past the 100-item default)
+        entries[120] = _file_entry("target.pdf")
+        bucket = MagicMock()
+        bucket.list = MagicMock(side_effect=[entries[:100], entries[100:]])
+        storage = _make_storage_with_bucket(bucket)
+
+        assert storage.file_exists("doc-id/attachments/target.pdf") is True
+        # Two calls proves we paginated past the first 100
+        assert bucket.list.call_count == 2
+        assert bucket.list.call_args_list[0].args[1] == {"limit": 100, "offset": 0}
+        assert bucket.list.call_args_list[1].args[1] == {"limit": 100, "offset": 100}
+
+    def test_returns_false_when_not_present_even_with_pagination(self):
+        entries = [_file_entry(f"file-{i:03d}.jpg") for i in range(150)]
+        bucket = MagicMock()
+        bucket.list = MagicMock(side_effect=[entries[:100], entries[100:]])
+        storage = _make_storage_with_bucket(bucket)
+
+        assert storage.file_exists("doc-id/attachments/missing.pdf") is False
+        assert bucket.list.call_count == 2
+
+    def test_url_encoded_filename_is_decoded_before_compare(self):
+        """unquote() behavior must be preserved after migration."""
+        entries = [_file_entry(f"pad-{i:03d}.jpg") for i in range(150)]
+        entries[125] = _file_entry("my file.pdf")  # decoded form stored
+        bucket = MagicMock()
+        bucket.list = MagicMock(side_effect=[entries[:100], entries[100:]])
+        storage = _make_storage_with_bucket(bucket)
+
+        # Encoded form in the lookup path
+        assert storage.file_exists("doc-id/attachments/my%20file.pdf") is True
+
+
+class TestDeleteFolderPagination:
+    """delete_folder must paginate both root and attachments subfolders."""
+
+    def test_removes_all_paths_across_both_subfolders(self):
+        """Root with 150 + attachments with 120 → 270 paths passed to remove."""
+        root_entries = [_file_entry(f"root-{i:03d}.md") for i in range(150)]
+        att_entries = [_file_entry(f"att-{i:03d}.pdf") for i in range(120)]
+
+        bucket = MagicMock()
+        # list_folder paginates: root needs 2 calls, attachments needs 2 calls
+        bucket.list = MagicMock(side_effect=[
+            root_entries[:100],   # root page 1
+            root_entries[100:],   # root page 2 (50 entries → stop)
+            att_entries[:100],    # attachments page 1
+            att_entries[100:],    # attachments page 2 (20 entries → stop)
+        ])
+        bucket.remove = MagicMock()
+        storage = _make_storage_with_bucket(bucket)
+
+        storage.delete_folder("doc-id")
+
+        # Four list calls total (2 per subfolder)
+        assert bucket.list.call_count == 4
+        # Single remove call with all 270 paths
+        assert bucket.remove.call_count == 1
+        removed_paths = bucket.remove.call_args.args[0]
+        assert len(removed_paths) == 270
+        # Spot-check both subfolders represented
+        assert "doc-id/root-000.md" in removed_paths
+        assert "doc-id/root-149.md" in removed_paths
+        assert "doc-id/attachments/att-000.pdf" in removed_paths
+        assert "doc-id/attachments/att-119.pdf" in removed_paths
+
+    def test_preserve_md_flag_survives_migration(self):
+        """preserve_md=True should still exclude .md files after migration."""
+        root_entries = [
+            _file_entry("email.eml"),
+            _file_entry("email.eml.md"),
+            _file_entry("metadata.json"),
+        ]
+        att_entries = [
+            _file_entry("report.pdf"),
+            _file_entry("report.pdf.md"),
+        ]
+
+        bucket = MagicMock()
+        bucket.list = MagicMock(side_effect=[root_entries, att_entries])
+        bucket.remove = MagicMock()
+        storage = _make_storage_with_bucket(bucket)
+
+        storage.delete_folder("doc-id", preserve_md=True)
+
+        removed_paths = bucket.remove.call_args.args[0]
+        assert "doc-id/email.eml" in removed_paths
+        assert "doc-id/metadata.json" in removed_paths
+        assert "doc-id/attachments/report.pdf" in removed_paths
+        # .md entries preserved
+        assert "doc-id/email.eml.md" not in removed_paths
+        assert "doc-id/attachments/report.pdf.md" not in removed_paths
+
+
+class TestListFilesPagination:
+    """list_files must paginate both root and attachments subfolders."""
+
+    def test_returns_all_entries_across_both_subfolders(self):
+        """Root with 130 + attachments with 110 → 240 entries returned."""
+        root_entries = [_file_entry(f"root-{i:03d}.md") for i in range(130)]
+        att_entries = [_file_entry(f"att-{i:03d}.pdf") for i in range(110)]
+
+        bucket = MagicMock()
+        bucket.list = MagicMock(side_effect=[
+            root_entries[:100],   # root page 1
+            root_entries[100:],   # root page 2 (30 entries → stop)
+            att_entries[:100],    # attachments page 1
+            att_entries[100:],    # attachments page 2 (10 entries → stop)
+        ])
+        storage = _make_storage_with_bucket(bucket)
+
+        result = storage.list_files("doc-id")
+
+        assert len(result) == 240
+        names = {f["name"] for f in result}
+        assert "root-000.md" in names
+        assert "root-129.md" in names
+        assert "att-000.pdf" in names
+        assert "att-109.pdf" in names
+        # Four calls prove both subfolders paginated
+        assert bucket.list.call_count == 4
