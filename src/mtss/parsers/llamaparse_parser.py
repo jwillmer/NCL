@@ -6,9 +6,13 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..config import get_settings
 from .base import BaseParser
+
+if TYPE_CHECKING:
+    from llama_cloud import AsyncLlamaCloud
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +62,7 @@ def strip_llamaparse_image_refs(text: str) -> str:
 
 # Module-level semaphore to limit concurrent LlamaParse API calls
 _llamaparse_semaphore: asyncio.Semaphore | None = None
+_llamaparse_client: "AsyncLlamaCloud | None" = None
 
 
 def _get_llamaparse_semaphore() -> asyncio.Semaphore:
@@ -67,6 +72,17 @@ def _get_llamaparse_semaphore() -> asyncio.Semaphore:
         settings = get_settings()
         _llamaparse_semaphore = asyncio.Semaphore(settings.max_concurrent_llamaparse)
     return _llamaparse_semaphore
+
+
+def _get_llamaparse_client() -> "AsyncLlamaCloud":
+    """Get or create the cached AsyncLlamaCloud HTTP client."""
+    global _llamaparse_client
+    if _llamaparse_client is None:
+        from llama_cloud import AsyncLlamaCloud
+
+        settings = get_settings()
+        _llamaparse_client = AsyncLlamaCloud(api_key=settings.llama_cloud_api_key)
+    return _llamaparse_client
 
 
 class LlamaParseParser(BaseParser):
@@ -143,41 +159,34 @@ class LlamaParseParser(BaseParser):
         if not self.is_available:
             raise ValueError("LlamaParse is not enabled (LLAMA_CLOUD_API_KEY not set)")
 
-        from llama_cloud_services import LlamaParse
-
-        # Hardcoded configuration as per plan.
-        # inline_images_in_markdown=False: suppress `![alt](page_N_image_N.jpg)` refs
-        # in the markdown output. Combined with specialized_image_parsing=True, image
-        # content (charts, scanned text, diagrams) is transcribed inline as text instead
-        # of left as a dangling tag. Avoids the need to strip refs downstream.
-        parser = LlamaParse(
-            api_key=self.settings.llama_cloud_api_key,
-            tier="cost_effective",
-            version="latest",
-            high_res_ocr=True,
-            adaptive_long_table=True,
-            outlined_table_extraction=True,
-            output_tables_as_HTML=True,
-            precise_bounding_box=True,
-            auto_mode_configuration_json='[{"trigger_mode":"or","table_in_page":true,"layout_element_in_page":"chart","full_page_image_in_page":true,"parsing_conf":{"tier":"agentic","version":"latest"}}]',
-            max_pages=0,  # No limit
-            specialized_image_parsing=True,
-            inline_images_in_markdown=False,
-        )
-
+        client = _get_llamaparse_client()
         sem = _get_llamaparse_semaphore()
+
         async with sem:
             try:
                 logger.info(f"Parsing {file_path.name} with LlamaParse...")
-                result = await parser.aparse(str(file_path))
 
-                # Get markdown (combined, not split by page)
-                markdown_docs = result.get_markdown_documents(split_by_page=False)
-                markdown_text = "\n\n".join(doc.text for doc in markdown_docs)
+                # tier="agentic" + cost_optimizer routes simple pages to cost_effective
+                # automatically; complex pages get true agentic processing. Cheaper than
+                # blanket agentic, smarter than blanket cost_effective + auto_mode.
+                # output_options.markdown.inline_images=False keeps image refs out of
+                # the markdown stream; agentic tier inlines image transcriptions on its
+                # own.
+                result = await client.parsing.parse(
+                    upload_file=str(file_path),
+                    tier="agentic",
+                    version="latest",
+                    cost_optimizer={"enable": True},
+                    expand=["markdown"],
+                    output_options={
+                        "markdown": {"inline_images": False},
+                        "images_to_save": [],
+                    },
+                )
 
-                # Strip LlamaParse image refs (images not downloaded locally).
-                # Preserve alt-text for semantic content: <img src="..." alt="sketch"> → sketch
-                # and ![alt](page_N_image_N.jpg) → alt
+                pages = getattr(result.markdown, "pages", None) or []
+                markdown_text = "\n\n".join(p.markdown for p in pages if p.markdown)
+
                 markdown_text = strip_llamaparse_image_refs(markdown_text)
 
                 if not markdown_text or not markdown_text.strip():
@@ -191,12 +200,11 @@ class LlamaParseParser(BaseParser):
                 )
                 return markdown_text
 
-            except Exception as e:
-                if "LlamaParse" in str(type(e).__name__):
-                    # Strip noisy "Started parsing the file under job_id ..." lines
-                    msg = "\n".join(
-                        ln for ln in str(e).splitlines()
-                        if not ln.startswith("Started parsing the file")
-                    ).strip()
-                    raise ValueError(f"LlamaParse failed: {msg}") from e
+            except (FileNotFoundError, ValueError):
                 raise
+            except Exception as e:
+                msg = "\n".join(
+                    ln for ln in str(e).splitlines()
+                    if not ln.startswith("Started parsing the file")
+                ).strip() or type(e).__name__
+                raise ValueError(f"LlamaParse failed: {msg}") from e
