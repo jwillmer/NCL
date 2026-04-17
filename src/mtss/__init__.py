@@ -1,9 +1,12 @@
 ﻿"""MTSS - RAG pipeline for email processing with attachments."""
 
+import logging
 import os
 from functools import lru_cache
 
 __version__ = "0.1.0"
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -35,6 +38,6 @@ def init() -> None:
 # Initialize API keys when module is imported
 try:
     _init_api_keys()
-except Exception:
+except Exception as e:
     # Config may not be available yet (e.g., during testing without .env)
-    pass
+    logger.debug("API key init deferred: %s", e)
