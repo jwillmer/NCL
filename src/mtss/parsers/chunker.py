@@ -406,10 +406,22 @@ class DocumentChunker:
         char_start = full_text.find(chunk_content, search_start)
 
         if char_start == -1:
-            # If not found from search_start, try from beginning (handles edge cases)
-            char_start = full_text.find(chunk_content)
-            if char_start == -1:
-                logger.debug("Could not locate chunk in original text")
+            # Not found forward of ``search_start``. Previously we blindly fell
+            # back to searching from position 0, which on repeated content
+            # (headers, footers, recurring table rows) matched an earlier
+            # occurrence and produced a deterministic-but-wrong chunk_id.
+            # Only accept the rewind when the chunk is UNIQUE in the text —
+            # otherwise we can't tell which occurrence this chunk refers to,
+            # so return None and let the caller use the chunk_index fallback
+            # in ``enrich_chunks_with_document_metadata``.
+            occurrences = full_text.count(chunk_content)
+            if occurrences == 1:
+                char_start = full_text.find(chunk_content)
+            else:
+                logger.debug(
+                    "Could not uniquely locate chunk in original text (%d occurrences)",
+                    occurrences,
+                )
                 return None, None, None, None
 
         char_end = char_start + len(chunk_content)

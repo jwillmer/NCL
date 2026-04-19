@@ -109,6 +109,44 @@ class TestDocumentChunker:
         assert token_count > 0
         assert token_count < 100  # Short text should have few tokens
 
+    def test_find_chunk_position_rejects_ambiguous_fallback(self, chunker):
+        """When ``find(chunk, search_start)`` misses and the chunk appears
+        multiple times earlier in the text, ``_find_chunk_position`` must
+        return None rather than blindly matching the first occurrence.
+        Prior behaviour silently produced a wrong char_start/char_end and a
+        deterministic-but-wrong chunk_id on repeated headers/footers.
+        """
+        full_text = (
+            "Results section\nrow A\n\n"
+            "Results section\nrow B\n\n"
+            "Tail content unrelated\n"
+        )
+        line_starts = chunker._compute_line_starts(full_text)
+        # "Results section" appears twice; find-from-search_start past both
+        # occurrences misses. Ambiguous rewind must be rejected.
+        char_start, char_end, line_from, line_to = chunker._find_chunk_position(
+            full_text, "Results section", search_start=len(full_text), line_starts=line_starts,
+        )
+        assert char_start is None
+        assert char_end is None
+        assert line_from is None
+        assert line_to is None
+
+    def test_find_chunk_position_unique_fallback_accepted(self, chunker):
+        """Unique-in-text content should still be located by the rewind
+        fallback — that path is safe because there is no ambiguity."""
+        full_text = "Preface\n\nUnique paragraph body.\n\nTail."
+        line_starts = chunker._compute_line_starts(full_text)
+        # Search from past the end — forces the fallback to run.
+        char_start, char_end, line_from, line_to = chunker._find_chunk_position(
+            full_text, "Unique paragraph body.",
+            search_start=len(full_text), line_starts=line_starts,
+        )
+        assert char_start is not None
+        assert char_end == char_start + len("Unique paragraph body.")
+        assert line_from is not None
+        assert line_to is not None
+
 
 class TestContextGenerator:
     """Tests for ContextGenerator class."""
