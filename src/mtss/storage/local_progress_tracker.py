@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .._io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,12 +43,17 @@ class LocalProgressTracker:
             os.fsync(f.fileno())
 
     def compact(self):
-        """Rewrite processing_log.jsonl with one entry per file (removes duplicates)."""
-        with open(self._log_file, "w", encoding="utf-8") as f:
-            for entry in self._entries.values():
-                f.write(json.dumps(entry, default=str) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        """Rewrite processing_log.jsonl with one entry per file (removes duplicates).
+
+        Uses ``atomic_write_text`` so a crash mid-compact cannot wipe the log —
+        the prior ``open(path, "w")`` truncated the canonical file before the
+        rewrite, losing all progress on any interrupted run.
+        """
+        lines = [
+            json.dumps(entry, default=str) + "\n"
+            for entry in self._entries.values()
+        ]
+        atomic_write_text(self._log_file, "".join(lines))
 
     def compute_file_hash(self, file_path: Path) -> str:
         """Compute SHA-256 hash of file content."""

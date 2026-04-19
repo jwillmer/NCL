@@ -681,6 +681,42 @@ class TestMarkFailedCommand:
         with pytest.raises(_typer.Exit):
             await _mark_failed([_Path("x.eml")], tmp_path / "nope", "reason")
 
+    def test_compact_is_atomic_on_crash(self, tmp_path, monkeypatch):
+        """A crash during compact() must leave the original log intact — the
+        prior ``open(path, "w")`` truncated before rewriting, wiping all
+        progress on any interrupted run.
+        """
+        import json as _json
+
+        from mtss.storage.local_progress_tracker import LocalProgressTracker
+
+        output = tmp_path / "output"
+        output.mkdir()
+        log = output / "processing_log.jsonl"
+        log.write_text(
+            _json.dumps({"file_path": "/a.eml", "file_hash": "a", "status": "COMPLETED"})
+            + "\n",
+            encoding="utf-8",
+        )
+
+        tracker = LocalProgressTracker(output)
+
+        # Simulate crash during atomic_write_text — os.replace raises.
+        def boom(*args, **kwargs):
+            raise OSError("disk pulled mid-rewrite")
+
+        monkeypatch.setattr(
+            "mtss.storage.local_progress_tracker.atomic_write_text", boom
+        )
+
+        with pytest.raises(OSError):
+            tracker.compact()
+
+        # Original log must be intact; no truncation occurred.
+        remaining = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(remaining) == 1
+        assert _json.loads(remaining[0])["file_path"] == "/a.eml"
+
 
 class TestCleanArchiveMdCommand:
     """`MTSS clean-archive-md` strips stale LlamaParse image refs from archived .md files."""
