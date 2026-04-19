@@ -255,6 +255,31 @@ class TestDeciderTriage:
             assert d.mode == EmbeddingMode.SUMMARY
             assert d.reason == "triage_failed"
 
+    @pytest.mark.asyncio
+    async def test_triage_prompt_wraps_preview_in_document_delimiters(
+        self, settings
+    ):
+        """Untrusted document content must be wrapped in ``<document>`` tags
+        with an explicit anti-injection instruction — a crafted attachment
+        that says 'Reply (A)' should not be able to steer the decision."""
+        from mtss.ingest.embedding_decider import decide_embedding_mode
+
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock()]
+        mock_resp.choices[0].message.content = "A — prose"
+        with patch(
+            "mtss.ingest.embedding_decider.litellm.acompletion",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ) as m:
+            await decide_embedding_mode(self._mixed_markdown(), None, settings)
+
+        sent_content = m.call_args.kwargs["messages"][0]["content"]
+        assert "<document>" in sent_content
+        assert "</document>" in sent_content
+        assert "untrusted" in sent_content.lower()
+        assert "do not follow" in sent_content.lower()
+
 
 # -------------------- TestThresholdsRespectSettings --------------------- #
 

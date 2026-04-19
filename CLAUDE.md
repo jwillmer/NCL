@@ -67,8 +67,10 @@ Each attachment is classified at ingest time into one of three modes — stamped
 Decision tree (deterministic rules first; LLM triage *always* runs on the medium-confidence band — not flag-gated):
 1. <50 tokens, *or* `prose_ratio < 0.15 && heading_count == 0` → `metadata_only`
 2. `>20K tokens` *and* (`digit_ratio > 0.40` *or* `table_char_pct > 0.50` *or* `repetition_score > 0.92` *or* `short_line_ratio > 0.95`) → `summary`
-3. `>50K tokens && prose_ratio < 0.50` → LLM triage (A/B/C → full/summary/metadata_only); on failure → `summary`
+3. `>50K tokens && prose_ratio < 0.50` → LLM triage (A/B/C → full/summary/metadata_only); on LLM failure or unparseable response → `summary` with `confidence=0.3`
 4. Default → `full`
+
+LLM triage runs on the first 2000 chars of the markdown (hardcoded in `embedding_decider.py`). The preview is wrapped in `<document>…</document>` tags with an explicit anti-injection preamble; the response parser consumes only the first letter, so a crafted attachment cannot steer the classification by embedding instructions in its content.
 
 The `repetition_score` and `short_line_ratio` thresholds were tuned 2026-04-19 from real-corpus dry-run data — earlier values (0.60 / 0.70) demoted real prose reports whose section headers/footers repeated across pages. Sensor logs (the intended target) are caught by `digit_ratio` and `table_char_pct`, not by repetition.
 
