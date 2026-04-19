@@ -68,6 +68,30 @@ class MigrationResult:
     skipped_target_exists: list[str] = field(default_factory=list)
 
 
+@dataclass
+class InnerRewriteResult:
+    """Stats from the per-folder metadata.json URI rewrite pass.
+
+    Runs separately from the folder-rename pass so it also catches folders
+    that were already renamed by an earlier run (the rename pass records
+    zero plans on a re-run, but the inner URIs can still be stale).
+    """
+
+    folders_touched: int = 0
+    folders_skipped_malformed: int = 0
+    total_refs_rewritten: int = 0
+    samples: list[tuple[str, str, str]] = field(default_factory=list)  # (folder, old_prefix, new_prefix)
+
+
+@dataclass
+class MarkdownRewriteResult:
+    """Stats from rewriting stale ``](doc_id/...`` links inside archive *.md."""
+
+    folders_touched: int = 0
+    files_touched: int = 0
+    total_links_rewritten: int = 0
+
+
 def _iter_jsonl(path: Path) -> Iterator[dict]:
     if not path.exists():
         return
@@ -258,8 +282,176 @@ def _update_metadata_json(archive_dir: Path, plan: FolderPlan) -> None:
     metadata_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _rewrite_prefix_str(value: object, old_prefix: str, new_prefix: str) -> tuple[object, bool]:
+    """If ``value`` is a string starting with ``<old_prefix>/`` or equals
+    ``<old_prefix>``, return the rewritten version + True. Else untouched + False."""
+    if not isinstance(value, str):
+        return value, False
+    if value.startswith(f"{old_prefix}/"):
+        return f"{new_prefix}/" + value[len(old_prefix) + 1:], True
+    if value == old_prefix:
+        return new_prefix, True
+    return value, False
+
+
+def _rewrite_metadata_inner_uris(data: dict, old_prefix: str, new_prefix: str) -> int:
+    """Rewrite every ``<old_prefix>/...`` reference inside ``data`` to use
+    ``<new_prefix>/...`` . Mutates ``data`` in place. Returns ref count changed.
+
+    Rewrites:
+      - ``email_browse_uri``, ``email_download_uri``
+      - ``attachments`` keys (rebuilt)
+      - ``attachments[*].download_uri``, ``attachments[*].browse_uri``
+    """
+    changed = 0
+    for field_name in ("email_browse_uri", "email_download_uri"):
+        new_value, was_changed = _rewrite_prefix_str(data.get(field_name), old_prefix, new_prefix)
+        if was_changed:
+            data[field_name] = new_value
+            changed += 1
+
+    attachments = data.get("attachments")
+    if isinstance(attachments, dict) and attachments:
+        new_attachments: dict = {}
+        for key, att in attachments.items():
+            new_key, key_changed = _rewrite_prefix_str(key, old_prefix, new_prefix)
+            if key_changed:
+                changed += 1
+            if isinstance(att, dict):
+                new_att = dict(att)
+                for uri_field in ("download_uri", "browse_uri"):
+                    new_value, was_changed = _rewrite_prefix_str(new_att.get(uri_field), old_prefix, new_prefix)
+                    if was_changed:
+                        new_att[uri_field] = new_value
+                        changed += 1
+                new_attachments[new_key] = new_att
+            else:
+                new_attachments[new_key] = att
+        data["attachments"] = new_attachments
+
+    return changed
+
+
+def _rewrite_folder_markdown_links(
+    folder: Path, doc_id: str, folder_name: str, apply: bool
+) -> tuple[int, int]:
+    """Replace ``](<doc_id>/`` with ``](<folder_name>/`` across every *.md
+    file under ``folder``. Returns (files_touched, total_links_rewritten).
+
+    Scoped to the markdown link-target prefix (``](``) so plain-text
+    occurrences of the doc_id are left alone.
+    """
+    old_token = f"]({doc_id}/"
+    new_token = f"]({folder_name}/"
+    files_touched = 0
+    total = 0
+    for md in folder.rglob("*.md"):
+        try:
+            content = md.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning("Failed to read %s: %s", md, exc)
+            continue
+        count = content.count(old_token)
+        if count == 0:
+            continue
+        files_touched += 1
+        total += count
+        if apply:
+            md.write_text(content.replace(old_token, new_token), encoding="utf-8")
+    return files_touched, total
+
+
+def rewrite_all_markdown_links(output_dir: Path, apply: bool) -> MarkdownRewriteResult:
+    """Third pass: rewrite stale ``](<doc_id>/...`` links inside every
+    folder's markdown files. Safe to re-run."""
+    archive_dir = output_dir / "archive"
+    result = MarkdownRewriteResult()
+    if not archive_dir.exists():
+        return result
+
+    for folder in sorted(archive_dir.iterdir()):
+        if not folder.is_dir():
+            continue
+        metadata_path = folder / "metadata.json"
+        if not metadata_path.exists():
+            continue
+        try:
+            data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        doc_id = data.get("doc_id")
+        folder_name = folder.name
+        if not isinstance(doc_id, str) or not doc_id or doc_id == folder_name:
+            continue
+
+        files_touched, links = _rewrite_folder_markdown_links(
+            folder, doc_id, folder_name, apply=apply
+        )
+        if links:
+            result.folders_touched += 1
+            result.files_touched += files_touched
+            result.total_links_rewritten += links
+    return result
+
+
+def rewrite_all_inner_metadata_uris(output_dir: Path, apply: bool) -> InnerRewriteResult:
+    """Second pass: rewrite stale ``<doc_id>/...`` URIs inside every folder's
+    ``metadata.json`` to use the folder's actual name.
+
+    Runs independently of the folder-rename pass. Safe to re-run — folders
+    whose inner URIs already match the folder name are skipped.
+    """
+    archive_dir = output_dir / "archive"
+    result = InnerRewriteResult()
+    if not archive_dir.exists():
+        return result
+
+    for folder in sorted(archive_dir.iterdir()):
+        if not folder.is_dir():
+            continue
+        metadata_path = folder / "metadata.json"
+        if not metadata_path.exists():
+            continue
+        try:
+            data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            result.folders_skipped_malformed += 1
+            logger.warning("Malformed metadata.json at %s — skipping", metadata_path)
+            continue
+        doc_id = data.get("doc_id")
+        folder_name = folder.name
+        if not isinstance(doc_id, str) or not doc_id:
+            continue
+        if doc_id == folder_name:
+            # Legacy layout where folder_id == doc_id; no rewrite needed.
+            continue
+
+        refs_changed = _rewrite_metadata_inner_uris(data, doc_id, folder_name)
+        # Top-level folder_id should always match on-disk folder name.
+        if data.get("folder_id") != folder_name:
+            data["folder_id"] = folder_name
+            refs_changed += 1
+
+        if refs_changed:
+            result.folders_touched += 1
+            result.total_refs_rewritten += refs_changed
+            if len(result.samples) < 3:
+                result.samples.append((folder_name, doc_id, folder_name))
+            if apply:
+                metadata_path.write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+
+    return result
+
+
 def apply_migration(output_dir: Path, result: MigrationResult) -> None:
-    """Apply rename + URI rewrite. Call plan_migration first."""
+    """Apply rename + URI rewrite. Call plan_migration first.
+
+    The per-folder metadata.json inner-URI pass is invoked separately via
+    ``rewrite_all_inner_metadata_uris`` so it also heals folders that were
+    renamed by a previous partial run.
+    """
     archive_dir = output_dir / "archive"
     # Rename folders first — then rewrite JSONL, so a crash mid-way leaves
     # pointers to non-existent folders (visible in validate) rather than
@@ -280,7 +472,12 @@ def apply_migration(output_dir: Path, result: MigrationResult) -> None:
     _rewrite_jsonl(output_dir / "chunks.jsonl", result.plans)
 
 
-def _print_report(result: MigrationResult, apply: bool) -> None:
+def _print_report(
+    result: MigrationResult,
+    inner: InnerRewriteResult,
+    md_rewrite: MarkdownRewriteResult,
+    apply: bool,
+) -> None:
     total_doc = sum(p.doc_rewrites for p in result.plans)
     total_chunk = sum(p.chunk_rewrites for p in result.plans)
     mode = "APPLY" if apply else "DRY-RUN"
@@ -309,6 +506,17 @@ def _print_report(result: MigrationResult, apply: bool) -> None:
                 f"    {plan.old_folder} -> {plan.new_folder}  "
                 f"(doc={plan.doc_rewrites}, chunk={plan.chunk_rewrites})"
             )
+
+    print("\n  per-folder metadata.json inner-URI pass:")
+    print(f"    folders to rewrite: {inner.folders_touched}")
+    print(f"    total stale refs rewritten: {inner.total_refs_rewritten}")
+    if inner.folders_skipped_malformed:
+        print(f"    malformed (skipped): {inner.folders_skipped_malformed}")
+
+    print("\n  markdown link-target pass (*.md inside archive/):")
+    print(f"    folders to rewrite: {md_rewrite.folders_touched}")
+    print(f"    files to rewrite: {md_rewrite.files_touched}")
+    print(f"    total link rewrites: {md_rewrite.total_links_rewritten}")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -340,14 +548,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     result = plan_migration(output_dir)
-    _print_report(result, apply=args.apply)
+    if args.apply and result.plans:
+        apply_migration(output_dir, result)
+    # Always run the inner-URI + markdown-link passes — they also heal
+    # folders renamed by a previous run. In dry-run mode they only count.
+    inner = rewrite_all_inner_metadata_uris(output_dir, apply=args.apply)
+    md_rewrite = rewrite_all_markdown_links(output_dir, apply=args.apply)
+    _print_report(result, inner, md_rewrite, apply=args.apply)
     if not args.apply:
         print("\n  (dry-run) re-run with --apply to execute.")
         return 0
-    if not result.plans:
+    if (
+        not result.plans
+        and inner.folders_touched == 0
+        and md_rewrite.folders_touched == 0
+    ):
         print("\n  nothing to apply.")
         return 0
-    apply_migration(output_dir, result)
     print("\n  migration applied.")
     return 0
 

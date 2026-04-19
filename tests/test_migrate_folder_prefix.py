@@ -17,9 +17,13 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from migrate_folder_prefix import (  # noqa: E402
     FolderPlan,
+    _rewrite_folder_markdown_links,
+    _rewrite_metadata_inner_uris,
     _rewrite_uri,
     apply_migration,
     plan_migration,
+    rewrite_all_inner_metadata_uris,
+    rewrite_all_markdown_links,
 )
 from mtss.utils import compute_folder_id  # noqa: E402
 
@@ -210,6 +214,148 @@ def test_plan_skips_when_target_already_exists(tmp_path):
     result = plan_migration(output)
     assert result.plans == []
     assert old_folder in result.skipped_target_exists
+
+
+def test_rewrite_metadata_inner_uris_email_and_attachments():
+    """Inner rewrite touches email_*_uri, attachment keys, and their URIs."""
+    old = "aaaaaaaaaaaaaaaa"
+    new = "bb" * 16
+    data = {
+        "doc_id": old,
+        "folder_id": old,
+        "email_browse_uri": f"{old}/email.eml.md",
+        "email_download_uri": f"{old}/email.eml",
+        "attachments": {
+            f"{old}/attachments/image001.jpg": {
+                "download_uri": f"{old}/attachments/image001.jpg",
+                "browse_uri": None,
+            },
+            f"{old}/attachments/report.pdf": {
+                "download_uri": f"{old}/attachments/report.pdf",
+                "browse_uri": f"{old}/attachments/report.pdf.md",
+            },
+        },
+    }
+    changed = _rewrite_metadata_inner_uris(data, old, new)
+    assert changed == 7  # 2 top-level + 2 att keys + 3 att-uri values
+    assert data["email_browse_uri"] == f"{new}/email.eml.md"
+    assert data["email_download_uri"] == f"{new}/email.eml"
+    assert f"{new}/attachments/image001.jpg" in data["attachments"]
+    assert f"{new}/attachments/report.pdf" in data["attachments"]
+    assert data["attachments"][f"{new}/attachments/report.pdf"]["browse_uri"] == (
+        f"{new}/attachments/report.pdf.md"
+    )
+    # doc_id is left alone (that's a content-addressable id, not a path).
+    assert data["doc_id"] == old
+
+
+def test_rewrite_all_inner_metadata_uris_scans_already_renamed_folders(tmp_path):
+    """The inner pass must heal folders that were already renamed but still
+    contain stale inner URIs (previous partial migration)."""
+    output = tmp_path / "output"
+    archive = output / "archive"
+
+    doc_id = "1234567890abcdef"  # 16-char doc_id (matches compute_doc_id length)
+    folder_name = compute_folder_id(doc_id)
+    folder = archive / folder_name
+    folder.mkdir(parents=True)
+
+    stale_metadata = {
+        "doc_id": doc_id,
+        "folder_id": folder_name,  # outer already correct
+        "email_browse_uri": f"{doc_id}/email.eml.md",  # INNER stale
+        "email_download_uri": f"{doc_id}/email.eml",
+        "attachments": {},
+    }
+    (folder / "metadata.json").write_text(
+        json.dumps(stale_metadata, indent=2), encoding="utf-8"
+    )
+
+    # Dry-run should count but not write.
+    inner_dry = rewrite_all_inner_metadata_uris(output, apply=False)
+    assert inner_dry.folders_touched == 1
+    assert inner_dry.total_refs_rewritten == 2
+    reread = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+    assert reread["email_browse_uri"] == f"{doc_id}/email.eml.md"  # unchanged
+
+    # Apply should rewrite.
+    inner = rewrite_all_inner_metadata_uris(output, apply=True)
+    assert inner.folders_touched == 1
+    assert inner.total_refs_rewritten == 2
+    reread = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+    assert reread["email_browse_uri"] == f"{folder_name}/email.eml.md"
+
+    # Re-run is a no-op.
+    inner2 = rewrite_all_inner_metadata_uris(output, apply=True)
+    assert inner2.folders_touched == 0
+
+
+def test_rewrite_folder_markdown_links_replaces_only_link_targets(tmp_path):
+    """Rewrites `](doc_id/...` but leaves plain-text doc_id mentions alone."""
+    folder = tmp_path / "folderX"
+    (folder / "attachments").mkdir(parents=True)
+    doc_id = "1234567890abcdef"
+    new_folder_name = "deadbeef" * 4
+
+    email_md = folder / "email.eml.md"
+    email_md.write_text(
+        f"# Email\n"
+        f"doc_id mentioned in prose: {doc_id} (no rewrite)\n\n"
+        f"- [Download]({doc_id}/email.eml)\n"
+        f"- [img1]({doc_id}/attachments/img1.jpg)\n"
+        f"- [View]({doc_id}/attachments/img1.jpg.md)\n",
+        encoding="utf-8",
+    )
+    att_md = folder / "attachments" / "img1.jpg.md"
+    att_md.write_text(
+        f"# img1\n[Original]({doc_id}/attachments/img1.jpg)\n", encoding="utf-8"
+    )
+
+    # Dry-run: count but don't write.
+    files, links = _rewrite_folder_markdown_links(folder, doc_id, new_folder_name, apply=False)
+    assert files == 2
+    assert links == 4
+    assert doc_id in email_md.read_text(encoding="utf-8")
+
+    # Apply.
+    files, links = _rewrite_folder_markdown_links(folder, doc_id, new_folder_name, apply=True)
+    assert files == 2
+    assert links == 4
+    new_email = email_md.read_text(encoding="utf-8")
+    assert f"]({new_folder_name}/email.eml)" in new_email
+    assert f"]({new_folder_name}/attachments/img1.jpg)" in new_email
+    assert f"]({doc_id}/" not in new_email
+    # Prose mention untouched.
+    assert f"doc_id mentioned in prose: {doc_id}" in new_email
+
+    # Re-run is a no-op.
+    files2, links2 = _rewrite_folder_markdown_links(folder, doc_id, new_folder_name, apply=True)
+    assert files2 == 0 and links2 == 0
+
+
+def test_rewrite_all_markdown_links_walks_archive(tmp_path):
+    output = tmp_path / "output"
+    archive = output / "archive"
+    doc_id = "1111222233334444"
+    new_name = compute_folder_id(doc_id)
+    folder = archive / new_name
+    folder.mkdir(parents=True)
+    (folder / "metadata.json").write_text(
+        json.dumps({"doc_id": doc_id, "folder_id": new_name}), encoding="utf-8"
+    )
+    (folder / "email.eml.md").write_text(
+        f"[x]({doc_id}/email.eml)\n[y]({doc_id}/attachments/a.pdf)\n",
+        encoding="utf-8",
+    )
+
+    dry = rewrite_all_markdown_links(output, apply=False)
+    assert dry.folders_touched == 1
+    assert dry.files_touched == 1
+    assert dry.total_links_rewritten == 2
+
+    live = rewrite_all_markdown_links(output, apply=True)
+    assert live.total_links_rewritten == 2
+    assert doc_id not in (folder / "email.eml.md").read_text(encoding="utf-8")
 
 
 def test_compute_folder_id_is_deterministic():
