@@ -62,10 +62,10 @@ async def reembed_run(
     from ..parsers.chunker import ContextGenerator, DocumentChunker, build_chunks_for_mode
     from ..parsers.llamaparse_parser import strip_llamaparse_image_refs
     from ..processing.embeddings import EmbeddingGenerator
-    from ..storage.archive_storage import ArchiveStorage
 
     docs_path = output_dir / "documents.jsonl"
     chunks_path = output_dir / "chunks.jsonl"
+    archive_root = output_dir / "archive"
     if not docs_path.exists():
         raise FileNotFoundError(f"documents.jsonl not found in {output_dir}")
 
@@ -101,7 +101,6 @@ async def reembed_run(
     if not candidates:
         return stats
 
-    storage = ArchiveStorage()
     chunker = DocumentChunker()
     context_generator = ContextGenerator()
     embed_gen = EmbeddingGenerator()
@@ -121,11 +120,17 @@ async def reembed_run(
             current_mode = row.get("embedding_mode")
             archive_uri = strip_archive_prefix(row["archive_browse_uri"])
 
+            local_path = archive_root / archive_uri
             try:
-                md_bytes = storage.download_file(archive_uri)
-                markdown = md_bytes.decode("utf-8") if isinstance(md_bytes, bytes) else md_bytes
-            except Exception as e:
-                logger.warning("Cannot load archive for %s: %s", row.get("doc_id"), e)
+                markdown = local_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                logger.warning(
+                    "Archive file missing for %s: %s", row.get("doc_id"), local_path
+                )
+                stats.docs_failed += 1
+                return
+            except OSError as e:
+                logger.warning("Cannot read archive for %s: %s", row.get("doc_id"), e)
                 stats.docs_failed += 1
                 return
 

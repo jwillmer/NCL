@@ -10,6 +10,16 @@ from uuid import uuid4
 import pytest
 
 
+PROSE_MD = (
+    "# Report\n\n"
+    + (
+        "This audit covers operational findings across the inspection "
+        "period. Recommendations are included. "
+    )
+    * 20
+)
+
+
 def _make_doc_row(
     doc_id: str,
     uuid_str: str,
@@ -51,6 +61,20 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+    # Re-embed reads each doc's markdown from output_dir/archive/<archive_uri>.
+    # Write the prose fixture there for every doc so the live path exercises the
+    # disk reader rather than being stubbed out.
+    output_dir = path.parent
+    archive_root = output_dir / "archive"
+    for r in rows:
+        uri = r.get("archive_browse_uri")
+        if not uri:
+            continue
+        rel = uri.removeprefix("/archive/")
+        dest = archive_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(PROSE_MD, encoding="utf-8")
+
 
 @pytest.fixture
 def output_dir(tmp_path):
@@ -61,22 +85,8 @@ def output_dir(tmp_path):
 
 @pytest.fixture
 def mocked_storage_and_llm(comprehensive_mock_settings):
-    """Patch archive storage to return a known markdown, and LLM/embeddings."""
-    prose_md = (
-        "# Report\n\n"
-        + (
-            "This audit covers operational findings across the inspection "
-            "period. Recommendations are included. "
-        )
-        * 20
-    )
-
-    def _download(path):
-        return prose_md.encode("utf-8")
-
-    storage_mock = MagicMock()
-    storage_mock.download_file = MagicMock(side_effect=_download)
-
+    """Patch the LLM + embedding components. Archive markdown is now written
+    to disk by _write_jsonl (re-embed reads local files directly)."""
     context_mock = MagicMock()
     context_mock.generate_context = AsyncMock(return_value="ctx summary")
     context_mock.build_embedding_text = MagicMock(
@@ -91,8 +101,6 @@ def mocked_storage_and_llm(comprehensive_mock_settings):
     embed_mock.embed_chunks = AsyncMock(side_effect=_embed)
 
     with patch(
-        "mtss.storage.archive_storage.ArchiveStorage", return_value=storage_mock
-    ), patch(
         "mtss.parsers.chunker.ContextGenerator", return_value=context_mock
     ), patch(
         "mtss.processing.embeddings.EmbeddingGenerator", return_value=embed_mock
@@ -101,10 +109,9 @@ def mocked_storage_and_llm(comprehensive_mock_settings):
         return_value=comprehensive_mock_settings,
     ):
         yield {
-            "storage": storage_mock,
             "context": context_mock,
             "embed": embed_mock,
-            "markdown": prose_md,
+            "markdown": PROSE_MD,
         }
 
 
