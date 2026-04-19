@@ -52,6 +52,7 @@ from mtss.ingest.archive_generator import (  # noqa: E402
     ArchiveGenerator,
     _sanitize_storage_key,
 )
+from mtss.utils import compute_folder_id  # noqa: E402
 
 logger = logging.getLogger("repair_zip_archives")
 
@@ -143,9 +144,10 @@ def _find_source_zip_on_disk(
     email_doc = docs_by_id.get(str(root_id))
     if not email_doc:
         return None
-    folder_id = (email_doc.get("doc_id") or "")[:16]
-    if not folder_id:
+    email_doc_id = email_doc.get("doc_id") or ""
+    if not email_doc_id:
         return None
+    folder_id = compute_folder_id(email_doc_id)
 
     target_basename = Path(doc.get("file_name") or "").name.lower()
     if not target_basename:
@@ -268,10 +270,11 @@ def build_candidates(
         if not root_doc:
             skipped_no_parent += 1
             continue
-        folder_id = (root_doc.get("doc_id") or "")[:16]
-        if not folder_id:
+        root_doc_id = root_doc.get("doc_id") or ""
+        if not root_doc_id:
             skipped_no_parent += 1
             continue
+        folder_id = compute_folder_id(root_doc_id)
         source_zip = _find_source_zip_on_disk(
             doc, docs_by_id, archive_dir, zip_namelist_cache
         )

@@ -46,6 +46,30 @@ def compute_doc_id(source_id: str, file_hash: str) -> str:
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
 
+# Archive folder name length. Doc_id is 16 hex chars; folder_id is derived
+# separately so orphan cleanup and URI rewrites operate in a distinct
+# keyspace from doc_id — harder to accidentally collide / misuse one for
+# the other, and lays groundwork for expanding doc_id entropy later.
+FOLDER_ID_LENGTH = 32
+
+
+def compute_folder_id(doc_id: str) -> str:
+    """Deterministic 32-char archive folder identifier derived from doc_id.
+
+    Previously the archive folder name was ``doc_id[:16]`` — identical to
+    the doc_id itself. Tools that conflated the two (orphan cleanup,
+    validate reports) could produce confusing output. Using a distinct
+    namespace makes the folder / doc_id relationship explicit.
+
+    Args:
+        doc_id: Document ID from ``compute_doc_id``.
+
+    Returns:
+        32-character hex string folder identifier.
+    """
+    return hashlib.sha256(f"folder:{doc_id}".encode()).hexdigest()[:FOLDER_ID_LENGTH]
+
+
 # Length of chunk IDs used for citations (hex characters)
 CHUNK_ID_LENGTH = 12
 

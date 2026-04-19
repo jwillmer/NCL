@@ -177,8 +177,8 @@ class TestArchiveGenerator:
             source_eml_path=eml_path,
         )
 
-        # Archive path should be the folder ID
-        assert len(result.archive_path) == 16  # doc_id[:16]
+        # Archive path should be the 32-char folder_id (compute_folder_id)
+        assert len(result.archive_path) == 32
 
         # Markdown path should be within archive folder
         assert result.markdown_path.startswith(result.archive_path)

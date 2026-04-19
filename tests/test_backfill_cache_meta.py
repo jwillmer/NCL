@@ -9,6 +9,14 @@ from pathlib import Path
 
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from mtss.utils import compute_folder_id  # noqa: E402
+
+_EMAIL_DOC_ID = "stable1234567890abc"
+_FOLDER_ID = compute_folder_id(_EMAIL_DOC_ID)
+
 
 @pytest.fixture
 def seeded_archive(tmp_path):
@@ -17,7 +25,7 @@ def seeded_archive(tmp_path):
     """
     output = tmp_path / "output"
     archive = output / "archive"
-    folder = archive / "stable1234567890"
+    folder = archive / _FOLDER_ID
     attachments = folder / "attachments"
     attachments.mkdir(parents=True)
 
@@ -47,14 +55,14 @@ def seeded_archive(tmp_path):
     docs = [
         {
             "id": "11111111-1111-1111-1111-111111111111",
-            "doc_id": "stable1234567890abc",
+            "doc_id": _EMAIL_DOC_ID,
             "document_type": "email",
             "file_name": "source.eml",
         },
         {
             "id": "22222222-2222-2222-2222-222222222222",
             "doc_id": "attdoc1234567890",
-            "parent_id": "stable1234567890abc",
+            "parent_id": _EMAIL_DOC_ID,
             "document_type": "attachment_pdf",
             "file_name": "report.pdf",
         },

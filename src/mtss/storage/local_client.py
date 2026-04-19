@@ -18,6 +18,7 @@ from uuid import UUID
 
 from .._io import atomic_write_text, fsync_append_line
 from ..models.serializers import chunk_to_dict, doc_to_dict, topic_to_dict
+from ..utils import compute_folder_id
 
 logger = logging.getLogger(__name__)
 
@@ -801,7 +802,7 @@ class LocalStorageClient:
                     try:
                         d = json.loads(line)
                         if d.get("document_type") == "email" and d.get("doc_id"):
-                            valid_folder_ids.add(d["doc_id"][:16])
+                            valid_folder_ids.add(compute_folder_id(d["doc_id"]))
                     except json.JSONDecodeError:
                         pass
             import shutil

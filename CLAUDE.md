@@ -13,7 +13,7 @@ Email RAG pipeline. Ingests `.eml` files (+ attachments: PDF, Office docs, image
 - `topics.jsonl` — extracted topics with chunk_count/document_count
 - `ingest_events.jsonl` — skip reasons, extraction failures, non-content classifications
 - `processing_log.jsonl` — per-file progress (PROCESSING / COMPLETED / FAILED)
-- `archive/<doc_id[:16]>/` — human-readable markdown snapshots + original attachments
+- `archive/<folder_id>/` — human-readable markdown snapshots + original attachments. `folder_id` is a 32-char hash from `compute_folder_id(doc_id)` in `src/mtss/utils.py` (distinct keyspace from `doc_id` so orphan-cleanup/URI tooling can't conflate them). Legacy archives used the 16-char `doc_id[:16]`; migrate in-place with `scripts/migrate_folder_prefix.py` (dry-run by default, `--apply` to execute).
 - `manifest.json` + `run_history.jsonl` — run metadata
 
 ## Ingest-side CLI (`src/mtss/cli/ingest_cmd.py`)

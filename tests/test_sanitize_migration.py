@@ -500,17 +500,19 @@ class TestValidateNewChecks:
     @pytest.mark.unit
     def test_folder_to_email_falls_back_to_doc_id_prefix(self):
         from mtss.cli.validate_cmd import build_folder_to_email_map
+        from mtss.utils import compute_folder_id
 
+        doc_id = "ccccddddeeeeffff9999"
         docs = [
             {
-                "doc_id": "ccccddddeeeeffff9999",
+                "doc_id": doc_id,
                 "depth": 0,
                 "archive_path": None,
                 "source_id": "legacy.eml",
             },
         ]
         mapping = build_folder_to_email_map(docs)
-        assert mapping == {"ccccddddeeeeffff": "legacy.eml"}
+        assert mapping == {compute_folder_id(doc_id): "legacy.eml"}
 
     # --- Docs without chunks: status=failed exclusion ---
 

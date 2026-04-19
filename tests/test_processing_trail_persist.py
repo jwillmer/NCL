@@ -10,6 +10,7 @@ import pytest
 from mtss.ingest.archive_generator import ArchiveGenerator
 from mtss.ingest.processing_trail import ProcessingTrail
 from mtss.storage.local_client import LocalBucketStorage
+from mtss.utils import compute_folder_id
 
 
 @pytest.fixture
@@ -20,7 +21,7 @@ def archive_setup(tmp_path: Path):
     storage = LocalBucketStorage(bucket_dir=archive_dir)
 
     doc_id = "abcdef1234567890" + "00" * 8
-    folder_id = doc_id[:16]
+    folder_id = compute_folder_id(doc_id)
     seed_metadata = {
         "doc_id": doc_id,
         "folder_id": folder_id,
@@ -97,7 +98,7 @@ def test_finalize_never_raises_on_bad_json(tmp_path: Path):
     archive_dir.mkdir()
     storage = LocalBucketStorage(bucket_dir=archive_dir)
     doc_id = "f" * 16 + "0" * 16
-    folder_id = doc_id[:16]
+    folder_id = compute_folder_id(doc_id)
 
     # Write malformed JSON
     storage.upload_text(f"{folder_id}/metadata.json", "{not valid json", "application/json")

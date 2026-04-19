@@ -56,6 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from mtss.ingest.archive_generator import _sanitize_storage_key  # noqa: E402
+from mtss.utils import compute_folder_id  # noqa: E402
 
 logger = logging.getLogger("backfill_cache_meta")
 
@@ -140,7 +141,7 @@ def _plan_sidecars(output_dir: Path) -> list[SidecarPlan]:
         folder_doc_id = parent_id if parent_id else doc_id
         if not folder_doc_id:
             continue
-        folder_id = folder_doc_id[:16]
+        folder_id = compute_folder_id(folder_doc_id)
         by_folder.setdefault(folder_id, []).append(doc)
 
     plans: list[SidecarPlan] = []

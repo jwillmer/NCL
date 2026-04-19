@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from ..models.document import EmailMessage, ParsedEmail
 from ..storage.archive_storage import ArchiveStorage
+from ..utils import compute_folder_id
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,7 @@ class ArchiveGenerator:
 
         source_id = normalize_source_id(str(source_eml_path), self.ingest_root)
         doc_id = compute_doc_id(source_id, file_hash)
-        folder_id = doc_id[:16]
+        folder_id = compute_folder_id(doc_id)
 
         # Delete existing folder to ensure clean re-ingest (removes stale attachments)
         # If preserve_md=True, keep .md files so cached parsed content can be reused
@@ -510,7 +511,7 @@ class ArchiveGenerator:
             )
             return None
 
-        folder_id = doc_id[:16]
+        folder_id = compute_folder_id(doc_id)
         safe_filename = _sanitize_storage_key(filename)
 
         # Verify original attachment exists (caller should have uploaded it)
@@ -560,10 +561,10 @@ class ArchiveGenerator:
         attachments now have .md files.
 
         Args:
-            doc_id: Document ID (truncated to 16 chars for folder).
+            doc_id: Document ID. Folder name derives from ``compute_folder_id``.
             parsed_email: Parsed email with metadata and messages.
         """
-        folder_id = doc_id[:16]
+        folder_id = compute_folder_id(doc_id)
 
         # Check if archive exists
         if not self.storage.file_exists(f"{folder_id}/email.eml"):
@@ -648,7 +649,7 @@ class ArchiveGenerator:
         archive generation failed earlier). Never raises — trail
         persistence must not break ingest.
         """
-        folder_id = doc_id[:16]
+        folder_id = compute_folder_id(doc_id)
         path = f"{folder_id}/metadata.json"
         try:
             if not self.storage.file_exists(path):
@@ -677,7 +678,7 @@ class ArchiveGenerator:
         Returns:
             Dict with browse_uri and download_uri, or None values if not found.
         """
-        folder_id = doc_id[:16]
+        folder_id = compute_folder_id(doc_id)
 
         if not self.storage.file_exists(f"{folder_id}/email.eml"):
             return {"browse_uri": None, "download_uri": None}

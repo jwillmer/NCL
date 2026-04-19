@@ -22,6 +22,7 @@ from ..ingest.helpers import (
     sanitize_error_message,
 )
 from ..models.document import ProcessingStatus
+from ..utils import compute_folder_id
 
 from .processing_trail import (
     STEP_CONTEXT,
@@ -558,7 +559,7 @@ async def _process_non_zip_attachment(
                 and email_doc.doc_id
                 and routed_parser_name  # Only for documents that use parsers
             ):
-                folder_id = email_doc.doc_id[:16]
+                folder_id = compute_folder_id(email_doc.doc_id)
                 safe_filename = _sanitize_storage_key(attachment.filename)
                 cached_md_path = f"{folder_id}/attachments/{safe_filename}.md"
                 cached_meta_path = f"{folder_id}/attachments/{safe_filename}.meta.json"
@@ -1000,7 +1001,7 @@ async def _process_zip_member(
         # uploads top-level attachments (the ZIP itself), so ZIP members
         # need their own upload here.
         if components.archive_generator and parsed_content and email_doc.doc_id:
-            folder_id = email_doc.doc_id[:16]
+            folder_id = compute_folder_id(email_doc.doc_id)
             safe_member_name = _sanitize_storage_key(extracted_path.name)
             original_archive_path = f"{folder_id}/attachments/{safe_member_name}"
             try:

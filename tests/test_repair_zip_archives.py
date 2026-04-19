@@ -50,11 +50,13 @@ def sample_output_dir(tmp_path):
     zip_uuid = str(uuid4())
     member_uuid = str(uuid4())
 
-    email_doc_id = "a" * 32  # folder_id[:16] = "aaaaaaaaaaaaaaaa"
+    from mtss.utils import compute_folder_id
+
+    email_doc_id = "a" * 32
     zip_doc_id = "b" * 32
     member_doc_id = "c" * 32
 
-    folder_id = email_doc_id[:16]
+    folder_id = compute_folder_id(email_doc_id)
 
     # On-disk ZIP containing one docx-like file
     folder = archive_dir / folder_id / "attachments"
@@ -282,8 +284,9 @@ class TestRepairDetectsRealPipelineParentage:
         zip_uuid = str(uuid4())
         member_uuid = str(uuid4())
 
+        from mtss.utils import compute_folder_id
         email_doc_id = "e" * 32
-        folder_id = email_doc_id[:16]
+        folder_id = compute_folder_id(email_doc_id)
 
         folder = archive_dir / folder_id / "attachments"
         folder.mkdir(parents=True, exist_ok=True)
@@ -363,8 +366,9 @@ class TestRepairDetectsRealPipelineParentage:
 
         email_uuid = str(uuid4())
         member_uuid = str(uuid4())
+        from mtss.utils import compute_folder_id
         email_doc_id = "f" * 32
-        folder_id = email_doc_id[:16]
+        folder_id = compute_folder_id(email_doc_id)
 
         folder = archive_dir / folder_id / "attachments"
         folder.mkdir(parents=True, exist_ok=True)

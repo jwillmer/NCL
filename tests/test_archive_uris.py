@@ -510,9 +510,12 @@ class TestRegenerateEmailMarkdownSanitization:
             ],
         )
 
-        gen.regenerate_email_markdown("abc123def4567890abcdef", parsed_email)
+        from mtss.utils import compute_folder_id
 
-        md_key = "abc123def4567890/email.eml.md"
+        doc_id = "abc123def4567890abcdef"
+        gen.regenerate_email_markdown(doc_id, parsed_email)
+
+        md_key = f"{compute_folder_id(doc_id)}/email.eml.md"
         assert md_key in uploaded_content
         md_content = uploaded_content[md_key]
 

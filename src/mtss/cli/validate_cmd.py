@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import typer
 from rich.table import Table
 
+from ..utils import compute_folder_id
 from ._common import console, make_progress
 
 logger = logging.getLogger(__name__)
@@ -51,14 +52,16 @@ def register(app: typer.Typer):
 def build_folder_to_email_map(docs: List[Dict[str, Any]]) -> Dict[str, str]:
     """Map archive folder id -> source email identifier.
 
-    Keyed on archive_path when present (what folders are named), else doc_id[:16].
+    Keyed on archive_path when present (what folders are named), else a
+    freshly computed folder_id derived from doc_id.
     Value prefers source_id (eml filename) so warnings point users at a real file.
     """
     mapping: Dict[str, str] = {}
     for d in docs:
         if d.get("depth", 0) != 0:
             continue
-        key = d.get("archive_path") or (d.get("doc_id") or "")[:16]
+        doc_id = d.get("doc_id") or ""
+        key = d.get("archive_path") or (compute_folder_id(doc_id) if doc_id else "")
         if not key:
             continue
         mapping[key] = (
@@ -420,7 +423,7 @@ def _check_archive_uris(
         if missing_fields:
             emails_missing_archive.append((d, missing_fields))
         if archive_folders_on_disk:
-            folder_id = d.get("archive_path") or d["doc_id"][:16]
+            folder_id = d.get("archive_path") or compute_folder_id(d["doc_id"])
             if folder_id not in archive_folders_on_disk:
                 emails_without_folder.append(d)
 
@@ -1275,10 +1278,10 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
                 warnings.append(f"Could not list root archive folders: {e}")
 
             root_docs = [d for d in local_docs if d.get("depth", 0) == 0]
-            local_folder_ids = {d["doc_id"][:16] for d in root_docs}
+            local_folder_ids = {compute_folder_id(d["doc_id"]) for d in root_docs}
             orphan_folders = sorted(all_remote_folders - local_folder_ids)
 
-            folder_ids = [d["doc_id"][:16] for d in root_docs]
+            folder_ids = [compute_folder_id(d["doc_id"]) for d in root_docs]
             remote_keys_by_folder: Dict[str, set[str]] = {}
             incomplete_folders: List[str] = []
             with make_progress() as progress:
@@ -1359,7 +1362,7 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
         if archive_file_mismatches:
             # Map folder_id -> source email for readable output
             folder_to_email = {
-                d["doc_id"][:16]: d.get("file_name") or d.get("source_title", "?")
+                compute_folder_id(d["doc_id"]): d.get("file_name") or d.get("source_title", "?")
                 for d in local_docs if d.get("depth", 0) == 0
             }
             warnings.append(

@@ -1032,7 +1032,9 @@ class TestZipAttachmentContextGeneration:
         args, _ = storage.upload_file.call_args
         uploaded_path, uploaded_bytes, uploaded_ct = args
         # Goes into the email's archive folder as <folder_id>/attachments/<member>
-        assert uploaded_path == "doc123abc4567890/attachments/notes.txt"
+        from mtss.utils import compute_folder_id
+        folder_id = compute_folder_id(sample_document.doc_id)
+        assert uploaded_path == f"{folder_id}/attachments/notes.txt"
         # Content is the fixture text — exact bytes aren't asserted here, but
         # it must be a non-empty byte string (real upload path, not a mock).
         assert isinstance(uploaded_bytes, (bytes, bytearray))
@@ -1461,7 +1463,7 @@ class TestAttachmentCacheParserIdentity:
     current choice. Without the sidecar check, a config flip
     (Gemini↔LlamaParse) silently reuses the prior parser's output."""
 
-    def _build_components(self, *, parser_name: str, cached_meta_parser: str | None):
+    def _build_components(self, *, parser_name: str, cached_meta_parser: str | None, folder_id: str):
         components = MagicMock()
         components.attachment_processor = MagicMock()
         components.attachment_processor.parse_to_text = AsyncMock(
@@ -1486,13 +1488,13 @@ class TestAttachmentCacheParserIdentity:
         components.hierarchy_manager = MagicMock()
         components.archive_generator = MagicMock()
         storage = MagicMock()
+        md_key = f"{folder_id}/attachments/notes.txt.md"
+        meta_key = f"{folder_id}/attachments/notes.txt.meta.json"
         # Sidecar-based exists map; the .md exists for every run, the sidecar
         # only exists when cached_meta_parser is set.
-        existing = {
-            "stable1234567890/attachments/notes.txt.md": True,
-        }
+        existing = {md_key: True}
         if cached_meta_parser is not None:
-            existing["stable1234567890/attachments/notes.txt.meta.json"] = True
+            existing[meta_key] = True
 
         storage.file_exists = MagicMock(side_effect=lambda p: existing.get(p, False))
         import json as _json
@@ -1506,14 +1508,13 @@ class TestAttachmentCacheParserIdentity:
         )
         storage.download_text = MagicMock(
             side_effect=lambda p: {
-                "stable1234567890/attachments/notes.txt.md":
-                    "# header\n\n## Content\ncached original content",
-                "stable1234567890/attachments/notes.txt.meta.json": meta_txt,
+                md_key: "# header\n\n## Content\ncached original content",
+                meta_key: meta_txt,
             }[p]
         )
         components.archive_generator.storage = storage
         components.archive_generator.update_attachment_markdown = MagicMock(
-            return_value="stable1234567890/attachments/notes.txt.md"
+            return_value=md_key
         )
         components.context_generator = None
 
@@ -1537,9 +1538,11 @@ class TestAttachmentCacheParserIdentity:
             size_bytes=att_path.stat().st_size,
             saved_path=str(att_path),
         )
+        from mtss.utils import compute_folder_id
         sample_document.doc_id = "stable1234567890def"
         components = self._build_components(
             parser_name="local_text", cached_meta_parser="local_text",
+            folder_id=compute_folder_id(sample_document.doc_id),
         )
         components.hierarchy_manager.build_attachment_document = MagicMock(
             return_value=sample_attachment_document
@@ -1576,9 +1579,11 @@ class TestAttachmentCacheParserIdentity:
             size_bytes=att_path.stat().st_size,
             saved_path=str(att_path),
         )
+        from mtss.utils import compute_folder_id
         sample_document.doc_id = "stable1234567890def"
         components = self._build_components(
             parser_name="local_text", cached_meta_parser="gemini_pdf",
+            folder_id=compute_folder_id(sample_document.doc_id),
         )
         components.hierarchy_manager.build_attachment_document = MagicMock(
             return_value=sample_attachment_document
@@ -1616,9 +1621,11 @@ class TestAttachmentCacheParserIdentity:
             size_bytes=att_path.stat().st_size,
             saved_path=str(att_path),
         )
+        from mtss.utils import compute_folder_id
         sample_document.doc_id = "stable1234567890def"
         components = self._build_components(
             parser_name="local_text", cached_meta_parser=None,
+            folder_id=compute_folder_id(sample_document.doc_id),
         )
         components.hierarchy_manager.build_attachment_document = MagicMock(
             return_value=sample_attachment_document
