@@ -302,6 +302,38 @@ class TestDataModelIntegrity:
         # Same positions should produce same chunk IDs
         assert chunks1[0].chunk_id == chunks2[0].chunk_id
 
+    def test_chunk_id_fallback_when_positions_none(self, sample_document):
+        """When char_start/char_end are None (chunker rejected an ambiguous
+        match) the fallback chunk_id must still be deterministic for the same
+        content AND differ between two distinct chunks at the same chunk_index.
+        The prior ``chunk_index * 1000`` fallback collided in that case.
+        """
+        from mtss.ingest.helpers import enrich_chunks_with_document_metadata
+        from mtss.models.chunk import Chunk
+
+        def make(content: str):
+            return Chunk(
+                document_id=sample_document.id,
+                content=content,
+                chunk_index=0,
+                char_start=None,
+                char_end=None,
+                section_path=[],
+                metadata={},
+            )
+
+        a1, a2 = make("alpha content"), make("alpha content")
+        b = make("beta content — different text entirely")
+
+        enrich_chunks_with_document_metadata([a1], sample_document)
+        enrich_chunks_with_document_metadata([a2], sample_document)
+        enrich_chunks_with_document_metadata([b], sample_document)
+
+        # Same content, same index → same id (determinism preserved).
+        assert a1.chunk_id == a2.chunk_id
+        # Different content, same index → different id (collision fixed).
+        assert a1.chunk_id != b.chunk_id
+
     def test_email_metadata_preservation(self, sample_document):
         """Test that email metadata is preserved through processing."""
         assert sample_document.email_metadata is not None

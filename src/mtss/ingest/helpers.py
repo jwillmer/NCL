@@ -9,6 +9,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Optional
 from uuid import UUID
+from zlib import crc32
 
 from rich.console import Console
 from rich.table import Table
@@ -81,9 +82,25 @@ def enrich_chunks_with_document_metadata(
     for chunk in chunks:
         # Generate stable chunk_id if not already set
         if not chunk.chunk_id and doc.doc_id:
-            char_start = chunk.char_start or (chunk.chunk_index * 1000)
-            char_end = chunk.char_end or (char_start + len(chunk.content))
-            chunk.chunk_id = compute_chunk_id(doc.doc_id, char_start, char_end)
+            if chunk.char_start is not None and chunk.char_end is not None:
+                chunk.chunk_id = compute_chunk_id(
+                    doc.doc_id, chunk.char_start, chunk.char_end
+                )
+            else:
+                # Positions unknown (e.g. chunker _find_chunk_position rejected
+                # an ambiguous fallback). Mix a crc32 of chunk content into the
+                # pseudo-positions so two distinct chunks sharing the same
+                # chunk_index can't collide — the prior ``chunk_index * 1000``
+                # fallback collapsed to the same id whenever the positions
+                # were both None.
+                content_hash = crc32(
+                    chunk.content.encode("utf-8", errors="replace")
+                )
+                pseudo_start = chunk.chunk_index * 1000 + (content_hash % 1000)
+                pseudo_end = pseudo_start + len(chunk.content)
+                chunk.chunk_id = compute_chunk_id(
+                    doc.doc_id, pseudo_start, pseudo_end
+                )
         chunk.source_id = doc.source_id
         chunk.source_title = doc.source_title
         chunk.archive_browse_uri = doc.archive_browse_uri
