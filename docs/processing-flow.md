@@ -40,15 +40,19 @@ data/
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            PARSING LAYER                                     │
 │                                                                             │
-│  ┌─────────────┐    ┌──────────────┐    ┌───────────────┐                  │
-│  │ EML Parser  │───▶│ Preprocessor │───▶│Parser Registry│                  │
-│  └─────────────┘    └──────┬───────┘    └───────┬───────┘                  │
-│                            │                    │                           │
-│                     ┌──────┴──────┐      ┌──────┴──────┐                   │
-│                     ▼             ▼      ▼             ▼                   │
-│              ┌───────────┐  ┌─────────┐  ┌───────────────┐                 │
-│              │ZIP Extract│  │ Images  │  │  LlamaParse   │                 │
-│              └───────────┘  └─────────┘  └───────────────┘                 │
+│  ┌─────────────┐    ┌──────────────┐    ┌────────────────────┐             │
+│  │ EML Parser  │───▶│ Preprocessor │───▶│Tiered Parser Router│             │
+│  └─────────────┘    └──────┬───────┘    └─────────┬──────────┘             │
+│                            │                      │                         │
+│                  ┌─────────┼──────────────┬───────┼──────────┐              │
+│                  ▼         ▼              ▼       ▼          ▼              │
+│            ┌──────────┐ ┌──────┐ ┌──────────────┐ ┌────────┐ ┌───────────┐ │
+│            │ZIP Extr. │ │Images│ │Local parsers │ │ Gemini │ │LlamaParse │ │
+│            │          │ │      │ │(PyMuPDF4LLM, │ │ 2.5    │ │(legacy    │ │
+│            │          │ │      │ │ docx, xlsx,  │ │ Flash  │ │ .doc/.xls/│ │
+│            │          │ │      │ │ csv, html)   │ │  via   │ │  .ppt)    │ │
+│            │          │ │      │ │              │ │OpenRouter│ │         │ │
+│            └──────────┘ └──────┘ └──────────────┘ └────────┘ └───────────┘ │
 └─────────────────────────────────┬───────────────────────────────────────────┘
                                   │
                                   ▼
@@ -197,19 +201,20 @@ Routes files to appropriate handlers and filters non-content images.
           └──────────┘ └────────────┘
 ```
 
-### Parser Registry (`ParserRegistry`)
+### Tiered Parser Router (`attachment_processor._get_tiered_parser`)
 
-Simple lookup for file type to parser mapping.
+Routes by extension and PDF complexity (`pdf_classifier.classify_pdf`):
 
 | MIME Type / Extension | Parser |
 |-----------------------|--------|
-| `application/pdf`, `.pdf` | LlamaParse |
-| `application/vnd.openxmlformats-*`, `.docx`, `.pptx`, `.xlsx` | LlamaParse |
-| `application/msword`, `.doc`, `.xls`, `.ppt` | LlamaParse |
-| `text/csv`, `.csv` | LlamaParse |
-| `application/rtf`, `.rtf` | LlamaParse |
-| `text/html`, `.html` | LlamaParse |
-| `application/epub+zip`, `.epub` | LlamaParse |
+| `application/pdf`, `.pdf` (simple — text layer + no fields) | PyMuPDF4LLM (free, local) |
+| `application/pdf`, `.pdf` (complex *or* PyMuPDF empty) | Gemini 2.5 Flash via OpenRouter |
+| `.docx` | python-docx (local) |
+| `.xlsx` | openpyxl (local) |
+| `text/csv`, `.csv` | local CSV reader |
+| `text/html`, `.html`, `.htm` | local HTML reader |
+| `.pptx`, `.epub`, `.rtf`, `.odt`, `.ods`, `.odp`, other docs | Gemini 2.5 Flash via OpenRouter |
+| `application/msword`, `.doc`, `.xls`, `.ppt` (legacy binary) | LlamaParse |
 
 ### Image Processor (`ImageProcessor`)
 
@@ -473,10 +478,11 @@ When a user selects a vessel in the UI, the search is filtered to only return ch
 | 6. Route | Preprocessor | File + MIME type | PreprocessResult |
 | 7. Extract | AttachmentProcessor | ZIP file | Extracted files |
 | 8. Classify | ImageProcessor | Image file | Skip or description |
-| 9. Parse | LlamaParse | Document | Markdown text |
-| 10. Chunk | DocumentChunker | Markdown | Chunk objects |
-| 11. Embed | EmbeddingGenerator | Chunks | 1536-dim vectors |
-| 12. Store | SupabaseClient | Chunks + vessel_ids | Database records |
+| 9. Parse | Tiered router → local / Gemini / LlamaParse | Document | Markdown text |
+| 10. Decide mode | embedding_decider | Markdown + doc meta | full / summary / metadata_only |
+| 11. Chunk | build_chunks_for_mode | Markdown + mode | Chunk objects |
+| 12. Embed | EmbeddingGenerator | Chunks | 1536-dim vectors |
+| 13. Store | SupabaseClient | Chunks + vessel_ids | Database records |
 
 ## Database Schema
 

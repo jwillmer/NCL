@@ -36,7 +36,8 @@ src/mtss/
 │   ├── topic.py, vessel.py
 ├── parsers/
 │   ├── eml_parser.py            # EML parsing with conversation support
-│   ├── attachment_processor.py  # LlamaParse + ZIP extraction
+│   ├── attachment_processor.py  # Tiered parser routing + ZIP extraction
+│   ├── gemini_pdf_parser.py     # Gemini 2.5 Flash via OpenRouter (complex PDFs)
 │   ├── chunker.py               # Document chunking + context generation
 │   └── ...
 ├── ingest/                      # All ingest business logic
@@ -48,6 +49,7 @@ src/mtss/
 │   ├── hierarchy_manager.py     # Document tree management
 │   ├── version_manager.py       # Ingest versioning/dedup
 │   ├── lane_classifier.py       # Fast/slow lane classification
+│   ├── embedding_decider.py     # Per-doc full / summary / metadata_only mode
 │   ├── estimator.py, helpers.py
 ├── processing/                  # Shared processing infrastructure
 │   ├── embeddings.py            # Embeddings via LiteLLM (OpenRouter)
@@ -110,18 +112,26 @@ Parses email files using Python's `email` library with `policy.default`.
 
 ### 3. Attachment Processor (`parsers/attachment_processor.py`)
 
-Processes attachments using LlamaParse for document understanding.
+Three-tier parser routing — local first, Gemini for complex/non-local, LlamaParse only for legacy binary Office.
 
-**Supported Formats:**
-| Format | MIME Type | Features |
-|--------|-----------|----------|
-| PDF | application/pdf | OCR, table extraction, picture description |
-| Images | image/png, jpeg, tiff, bmp | OCR, AI description |
-| Word | application/vnd.openxmlformats-officedocument.wordprocessingml.document | Full text extraction |
-| PowerPoint | application/vnd.openxmlformats-officedocument.presentationml.presentation | Slide text + notes |
-| Excel | application/vnd.openxmlformats-officedocument.spreadsheetml.sheet | Cell data extraction |
-| HTML | text/html | Content extraction |
-| ZIP | application/zip | Recursive extraction |
+**Routing rules** (`_get_tiered_parser`):
+| Format | Path |
+|---|---|
+| `.pdf` simple (text layer + no fields) | PyMuPDF4LLM (free, local) |
+| `.pdf` complex *or* PyMuPDF empty | `GeminiPDFParser` (Gemini 2.5 Flash via OpenRouter, ~$0.0025/page) |
+| `.docx` | python-docx (local) |
+| `.xlsx` | openpyxl (local) |
+| `.csv`, `.html`, `.htm` | local readers |
+| `.doc`, `.xls`, `.ppt` (legacy binary) | `LlamaParseParser` (only remaining LlamaParse use) |
+| `.pptx`, other docs Gemini can read | `GeminiPDFParser` |
+| Images (`.png`/`.jpg`/`.tiff`/...) | Vision API |
+| `.zip` | Recursive extraction (members re-routed through this same chain) |
+
+**ZIP Extraction Security:**
+- Path traversal prevention (`../` detection)
+- Absolute path blocking
+- Hidden file filtering (`.files`, `__MACOSX/`)
+- Nested ZIP support with depth limits
 
 **ZIP Extraction Security:**
 - Path traversal prevention (`../` detection)

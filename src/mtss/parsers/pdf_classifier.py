@@ -14,11 +14,41 @@ class PDFComplexity(str, Enum):
     COMPLEX = "complex"
 
 
+def classify_reader(reader) -> PDFComplexity:
+    """Classify an already-opened pypdf reader. Single source of truth."""
+    from pypdf.errors import PyPdfError
+
+    if not reader.pages:
+        return PDFComplexity.COMPLEX
+
+    try:
+        if reader.get_fields():
+            return PDFComplexity.COMPLEX
+    except (PyPdfError, KeyError, AttributeError, TypeError):
+        return PDFComplexity.COMPLEX
+
+    for page in reader.pages:
+        try:
+            text = page.extract_text() or ""
+        except (PyPdfError, KeyError, AttributeError, TypeError, ValueError):
+            return PDFComplexity.COMPLEX
+
+        if len(text.strip()) < 50:
+            return PDFComplexity.COMPLEX
+
+    return PDFComplexity.SIMPLE
+
+
 def classify_pdf(file_path: Path) -> PDFComplexity:
     """Classify a PDF as simple or complex using pypdf.
 
-    Simple: all pages have extractable text, no images, no form fields.
-    Complex: any page is scanned (no text), has images, or has form fields.
+    Simple: every page has an extractable text layer and there are no form fields.
+    Complex: any page is scanned (no text), the PDF has form fields, or the
+    reader fails to parse it.
+
+    Embedded images (logos, stamps, diagrams embedded in a text-layer PDF) do
+    NOT mark a PDF complex — routing those to a cloud parser was costing real
+    money on docs PyMuPDF4LLM handles fine.
     """
     from pypdf import PdfReader
 
@@ -28,30 +58,4 @@ def classify_pdf(file_path: Path) -> PDFComplexity:
         logger.warning(f"Cannot open PDF {file_path.name} for classification: {e}")
         return PDFComplexity.COMPLEX
 
-    if not reader.pages:
-        return PDFComplexity.COMPLEX
-
-    if reader.get_fields():
-        return PDFComplexity.COMPLEX
-
-    for page in reader.pages:
-        try:
-            text = page.extract_text() or ""
-        except Exception:
-            return PDFComplexity.COMPLEX
-
-        if len(text.strip()) < 50:
-            return PDFComplexity.COMPLEX
-
-        try:
-            resources = page.get("/Resources") or {}
-            if "/XObject" in resources:
-                xobjects = resources["/XObject"].get_object()
-                for obj_name in xobjects:
-                    xobj = xobjects[obj_name].get_object()
-                    if xobj.get("/Subtype") == "/Image":
-                        return PDFComplexity.COMPLEX
-        except (KeyError, AttributeError, TypeError):
-            return PDFComplexity.COMPLEX
-
-    return PDFComplexity.SIMPLE
+    return classify_reader(reader)

@@ -8,11 +8,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ..config import get_settings
 from ..image_filter import is_meaningful_image
 from ..processing.image_processor import ImageProcessor
 from .registry import ParserRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_count_pdf_pages(file_path: Path) -> Optional[int]:
+    """Return page count for a PDF, or None if it can't be determined.
+
+    None is treated as "don't block" — the parser layer will surface any
+    unreadability as its own failure.
+    """
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(file_path))
+        return len(reader.pages)
+    except Exception as e:
+        logger.warning(f"Cannot count pages in {file_path.name}: {e}")
+        return None
 
 
 @dataclass
@@ -141,6 +158,31 @@ class DocumentPreprocessor:
         """
         actual_type = self.get_content_type(file_path, content_type)
 
+        # Chrome writes ``.crdownload`` for in-progress downloads; if one ends
+        # up in an email attachment it is partial bytes, not a valid file.
+        # Reject before any parser wastes a call on it.
+        if file_path.suffix.lower() == ".crdownload":
+            return PreprocessResult(
+                should_process=False,
+                skip_reason=f"partial_download: {file_path.name}",
+                content_type=actual_type,
+            )
+
+        # Reject anything above the configured byte ceiling before we read it.
+        # Guards against accidentally pulling a multi-GB attachment into memory
+        # (Gemini parser base64-encodes the whole file, so this matters).
+        max_bytes = get_settings().attachment_max_bytes
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            size = 0
+        if size > max_bytes:
+            return PreprocessResult(
+                should_process=False,
+                skip_reason=f"attachment_too_large: {size} bytes exceeds limit of {max_bytes}",
+                content_type=actual_type,
+            )
+
         # Check if it's a ZIP that needs extraction
         if self.is_zip_file(file_path, actual_type):
             return PreprocessResult(
@@ -186,8 +228,22 @@ class DocumentPreprocessor:
                     content_type=actual_type,
                 )
 
+        # Skip oversized PDFs before they reach the parser. Large operational
+        # dumps (multi-hundred-page sensor logs) cost disproportionately at
+        # LlamaParse and produce embedding noise rather than signal.
+        ext = file_path.suffix.lower()
+        if ext == ".pdf" or actual_type == "application/pdf":
+            max_pages = get_settings().pdf_max_pages
+            page_count = _safe_count_pdf_pages(file_path)
+            if page_count is not None and page_count > max_pages:
+                return PreprocessResult(
+                    should_process=False,
+                    skip_reason=f"pdf_too_large: {page_count} pages exceeds limit of {max_pages}",
+                    content_type=actual_type,
+                )
+
         # Check local parsers first (not in registry, handled by tiered routing)
-        if file_path.suffix.lower() in _LOCAL_PARSER_EXTENSIONS or actual_type in _LOCAL_PARSER_MIMETYPES:
+        if ext in _LOCAL_PARSER_EXTENSIONS or actual_type in _LOCAL_PARSER_MIMETYPES:
             return PreprocessResult(
                 should_process=True,
                 parser_name="local",

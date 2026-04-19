@@ -4,7 +4,7 @@ This file gives future Claude sessions quick orientation for the MTSS codebase. 
 
 ## What MTSS does
 
-Email RAG pipeline. Ingests `.eml` files (+ attachments: PDF, Office docs, images, ZIPs) into local JSONL output (`data/output/`), optionally pushes to Supabase. Uses LlamaParse + local parsers for text extraction, vision API for images, LiteLLM for embeddings/context/topics.
+Email RAG pipeline. Ingests `.eml` files (+ attachments: PDF, Office docs, images, ZIPs) into local JSONL output (`data/output/`), optionally pushes to Supabase. Tiered parser chain: local parsers → Gemini 2.5 Flash via OpenRouter for complex PDFs and modern non-local formats → LlamaParse only for legacy binary `.doc`/`.xls`/`.ppt`. Vision API for images, LiteLLM for embeddings/context/topics.
 
 ## Output layout (`data/output/`)
 
@@ -40,12 +40,41 @@ Targeted repair commands — preferred over full reingest (API costs).
 | `mtss ingest-update` | Validate + auto-repair (orphaned docs, missing archives, missing context). | LLM only where needed. |
 | `mtss reprocess` | Re-ingest docs below a target ingest version. | Full re-parse. |
 | `mtss reindex-chunks` | Re-chunk from archived markdown (adds line numbers, regenerates context). | LLM for context. |
+| `mtss re-embed` | Re-classify embedding mode + re-chunk + re-embed against archived markdown. No re-parse. `--dry-run`, `--limit`, `--mode`, `--force`. | Embeddings + (LLM triage on the medium-confidence band only). |
 
 ## Parsers (`src/mtss/parsers/`)
 
-- Tiered routing in `attachment_processor.py:_get_tiered_parser`: local parsers preferred for `.pdf`/`.docx`/`.xlsx`/`.csv`/`.html`; LlamaParse via registry for everything else.
-- **`EmptyContentError`** (`parsers/base.py`) — raised by local parsers when they open a file but extract zero text (e.g. image-only docx). `process_attachment` catches it and falls back to `LlamaParseParser()` if `is_available`. Fallback does not trigger for generic `ValueError` (corrupt file) or when primary is already LlamaParse.
-- `strip_llamaparse_image_refs(text)` (`parsers/llamaparse_parser.py`) — shared helper. Strips `<img>` HTML tags, `![alt](page_N_image_N.jpg)`, and bare `![alt](image)` — preserves alt-text. Both the live parser and `clean-archive-md` call this single function.
+- **Tiered routing** in `attachment_processor.py:_get_tiered_parser`:
+  - `.pdf` simple (PyMuPDF text-layer + no form fields) → PyMuPDF4LLM (free, local)
+  - `.pdf` complex *or* PyMuPDF4LLM returns empty → `GeminiPDFParser` (Gemini 2.5 Flash via OpenRouter, ~$0.0025/page)
+  - `.docx`, `.xlsx`, `.csv`, `.html`, `.htm` → local parsers (free)
+  - Legacy binary `.doc`, `.xls`, `.ppt` → `LlamaParseParser` (only remaining LlamaParse use)
+  - Anything else without a local parser → Gemini if available, else unsupported
+- **`GeminiPDFParser`** (`parsers/gemini_pdf_parser.py`) — uploads PDFs as base64 `type:"file"` content blocks via LiteLLM `acompletion`. Page-range pagination (default 25 pages/batch) with adaptive halving on `finish_reason="length"`; `asyncio.Semaphore(max_concurrent_gemini_pdf)` caps parallel calls per doc. `gemini_pdf_hard_page_ceiling` (default 200) caps parser-triggered spend; above that the caller falls back to `SUMMARY` mode.
+- **`EmptyContentError`** (`parsers/base.py`) — raised by local parsers when they open a file but extract zero text (e.g. image-only docx). `process_attachment` catches it and falls back to Gemini (if available) before giving up. Fallback does not trigger for generic `ValueError` (corrupt file).
+- `strip_llamaparse_image_refs(text)` (`parsers/llamaparse_parser.py`) — shared helper. Strips `<img>` HTML tags, `![alt](page_N_image_N.jpg)`, and bare `![alt](image)` — preserves alt-text. Used by the live parser, `clean-archive-md`, and the in-memory pre-clean inside `mtss re-embed`.
+
+## Embedding modes (`src/mtss/ingest/embedding_decider.py`)
+
+Each attachment is classified at ingest time into one of three modes — stamped on the `Document` and inherited by every `Chunk`:
+
+| Mode | Meaning | Typical content | Cost |
+|---|---|---|---|
+| `full` | Standard chunk + context + embed | Prose, contracts, reports | Default — every chunk embedded |
+| `summary` | One synthesized summary chunk | Sensor-log dumps, repetitive tabular | One LLM summary + one embedding |
+| `metadata_only` | One filename-only stub chunk | Empty/noise PDFs | Trivial, no LLM |
+
+Decision tree (deterministic rules first; LLM triage *always* runs on the medium-confidence band — not flag-gated):
+1. <50 tokens, *or* `prose_ratio < 0.15 && heading_count == 0` → `metadata_only`
+2. `>20K tokens` *and* (`digit_ratio > 0.40` *or* `table_char_pct > 0.50` *or* `repetition_score > 0.92` *or* `short_line_ratio > 0.95`) → `summary`
+3. `>50K tokens && prose_ratio < 0.50` → LLM triage (A/B/C → full/summary/metadata_only); on failure → `summary`
+4. Default → `full`
+
+The `repetition_score` and `short_line_ratio` thresholds were tuned 2026-04-19 from real-corpus dry-run data — earlier values (0.60 / 0.70) demoted real prose reports whose section headers/footers repeated across pages. Sensor logs (the intended target) are caught by `digit_ratio` and `table_char_pct`, not by repetition.
+
+Email bodies skip the decider — they're always `full`. All thresholds are Pydantic settings with `DECIDER_*` env aliases.
+
+`mtss re-embed` re-runs the decider + chunker + embedder against existing archive markdown (no re-parse). It is the successor to the deleted `scripts/repair_failed_llamaparse_attachments.py`.
 
 ## Ingest-time pipeline gotchas
 
@@ -55,11 +84,13 @@ Targeted repair commands — preferred over full reingest (API costs).
 
 ## Tests
 
-- `uv run pytest` — full suite (490+ tests, ~6s).
+- `uv run pytest` — full suite (~750 tests, ~10s).
 - Parser/strip tests live in `tests/test_sanitize_migration.py` (`TestLlamaParseImageStripping`, `TestValidateNewChecks`).
-- Attachment/fallback tests in `tests/test_attachment_processor.py` (`TestLlamaParseFallback`, `TestLocalParserEmptyContentError`).
+- Attachment/fallback tests in `tests/test_attachment_processor.py` (`TestGeminiFallback`, `TestComplexPdfRoutesToGemini`, `TestLegacyOfficeRoutesToLlamaParse`, `TestLocalParserEmptyContentError`).
+- Embedding-mode tests in `tests/test_embedding_decider.py` (decision-tree branches + LLM triage), `tests/test_chunk_strategies.py`, `tests/test_reembed_cmd.py`.
+- Gemini parser tests in `tests/test_gemini_pdf_parser.py` (availability, single-call, paginated, adaptive halving, base64 payload structure).
 - Storage + maintenance command tests in `tests/test_ingest_storage.py` (`TestLocalClientFlushChunkDedup`, `TestMarkFailedCommand`, `TestCleanArchiveMdCommand`).
-- Ingest flow tests in `tests/test_ingest_processing.py` (`TestZipAttachmentContextGeneration`, `TestThreadDigest`).
+- Ingest flow tests in `tests/test_ingest_processing.py` (`TestZipAttachmentContextGeneration`, `TestThreadDigest`, `TestEmbeddingModeStamping`).
 
 ## Workflow: fixing a data-integrity issue surfaced by validate
 

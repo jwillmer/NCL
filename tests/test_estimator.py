@@ -1,8 +1,10 @@
-"""Tests for narrowed except-clauses in mtss.ingest.estimator.
+"""Tests for narrowed except-clauses in mtss.ingest.estimator and the shared
+PDF classifier in mtss.parsers.pdf_classifier.
 
 Covers Fix #16 from code-health-report.md: four broad `except Exception:`
-catches in `_count_pdf_pages` and `_classify_pdf_from_reader` were narrowed
-to specific exception types. These tests prove:
+catches were narrowed to specific exception types. The PDF-reader-side
+classification logic moved to ``parsers.pdf_classifier.classify_reader``;
+these tests still cover its narrowed catches.
 
 1. Positive — the specific exception family is caught (fallback taken).
 2. Negative — an unrelated exception propagates (narrowing took effect).
@@ -17,6 +19,7 @@ import pytest
 from pypdf.errors import PdfReadError
 
 from mtss.ingest.estimator import IngestEstimator
+from mtss.parsers.pdf_classifier import PDFComplexity, classify_reader
 
 
 # ---------------------------------------------------------------------------
@@ -126,73 +129,60 @@ class TestPdfReaderNarrowing:
 
 
 class TestGetFieldsNarrowing:
-    """_classify_pdf_from_reader's get_fields() catch should swallow pypdf/type
-    errors but propagate anything unrelated."""
+    """classify_reader's get_fields() catch should swallow pypdf/type errors
+    but propagate anything unrelated."""
 
     def _make_reader(self, get_fields_raises):
-        """Build a MagicMock reader with at least one page and a configurable
-        get_fields() side effect."""
         reader = MagicMock()
         reader.pages = [MagicMock()]
         reader.get_fields.side_effect = get_fields_raises
         return reader
 
     def test_keyerror_is_caught_and_returns_complex(self):
-        """KeyError from get_fields (real pypdf behavior on malformed field refs)
-        should be caught → return 'complex'."""
         reader = self._make_reader(get_fields_raises=KeyError("/AcroForm"))
-        result = IngestEstimator._classify_pdf_from_reader(reader)
-        assert result == "complex"
+        assert classify_reader(reader) == PDFComplexity.COMPLEX
 
     def test_pdfreaderror_is_caught_and_returns_complex(self):
-        """PdfReadError (PyPdfError subclass) from get_fields → 'complex'."""
         reader = self._make_reader(get_fields_raises=PdfReadError("bad xref"))
-        result = IngestEstimator._classify_pdf_from_reader(reader)
-        assert result == "complex"
+        assert classify_reader(reader) == PDFComplexity.COMPLEX
 
     def test_unrelated_exception_propagates(self):
-        """RuntimeError is outside the narrowed tuple — must bubble up."""
         reader = self._make_reader(get_fields_raises=RuntimeError("whoops"))
         with pytest.raises(RuntimeError):
-            IngestEstimator._classify_pdf_from_reader(reader)
+            classify_reader(reader)
 
 
 # ---------------------------------------------------------------------------
-# Catch #4 (line ~543): page.extract_text() — narrowed to (PyPdfError, KeyError, AttributeError, TypeError, ValueError)
+# Catch #4: page.extract_text() — narrowed to (PyPdfError, KeyError, AttributeError, TypeError, ValueError)
 # ---------------------------------------------------------------------------
 
 
 class TestExtractTextNarrowing:
-    """_classify_pdf_from_reader's extract_text() catch should swallow pypdf
-    extraction errors but propagate anything unrelated."""
+    """classify_reader's extract_text() catch should swallow pypdf extraction
+    errors but propagate anything unrelated."""
 
     def _make_reader_with_page(self, extract_text_raises):
         reader = MagicMock()
-        reader.get_fields.return_value = None  # skip get_fields branch
+        reader.get_fields.return_value = None
         page = MagicMock()
         page.extract_text.side_effect = extract_text_raises
         reader.pages = [page]
         return reader
 
     def test_pdfreaderror_is_caught_and_returns_complex(self):
-        """PdfReadError from extract_text → 'complex' (fallback)."""
         reader = self._make_reader_with_page(
             extract_text_raises=PdfReadError("stream decode failed")
         )
-        result = IngestEstimator._classify_pdf_from_reader(reader)
-        assert result == "complex"
+        assert classify_reader(reader) == PDFComplexity.COMPLEX
 
     def test_valueerror_is_caught_and_returns_complex(self):
-        """ValueError (e.g. invalid numeric in pdf stream) → 'complex'."""
         reader = self._make_reader_with_page(extract_text_raises=ValueError("bad float"))
-        result = IngestEstimator._classify_pdf_from_reader(reader)
-        assert result == "complex"
+        assert classify_reader(reader) == PDFComplexity.COMPLEX
 
     def test_unrelated_exception_propagates(self):
-        """OSError is outside the narrowed tuple — must bubble up."""
         reader = self._make_reader_with_page(extract_text_raises=OSError("disk gone"))
         with pytest.raises(OSError):
-            IngestEstimator._classify_pdf_from_reader(reader)
+            classify_reader(reader)
 
 
 # ---------------------------------------------------------------------------

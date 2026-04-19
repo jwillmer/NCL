@@ -44,6 +44,11 @@ def doc_to_dict(doc: Any) -> Dict[str, Any]:
         "archive_browse_uri": doc.archive_browse_uri,
         "archive_download_uri": doc.archive_download_uri,
         "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
+        "embedding_mode": (
+            doc.embedding_mode.value
+            if getattr(doc, "embedding_mode", None) and hasattr(doc.embedding_mode, "value")
+            else getattr(doc, "embedding_mode", None)
+        ),
         "error_message": getattr(doc, "error_message", None),
         "processed_at": _to_iso(getattr(doc, "processed_at", None)),
         "created_at": _to_iso(getattr(doc, "created_at", None)),
@@ -84,6 +89,11 @@ def chunk_to_dict(chunk: Any) -> Dict[str, Any]:
         "metadata": chunk.metadata,
         "embedding": chunk.embedding,
         "page_number": getattr(chunk, "page_number", None),
+        "embedding_mode": (
+            chunk.embedding_mode.value
+            if getattr(chunk, "embedding_mode", None) and hasattr(chunk.embedding_mode, "value")
+            else getattr(chunk, "embedding_mode", None)
+        ),
     }
 
 
@@ -109,6 +119,7 @@ def dict_to_document(d: Dict[str, Any]) -> "Document":
         Document,
         DocumentType,
         EmailMetadata,
+        EmbeddingMode,
         ProcessingStatus,
     )
 
@@ -152,6 +163,7 @@ def dict_to_document(d: Dict[str, Any]) -> "Document":
         email_metadata=email_metadata,
         attachment_metadata=attachment_metadata,
         status=ProcessingStatus(d.get("status", "completed")),
+        embedding_mode=EmbeddingMode(d["embedding_mode"]) if d.get("embedding_mode") else None,
         error_message=d.get("error_message"),
         processed_at=datetime.fromisoformat(d["processed_at"]) if d.get("processed_at") else None,
         created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.now(timezone.utc),
@@ -162,6 +174,7 @@ def dict_to_document(d: Dict[str, Any]) -> "Document":
 def dict_to_chunk(d: Dict[str, Any]) -> "Chunk":
     """Reconstruct a Chunk model from a JSONL dict."""
     from .chunk import Chunk
+    from .document import EmbeddingMode
 
     return Chunk(
         id=UUID(d["id"]),
@@ -184,6 +197,7 @@ def dict_to_chunk(d: Dict[str, Any]) -> "Chunk":
         archive_download_uri=d.get("archive_download_uri"),
         embedding=d.get("embedding"),
         metadata=d.get("metadata") or {},
+        embedding_mode=EmbeddingMode(d["embedding_mode"]) if d.get("embedding_mode") else None,
     )
 
 

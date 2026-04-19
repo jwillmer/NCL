@@ -191,38 +191,33 @@ class AttachmentProcessor:
         """
         return self.MIME_TO_DOC_TYPE.get(content_type, DocumentType.ATTACHMENT_OTHER)
 
-    async def process_attachment(
+    async def parse_to_text(
         self,
         file_path: Path,
-        document_id: UUID,
         content_type: Optional[str] = None,
-    ) -> List[Chunk]:
-        """Process an attachment file and return chunks.
+    ) -> Tuple[str, str]:
+        """Run the tiered parser chain and return raw markdown + parser name.
 
-        Uses parser registry to find appropriate parser, then chunks result.
-
-        Args:
-            file_path: Path to the attachment file.
-            document_id: UUID of the parent document record.
-            content_type: MIME type of the file (optional).
+        Keeps parsing and chunking separate so callers can run the embedding
+        decider against the raw text before deciding how to chunk it.
 
         Returns:
-            List of Chunk objects with text and metadata.
+            (markdown_text, effective_parser_name). Empty string if the parser
+            successfully opened the file but extracted no content.
 
         Raises:
-            FileNotFoundError: If the attachment file doesn't exist.
+            FileNotFoundError: If the file doesn't exist.
+            EmptyContentError: If a local parser produced empty content AND no
+                Gemini fallback is available.
             ValueError: If no parser available or parsing fails.
         """
         if not file_path.exists():
             raise FileNotFoundError(f"Attachment not found: {file_path}")
 
-        # Get appropriate parser using tiered routing
         parser = self._get_tiered_parser(file_path, content_type)
-
         if not parser:
             raise ValueError(f"No parser available for {file_path}")
 
-        # Parse document to markdown text
         logger.info(f"Processing {file_path.name} with {parser.name} parser")
         from .base import EmptyContentError
 
@@ -232,31 +227,45 @@ class AttachmentProcessor:
         except EmptyContentError:
             if not parser.name.startswith("local_"):
                 raise
-            from .llamaparse_parser import LlamaParseParser
-            fallback = LlamaParseParser()
+            from .gemini_pdf_parser import GeminiPDFParser
+
+            fallback = GeminiPDFParser()
             if not fallback.is_available:
                 raise
             logger.info(
-                f"{parser.name} produced no content for {file_path.name}; falling back to LlamaParse"
+                f"{parser.name} produced no content for {file_path.name}; falling back to Gemini"
             )
             text = await fallback.parse(file_path)
             effective_parser_name = fallback.name
 
-        if effective_parser_name != "llamaparse":
+        if effective_parser_name not in ("llamaparse", "gemini_pdf"):
             from ..cli._common import _service_counter
             _service_counter.add("local_parse")
 
         if not text or not text.strip():
             logger.warning(f"No text extracted from {file_path.name}")
-            return []
+            return "", effective_parser_name
 
         text_len = len(text.strip())
         logger.info(f"Extracted {text_len} chars from {file_path.name}")
-
         if text_len < 50:
-            logger.warning(f"Very little text from {file_path.name}: {repr(text.strip()[:100])}")
+            logger.warning(
+                f"Very little text from {file_path.name}: {repr(text.strip()[:100])}"
+            )
+        return text, effective_parser_name
 
-        # Chunk the text using LangChain
+    async def process_attachment(
+        self,
+        file_path: Path,
+        document_id: UUID,
+        content_type: Optional[str] = None,
+    ) -> List[Chunk]:
+        """Parse + chunk (legacy shape). Callers wanting to run the decider
+        should use ``parse_to_text`` and then build chunks per-mode.
+        """
+        text, effective_parser_name = await self.parse_to_text(file_path, content_type)
+        if not text:
+            return []
         chunks = self.chunker.chunk_text(
             text=text,
             document_id=document_id,
@@ -264,7 +273,6 @@ class AttachmentProcessor:
             is_markdown=True,
             metadata={"parser": effective_parser_name},
         )
-
         logger.info(f"Created {len(chunks)} chunks from {file_path.name}")
         return chunks
 
@@ -277,8 +285,18 @@ class AttachmentProcessor:
         "text/html": ".html",
     }
 
+    # Legacy binary Office formats — the only remaining LlamaParse path.
+    _LEGACY_OFFICE_EXTENSIONS: set[str] = {".doc", ".xls", ".ppt"}
+
     def _get_tiered_parser(self, file_path: Path, content_type: str | None = None):
-        """Select parser using tiered routing: local first, LlamaParse fallback."""
+        """Select parser using tiered routing.
+
+        - .pdf simple  → PyMuPDF4LLM
+        - .pdf complex → Gemini (OpenRouter)
+        - .docx/.xlsx/.csv/.html → local parsers
+        - .doc/.xls/.ppt → LlamaParse (legacy binary Office only)
+        - otherwise → Gemini if available, else ParserRegistry fallback
+        """
         ext = file_path.suffix.lower()
         if not ext or ext == ".":
             ext = self._MIMETYPE_TO_EXT.get(content_type or "", "")
@@ -291,9 +309,21 @@ class AttachmentProcessor:
                 local = LocalPDFParser()
                 if local.is_available:
                     return local
-                logger.info(f"PyMuPDF4LLM not available, falling back for {file_path.name}")
+                logger.info(
+                    f"PyMuPDF4LLM not available, escalating {file_path.name} to Gemini"
+                )
+            # COMPLEX PDF or local parser unavailable → Gemini.
+            from .gemini_pdf_parser import GeminiPDFParser
 
-        elif ext == ".docx":
+            gemini = GeminiPDFParser()
+            if gemini.is_available:
+                return gemini
+            logger.warning(
+                f"Gemini PDF parser not available; no fallback for complex PDF {file_path.name}"
+            )
+            return None
+
+        if ext == ".docx":
             from .local_office_parser import LocalDocxParser
             local = LocalDocxParser()
             if local.is_available:
@@ -312,6 +342,17 @@ class AttachmentProcessor:
         elif ext in (".html", ".htm"):
             from .local_office_parser import LocalHtmlParser
             return LocalHtmlParser()
+
+        elif ext in self._LEGACY_OFFICE_EXTENSIONS:
+            from .llamaparse_parser import LlamaParseParser
+
+            llp = LlamaParseParser()
+            if llp.is_available:
+                return llp
+            logger.warning(
+                f"LlamaParse not available; cannot parse legacy binary {file_path.name}"
+            )
+            return None
 
         return ParserRegistry.get_parser_for_file(file_path, content_type)
 

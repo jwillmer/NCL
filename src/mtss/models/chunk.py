@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from .document import Document
+from .document import Document, EmbeddingMode
 
 
 class Chunk(BaseModel):
@@ -51,6 +51,8 @@ class Chunk(BaseModel):
 
     # Additional metadata for filtering/context
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    embedding_mode: Optional[EmbeddingMode] = None
 
     # Backwards compatibility
     @property

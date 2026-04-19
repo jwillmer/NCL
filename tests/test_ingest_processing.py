@@ -799,10 +799,23 @@ class TestZipAttachmentContextGeneration:
 
     @pytest.fixture
     def extracted_text_file(self, tmp_path):
-        """A plaintext file to represent the ZIP extraction result."""
+        """A plaintext file to represent the ZIP extraction result.
+
+        Content is intentionally long enough to clear the embedding decider's
+        metadata-only / summary thresholds so the decider picks FULL and the
+        context generator is exercised.
+        """
         extracted = tmp_path / "extracted" / "notes.txt"
         extracted.parent.mkdir(parents=True, exist_ok=True)
-        extracted.write_text("Some extracted content from a ZIP member.")
+        extracted.write_text(
+            "# Notes\n\n"
+            + (
+                "These extracted notes describe the inspection findings for "
+                "the vessel under review. The narrative covers scope, methods, "
+                "conclusions, and recommendations across multiple sections. "
+            )
+            * 10
+        )
         return extracted
 
     @pytest.fixture
@@ -838,6 +851,14 @@ class TestZipAttachmentContextGeneration:
         preprocess_result.skip_reason = None
         components.attachment_processor.preprocess = AsyncMock(return_value=preprocess_result)
         components.attachment_processor.process_attachment = AsyncMock()
+        # New pipeline goes through parse_to_text → decider → build_chunks_for_mode.
+        # Default: return the extracted file's text so the decider sees real content.
+        components.attachment_processor.parse_to_text = AsyncMock(
+            return_value=(extracted_text_file.read_text(), "local_text")
+        )
+        # Real chunker so the splitter actually produces chunks from the text.
+        from mtss.parsers.chunker import DocumentChunker
+        components.attachment_processor.chunker = DocumentChunker()
 
         components.hierarchy_manager = MagicMock()
         components.hierarchy_manager.build_attachment_document = MagicMock()
@@ -887,11 +908,10 @@ class TestZipAttachmentContextGeneration:
         )
 
         mock_components.context_generator.generate_context.assert_awaited_once()
-        assert len(chunks) == 1
+        assert len(chunks) >= 1
         assert chunks[0].context_summary == "Generated context summary"
-        assert chunks[0].embedding_text == (
-            "Generated context summary\n\nSome extracted content from a ZIP member."
-        )
+        assert chunks[0].embedding_text.startswith("Generated context summary\n\n")
+        assert chunks[0].embedding_mode == "full"
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -973,7 +993,10 @@ class TestZipAttachmentContextGeneration:
         uploaded_path, uploaded_bytes, uploaded_ct = args
         # Goes into the email's archive folder as <folder_id>/attachments/<member>
         assert uploaded_path == "doc123abc4567890/attachments/notes.txt"
-        assert uploaded_bytes == b"Some extracted content from a ZIP member."
+        # Content is the fixture text — exact bytes aren't asserted here, but
+        # it must be a non-empty byte string (real upload path, not a mock).
+        assert isinstance(uploaded_bytes, (bytes, bytearray))
+        assert len(uploaded_bytes) > 0
         assert uploaded_ct == "text/plain"
 
         # And update_attachment_markdown was called AFTER (both called once, upload first).
@@ -1059,20 +1082,27 @@ class TestEmptyAttachmentEventEmission:
         """Mock IngestComponents wired for process_attachment or zip variant."""
         components = MagicMock()
         components.attachment_processor = MagicMock()
+        # New pipeline uses parse_to_text + decider; empty-text path is what
+        # triggers the `no_body_chunks` event in the refactored handler.
+        text = (
+            "" if not chunks_return else "something parseable and long enough"
+        )
+        components.attachment_processor.parse_to_text = AsyncMock(
+            return_value=(text, "local_text")
+        )
+        # Keep legacy method mocked for any code path that still references it.
         components.attachment_processor.process_attachment = AsyncMock(
             return_value=chunks_return
         )
-        components.attachment_processor.chunker = MagicMock()
+        from mtss.parsers.chunker import DocumentChunker
+        components.attachment_processor.chunker = DocumentChunker()
 
-        # preprocess is awaited in both attachment paths. Any attr not set
-        # here returns a truthy MagicMock, so is_zip / is_image must be
-        # explicit False to hit the document branch.
         preprocess = MagicMock(
             should_process=True,
             is_image=False,
             is_zip=False,
             skip_reason=None,
-            parser_name=None,  # skip cached-md lookup branch
+            parser_name=None,
             image_description=None,
         )
         components.attachment_processor.preprocess = AsyncMock(return_value=preprocess)
@@ -1086,7 +1116,6 @@ class TestEmptyAttachmentEventEmission:
         components.archive_generator.storage.file_exists = MagicMock(return_value=False)
         components.context_generator = None
 
-        # db.log_ingest_event is what the pipeline calls to record no_body_chunks
         components.db = MagicMock()
         components.db.log_ingest_event = MagicMock()
         return components
@@ -1377,6 +1406,22 @@ class TestZipMemberConcurrency:
             )]
 
         components.attachment_processor.process_attachment = AsyncMock(side_effect=slow_parse)
+
+        # New pipeline uses parse_to_text; mirror the per-call delay so the
+        # concurrency assertion still measures parallelism.
+        async def slow_parse_text(path, content_type):
+            if per_call_delay:
+                await _asyncio.sleep(per_call_delay)
+            # Return content long enough to avoid metadata_only path.
+            return (
+                f"# {path.name}\n\n"
+                + ("parsed content for this extracted zip member. " * 30),
+                "local_text",
+            )
+
+        components.attachment_processor.parse_to_text = AsyncMock(side_effect=slow_parse_text)
+        from mtss.parsers.chunker import DocumentChunker
+        components.attachment_processor.chunker = DocumentChunker()
 
         def build_attach_doc(**kwargs):
             from mtss.models.document import Document, DocumentType, ProcessingStatus

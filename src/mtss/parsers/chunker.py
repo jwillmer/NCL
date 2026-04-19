@@ -460,3 +460,199 @@ class DocumentChunker:
             Token count.
         """
         return len(self._encoding.encode(text))
+
+
+# Embedding-mode chunk strategies. The dispatcher (build_chunks_for_mode) is
+# the single entry point used by both fresh ingest and `mtss re-embed`.
+
+
+async def build_chunks_full(
+    *,
+    document: Document,
+    markdown: str,
+    chunker: DocumentChunker,
+    context_generator: Optional[ContextGenerator],
+    source_file: str,
+) -> List[Chunk]:
+    """Whole-markdown chunking path. Single FULL-mode entry point — always
+    use this rather than calling ``chunker.chunk_text`` + manually stamping,
+    so chunk_id determinism and field stamping stay in sync."""
+    from ..models.document import EmbeddingMode
+    from ..utils import compute_chunk_id
+
+    if not markdown or not markdown.strip():
+        return []
+
+    chunks = chunker.chunk_text(
+        text=markdown,
+        document_id=document.id,
+        source_file=source_file,
+        is_markdown=True,
+    )
+    if not chunks:
+        return []
+
+    context: Optional[str] = None
+    if context_generator is not None:
+        try:
+            context = await context_generator.generate_context(document, markdown[:4000])
+        except Exception as exc:
+            logger.warning(
+                "Context generation failed for %s: %s — proceeding without context",
+                document.file_name,
+                exc,
+            )
+    doc_id = document.doc_id or ""
+
+    for chunk in chunks:
+        chunk.context_summary = context
+        chunk.embedding_text = (
+            context_generator.build_embedding_text(context, chunk.content)
+            if context and context_generator is not None
+            else chunk.content
+        )
+        chunk.source_id = document.source_id
+        chunk.source_title = document.source_title
+        chunk.archive_browse_uri = document.archive_browse_uri
+        chunk.archive_download_uri = document.archive_download_uri
+        chunk.embedding_mode = EmbeddingMode.FULL
+        if (
+            doc_id
+            and chunk.char_start is not None
+            and chunk.char_end is not None
+        ):
+            chunk.chunk_id = compute_chunk_id(
+                doc_id, chunk.char_start, chunk.char_end
+            )
+
+    return chunks
+
+
+async def build_chunks_summary(
+    *,
+    document: Document,
+    markdown: str,
+    context_generator: ContextGenerator,
+    source_file: str,
+) -> List[Chunk]:
+    """LLM-summary path. Returns exactly one chunk carrying the summary.
+
+    Uses ``SUMMARY_CHUNK_POS`` for the chunk_id because summary chunks are
+    synthesized — they do not correspond to a line range in the archive
+    markdown. Deep-link-to-line citations don't resolve for these chunks;
+    that's acceptable for sensor dumps and bulk numeric exports.
+    """
+    from ..models.document import EmbeddingMode
+    from ..utils import SUMMARY_CHUNK_POS, compute_chunk_id
+
+    summary_text = await context_generator.generate_context(
+        document, markdown[:8000]
+    )
+    summary_text = (summary_text or "").strip()
+    if not summary_text:
+        return []
+
+    doc_id = document.doc_id or ""
+    chunk = Chunk(
+        document_id=document.id,
+        content=summary_text,
+        chunk_index=0,
+        context_summary=None,
+        embedding_text=summary_text,
+        section_path=[],
+        section_title=None,
+        source_title=document.source_title,
+        source_id=document.source_id,
+        archive_browse_uri=document.archive_browse_uri,
+        archive_download_uri=document.archive_download_uri,
+        metadata={"source_file": source_file, "type": "summary"},
+        embedding_mode=EmbeddingMode.SUMMARY,
+    )
+    if doc_id:
+        chunk.chunk_id = compute_chunk_id(doc_id, *SUMMARY_CHUNK_POS)
+    return [chunk]
+
+
+def build_chunks_metadata_only(
+    *,
+    document: Document,
+    source_file: str,
+) -> List[Chunk]:
+    """Metadata-only path. One stub chunk built from filename + doc metadata.
+
+    Content embeds the filename, document type, and any email subject so the
+    doc is findable by keyword queries targeting those fields — even though
+    nothing from the file body is embedded.
+    """
+    from ..models.document import EmbeddingMode
+    from ..utils import METADATA_CHUNK_POS, compute_chunk_id
+
+    parts: List[str] = []
+    parts.append(f"File: {document.file_name}")
+    if document.document_type:
+        parts.append(
+            f"Type: {document.document_type.value if hasattr(document.document_type, 'value') else document.document_type}"
+        )
+    if document.source_title and document.source_title != document.file_name:
+        parts.append(f"Title: {document.source_title}")
+    if document.email_metadata and document.email_metadata.subject:
+        parts.append(f"Subject: {document.email_metadata.subject}")
+
+    content = "\n".join(parts)
+    doc_id = document.doc_id or ""
+
+    chunk = Chunk(
+        document_id=document.id,
+        content=content,
+        chunk_index=0,
+        context_summary=None,
+        embedding_text=content,
+        section_path=[],
+        section_title=None,
+        source_title=document.source_title,
+        source_id=document.source_id,
+        archive_browse_uri=document.archive_browse_uri,
+        archive_download_uri=document.archive_download_uri,
+        metadata={"source_file": source_file, "type": "metadata_stub"},
+        embedding_mode=EmbeddingMode.METADATA_ONLY,
+    )
+    if doc_id:
+        chunk.chunk_id = compute_chunk_id(doc_id, *METADATA_CHUNK_POS)
+    return [chunk]
+
+
+async def build_chunks_for_mode(
+    *,
+    mode,
+    document: Document,
+    markdown: str,
+    chunker: DocumentChunker,
+    context_generator: ContextGenerator,
+    source_file: str,
+) -> List[Chunk]:
+    """Dispatch to the correct strategy based on an EmbeddingMode value.
+
+    Accepts either the enum or its string value for flexibility at the ingest
+    and CLI call sites.
+    """
+    from ..models.document import EmbeddingMode
+
+    m = mode.value if hasattr(mode, "value") else mode
+    if m == EmbeddingMode.FULL.value:
+        return await build_chunks_full(
+            document=document,
+            markdown=markdown,
+            chunker=chunker,
+            context_generator=context_generator,
+            source_file=source_file,
+        )
+    if m == EmbeddingMode.SUMMARY.value:
+        return await build_chunks_summary(
+            document=document,
+            markdown=markdown,
+            context_generator=context_generator,
+            source_file=source_file,
+        )
+    if m == EmbeddingMode.METADATA_ONLY.value:
+        return build_chunks_metadata_only(document=document, source_file=source_file)
+    raise ValueError(f"Unknown embedding mode: {mode}")

@@ -7,7 +7,8 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 - **Email Parsing:** Conversation-aware parsing with participant tracking
 - **Multi-Format Support:** PDF, DOCX, PPTX, XLSX, CSV, HTML, images, ZIP archives, legacy formats (DOC, XLS, PPT)
 - **Image Understanding:** AI-powered image classification and descriptions via LiteLLM Vision, with local heuristic pre-filtering
-- **Tiered Document Parsing:** Local parsers for simple PDFs (PyMuPDF4LLM), DOCX (python-docx), XLSX (openpyxl), CSV, and HTML; LlamaParse for complex PDFs and legacy formats
+- **Tiered Document Parsing:** Local parsers for simple PDFs (PyMuPDF4LLM), DOCX (python-docx), XLSX (openpyxl), CSV, and HTML; Gemini 2.5 Flash via OpenRouter for complex PDFs and modern non-local formats; LlamaParse only for legacy binary `.doc`/`.xls`/`.ppt`
+- **Per-Document Embedding Modes:** Each attachment is classified at ingest time as `full` (chunk + embed), `summary` (one synthesized chunk for noisy/numeric dumps), or `metadata_only` (filename-only stub for empty/noise docs). Decision is rule-based with an LLM triage call for the medium-confidence band
 - **Local-First Ingest:** Ingest always writes locally (JSONL + archives); `MTSS import` pushes to Supabase
 - **Contextual Chunking:** LLM-generated document summaries prepended to chunks (35-67% retrieval improvement)
 - **Vector Storage:** Supabase with pgvector for similarity search
@@ -26,7 +27,7 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 uv sync
 ```
 
-> **Note:** Simple PDFs, DOCX, XLSX, CSV, and HTML are parsed locally (no API key needed). LlamaParse is used for complex PDFs and legacy formats — requires `LLAMA_CLOUD_API_KEY`. Ingest always writes locally — Supabase credentials are only needed for `MTSS import`.
+> **Note:** Simple PDFs, DOCX, XLSX, CSV, and HTML are parsed locally (no API key needed). Complex PDFs and modern non-local formats route to Gemini 2.5 Flash via OpenRouter (requires `OPENROUTER_API_KEY`). LlamaParse is only used as a fallback for legacy binary Office (`.doc`/`.xls`/`.ppt`) and requires `LLAMA_CLOUD_API_KEY`. Ingest always writes locally — Supabase credentials are only needed for `MTSS import`.
 
 ## Running the CLI
 
@@ -106,6 +107,7 @@ See the [docs/](docs/) folder for detailed documentation:
 | `uv run MTSS failures` | View/export ingest reports |
 | `uv run MTSS reset-stale` | Reset files stuck in processing |
 | `uv run MTSS reprocess` | Re-ingest documents with older ingest version |
+| `uv run MTSS re-embed` | Re-classify + re-chunk + re-embed archived docs against the current decider — no re-parse |
 | `uv run MTSS mark-failed` | Flag specific EMLs as FAILED so `--retry-failed` re-ingests them |
 | `uv run MTSS clean-archive-md` | Strip stale LlamaParse image refs from archived `.md` files |
 | `uv run MTSS vessels import` | Import vessel register from CSV |
@@ -220,6 +222,29 @@ uv run MTSS reprocess --target-version 2
 # Limit number of documents processed
 uv run MTSS reprocess --limit 50
 ```
+
+### Re-Embed Command
+
+Re-run the embedding decider + chunker + embedder against the existing archive markdown — no re-parse, no extra LlamaParse/Gemini parser spend. Useful after tuning decider thresholds or after introducing a new embedding mode.
+
+```bash
+# Show the decided mode for every archived doc, write nothing
+uv run MTSS re-embed --all --dry-run
+
+# Re-embed a single doc
+uv run MTSS re-embed --doc-id <uuid>
+
+# Process at most N docs (staged rollout)
+uv run MTSS re-embed --all --limit 20
+
+# Force a specific mode regardless of the decider
+uv run MTSS re-embed --doc-id <uuid> --mode summary
+
+# Re-process even when embedding_mode already matches
+uv run MTSS re-embed --doc-id <uuid> --force
+```
+
+Idempotent — docs already at the decided mode are skipped unless `--force`. Replaces the retired `scripts/repair_failed_llamaparse_attachments.py` for in-place embedding fixes.
 
 ### Mark-Failed Command
 
@@ -570,7 +595,7 @@ POST /feedback
 - **Frontend:** Next.js + React + TypeScript + TailwindCSS + Radix UI + AG-UI SDK
 - **Agent Framework:** LangGraph with AG-UI protocol integration
 - **Observability:** Langfuse (backend + browser SDK)
-- **Document Processing:** Local parsers (PyMuPDF4LLM, python-docx, openpyxl) + LlamaParse fallback for complex/legacy formats
+- **Document Processing:** Local parsers (PyMuPDF4LLM, python-docx, openpyxl) → Gemini 2.5 Flash via OpenRouter for complex PDFs and modern non-local formats → LlamaParse fallback only for legacy binary Office (`.doc`/`.xls`/`.ppt`)
 - **Image Processing:** Local heuristic filtering + LiteLLM Vision via OpenRouter (classification + description)
 - **Text Chunking:** LangChain text splitters with tiktoken (1024 token chunks, 100 token overlap)
 - **Embeddings:** text-embedding-3-small via OpenRouter (1536 dimensions)

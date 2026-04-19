@@ -159,6 +159,7 @@ def write_run_summary(
 def show_estimate(
     result,
     page_cost: float,
+    gemini_page_cost: float,
     vision_cost: float,
     text_cost: float,
     embedding_cost: float,
@@ -168,7 +169,8 @@ def show_estimate(
     from rich.table import Table
 
     from ..ingest.estimator import (
-        LLAMAPARSE_ONLY_CATEGORIES,
+        GEMINI_PARSE_CATEGORIES,
+        LEGACY_OFFICE_CATEGORIES,
         LOCAL_PARSE_CATEGORIES,
         PAGE_COUNT_CATEGORIES,
         TEXT_CATEGORIES,
@@ -222,19 +224,21 @@ def show_estimate(
         # Determine parse method for this category
         if cat_name in LOCAL_PARSE_CATEGORIES:
             method = "local (free)"
-        elif cat_name in LLAMAPARSE_ONLY_CATEGORIES:
+        elif cat_name in LEGACY_OFFICE_CATEGORIES:
             method = "LlamaParse"
         elif cat_name == "PDF":
             sp = stats.pdf_simple_pages
             cp = stats.pdf_complex_pages
             if sp > 0 and cp > 0:
-                method = f"local:{sp}pp / LP:{cp}pp"
+                method = f"local:{sp}pp / Gemini:{cp}pp"
             elif sp > 0:
                 method = "local (free)"
             elif cp > 0:
-                method = "LlamaParse"
+                method = "Gemini"
             else:
-                method = "LlamaParse*"
+                method = "Gemini*"
+        elif cat_name in GEMINI_PARSE_CATEGORIES:
+            method = "Gemini"
         elif cat_name in VISION_CATEGORIES:
             method = "Vision API"
         elif cat_name in TEXT_CATEGORIES:
@@ -269,8 +273,9 @@ def show_estimate(
     cost_table.add_column("Unit Cost", justify="right")
     cost_table.add_column("Cost", justify="right", style="green")
 
-    # Compute local vs LlamaParse page split
+    # Compute local vs Gemini vs LlamaParse page split
     local_pages = 0
+    gemini_pages = 0
     llama_pages = 0
     for cat_name in PAGE_COUNT_CATEGORIES:
         stats = result.categories.get(cat_name)
@@ -281,11 +286,14 @@ def show_estimate(
         elif cat_name == "PDF":
             if stats.pdf_simple_pages or stats.pdf_complex_pages:
                 local_pages += stats.pdf_simple_pages
-                llama_pages += stats.pdf_complex_pages
+                gemini_pages += stats.pdf_complex_pages
             else:
-                llama_pages += stats.page_count  # legacy cache
-        else:
+                gemini_pages += stats.page_count  # legacy cache, assume complex → Gemini
+        elif cat_name in LEGACY_OFFICE_CATEGORIES:
             llama_pages += stats.page_count
+        else:
+            # PPTX + Other Docs route to Gemini
+            gemini_pages += stats.page_count
 
     # Local parsing (free)
     if local_pages > 0:
@@ -296,14 +304,25 @@ def show_estimate(
             "$0.00",
         )
 
-    # LlamaParse (complex/legacy docs)
+    # Gemini (complex PDFs + modern formats Gemini handles)
+    gemini_total = gemini_pages * gemini_page_cost
+    if gemini_pages > 0:
+        cost_table.add_row(
+            "Gemini 2.5 Flash (complex docs)",
+            f"{gemini_pages} pages",
+            f"${gemini_page_cost:.5f}",
+            f"${gemini_total:.2f}",
+        )
+
+    # LlamaParse (legacy binary Office only)
     llama_total = llama_pages * page_cost
-    cost_table.add_row(
-        "LlamaParse (complex docs)",
-        f"{llama_pages} pages",
-        f"${page_cost:.5f}",
-        f"${llama_total:.2f}",
-    )
+    if llama_pages > 0:
+        cost_table.add_row(
+            "LlamaParse (legacy Office)",
+            f"{llama_pages} pages",
+            f"${page_cost:.5f}",
+            f"${llama_total:.2f}",
+        )
 
     # Vision API (images) -- only meaningful images get described
     image_meaningful = 0
@@ -355,7 +374,7 @@ def show_estimate(
     )
 
     # Total row
-    grand_total = llama_total + vision_total + text_total + embed_total
+    grand_total = gemini_total + llama_total + vision_total + text_total + embed_total
     cost_table.add_section()
     cost_table.add_row(
         "[bold]TOTAL ESTIMATED[/bold]",
@@ -372,7 +391,11 @@ def show_estimate(
         "  [dim]Local: simple PDFs (PyMuPDF), DOCX (python-docx), XLSX (openpyxl) -- no API cost[/dim]"
     )
     console.print(
-        "  [dim]LlamaParse: complex/scanned PDFs, PPTX, legacy Office -- "
+        "  [dim]Gemini: complex/scanned PDFs + PPTX + other docs via OpenRouter "
+        "(~$0.0025/page)[/dim]"
+    )
+    console.print(
+        "  [dim]LlamaParse: legacy binary .doc/.xls/.ppt only -- "
         "5 avg credits/page x $0.00125/credit[/dim]"
     )
     console.print(

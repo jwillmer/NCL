@@ -32,7 +32,7 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 │ 2. FILE CLASSIFICATION (classify_files_for_queues)                          │
 │    - Peek at each EML file's attachments                                    │
 │    - Fast lane: Emails with no attachments or images only                   │
-│    - Slow lane: Emails with documents requiring LlamaParse                  │
+│    - Slow lane: Emails with docs needing a heavy parser (Gemini/LlamaParse) │
 │    - Worker split: 60% fast / 40% slow                                      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
@@ -165,13 +165,18 @@ This document provides detailed flowcharts of the ingest and ingest-update logic
 │                           │  │ 8a. Route by type:                           │
 │ For multi-message threads │  │     - ZIP → extract, recurse                 │
 │ (2+ messages):            │  │     - Image → classify, describe if content  │
-│ - Sanitize input          │  │     - Document → LlamaParse/local parser     │
-│ - LLM summarizes thread   │  │                                              │
-│ - Creates one digest      │  │ 8b. Create child document in hierarchy       │
-│   chunk (type=            │  │                                              │
-│   thread_digest)          │  │ 8c. Chunk parsed content with metadata       │
-│ - Tagged with same        │  │                                              │
+│ - Sanitize input          │  │     - PDF simple → PyMuPDF4LLM (free)        │
+│ - LLM summarizes thread   │  │     - PDF complex → Gemini 2.5 Flash         │
+│ - Creates one digest      │  │     - .docx/.xlsx/.csv/.html → local         │
+│   chunk (type=            │  │     - .doc/.xls/.ppt → LlamaParse            │
+│   thread_digest)          │  │                                              │
+│ - Tagged with same        │  │ 8b. Create child document in hierarchy       │
 │   vessel/topic metadata   │  │                                              │
+│                           │  │ 8c. embedding_decider → full / summary /     │
+│                           │  │     metadata_only (per-doc, stamped on doc + │
+│                           │  │     every chunk)                             │
+│                           │  │                                              │
+│                           │  │ 8d. Chunk per chosen mode + chunk metadata   │
 └─────────┬─────────────────┘  └──────────────────────┬───────────────────────┘
           │                                           │
           └─────────────────────┬─────────────────────┘

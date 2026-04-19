@@ -37,6 +37,20 @@ class ProcessingStatus(str, Enum):
     FAILED = "failed"
 
 
+class EmbeddingMode(str, Enum):
+    """How a document's chunks are produced for embedding.
+
+    FULL: whole parsed markdown is chunked normally.
+    SUMMARY: a short LLM summary becomes the only embedded chunks.
+    METADATA_ONLY: one stub chunk built from filename + doc metadata;
+        used for docs whose content carries no semantic signal.
+    """
+
+    FULL = "full"
+    SUMMARY = "summary"
+    METADATA_ONLY = "metadata_only"
+
+
 class EmailMessage(BaseModel):
     """A single message within an email conversation."""
 
@@ -113,6 +127,8 @@ class Document(BaseModel):
     status: ProcessingStatus = ProcessingStatus.PENDING
     error_message: Optional[str] = None
     processed_at: Optional[datetime] = None
+
+    embedding_mode: Optional[EmbeddingMode] = None
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

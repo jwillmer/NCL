@@ -116,7 +116,13 @@ def register(app: typer.Typer):
         page_cost: float = typer.Option(
             0.00625,
             "--page-cost",
-            help="LlamaParse cost per page USD (default: 5 avg credits * $0.00125/credit)",
+            help="LlamaParse cost per page USD (legacy .doc/.xls/.ppt only; "
+                 "default: 5 avg credits * $0.00125/credit)",
+        ),
+        gemini_page_cost: float = typer.Option(
+            0.0025,
+            "--gemini-page-cost",
+            help="Gemini 2.5 Flash cost per PDF page USD (default: ~$0.0025)",
         ),
         vision_cost: float = typer.Option(
             0.01,
@@ -164,7 +170,10 @@ def register(app: typer.Typer):
             console.print("[dim]No EML files found in source directory.[/dim]")
             raise typer.Exit(0)
 
-        _show_estimate(result, page_cost, vision_cost, text_cost, embedding_cost, verbose)
+        _show_estimate(
+            result, page_cost, gemini_page_cost, vision_cost,
+            text_cost, embedding_cost, verbose,
+        )
 
 
 async def _ingest(

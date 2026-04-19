@@ -153,6 +153,16 @@ class LocalCsvParser(BaseParser):
 
         text = _decode_with_fallback(file_path.read_bytes())
 
+        # Some exports have binary garbage appended after the CSV body (NULs +
+        # high-ASCII). That trailer produces unquoted bare \r inside a field,
+        # which csv.reader rejects ("new-line character seen in unquoted
+        # field"). Drop the trailer at the first NUL, then normalize line
+        # endings so any remaining lone \r doesn't trip the tokenizer.
+        nul = text.find("\x00")
+        if nul >= 0:
+            text = text[:nul]
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+
         try:
             reader = csv.reader(io.StringIO(text))
             rows: list[str] = []

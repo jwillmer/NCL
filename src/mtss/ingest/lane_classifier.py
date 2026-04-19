@@ -1,8 +1,9 @@
 """Lane classifier for fast/slow email processing.
 
 Classifies emails based on attachment types to optimize parallel processing:
-- Fast lane: Emails without attachments or with only images (no LlamaParse needed)
-- Slow lane: Emails with documents requiring LlamaParse (PDFs, Office files, etc.)
+- Fast lane: Emails without attachments or with only images (no heavy parser needed)
+- Slow lane: Emails with documents requiring a heavy parser (Gemini for complex
+  PDFs / PPTX / other docs; LlamaParse for legacy binary .doc/.xls/.ppt).
 """
 
 from __future__ import annotations
@@ -28,11 +29,12 @@ IMAGE_MIMETYPES = {
     "image/bmp",
 }
 
-# Document MIME types that require LlamaParse (from LlamaParseParser)
-# Note: DOCX, XLSX, CSV, HTML now use local parsers (fast lane) via tiered routing.
-# PDF stays here because complex PDFs still need LlamaParse.
-LLAMAPARSE_MIMETYPES = {
-    # PDF (complex PDFs still need LlamaParse)
+# Document MIME types routed through a heavy (cloud) parser — slow lane.
+# DOCX, XLSX, CSV, HTML use local parsers (fast lane) via tiered routing.
+# PDFs land here because complex PDFs still need Gemini; legacy binary Office
+# (.doc/.xls/.ppt) lands here because it still needs LlamaParse.
+HEAVY_PARSER_MIMETYPES = {
+    # PDF (complex PDFs still need Gemini)
     "application/pdf",
     # Modern Office formats
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
@@ -88,11 +90,11 @@ IMAGE_EXTENSIONS = {
 class LaneClassifier:
     """Classify emails into fast or slow processing lanes.
 
-    Fast lane: Emails that don't need LlamaParse API calls
+    Fast lane: Emails that don't need a heavy cloud parser
     - No attachments
     - Only image attachments
 
-    Slow lane: Emails that require LlamaParse API calls
+    Slow lane: Emails that require a heavy cloud parser (Gemini or LlamaParse)
     - PDF, Office documents, etc.
     - ZIP files (may contain documents)
     - Unknown attachment types (conservative)
@@ -113,8 +115,8 @@ class LaneClassifier:
             eml_path: Path to the EML file.
 
         Returns:
-            "fast" for emails that don't need LlamaParse
-            "slow" for emails that require LlamaParse
+            "fast" for emails that don't need a heavy cloud parser
+            "slow" for emails that require a heavy cloud parser
         """
         try:
             attachments = self.eml_parser.peek_attachments(eml_path)
@@ -138,7 +140,7 @@ class LaneClassifier:
                 return "slow"
 
             # Document types go to slow lane
-            if content_type in LLAMAPARSE_MIMETYPES:
+            if content_type in HEAVY_PARSER_MIMETYPES:
                 return "slow"
 
             # Check by extension for document types

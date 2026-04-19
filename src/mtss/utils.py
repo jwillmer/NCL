@@ -68,6 +68,17 @@ def compute_chunk_id(doc_id: str, char_start: int, char_end: int) -> str:
     return hashlib.sha256(combined.encode()).hexdigest()[:CHUNK_ID_LENGTH]
 
 
+# Synthetic chunk-id positions for chunks that don't map to a markdown range.
+# Negative char_start sentinels keep these IDs disjoint from real-position IDs.
+SUMMARY_CHUNK_POS: tuple[int, int] = (-1, 0)
+METADATA_CHUNK_POS: tuple[int, int] = (-2, 0)
+
+
+def strip_archive_prefix(uri: str) -> str:
+    """Drop a leading ``/archive/`` so storage backends can resolve the key."""
+    return uri.removeprefix("/archive/")
+
+
 def sanitize_filename(filename: str, max_length: int = 255) -> str:
     """Sanitize a filename for safe filesystem use.
 

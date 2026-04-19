@@ -180,6 +180,25 @@ def comprehensive_mock_settings():
     # Archive settings
     settings.archive_base_url = "https://archive.example.com"
     settings.current_ingest_version = 1
+    # Gemini PDF parser
+    settings.gemini_pdf_model = "openrouter/google/gemini-2.5-flash"
+    settings.gemini_pdf_enabled = True
+    settings.max_concurrent_gemini_pdf = 4
+    settings.gemini_pdf_page_batch_size = 25
+    settings.gemini_pdf_hard_page_ceiling = 200
+    settings.gemini_pdf_max_cost_usd_per_doc = 0.50
+    settings.attachment_max_bytes = 100 * 1024 * 1024
+    # Embedding decider thresholds
+    settings.decider_short_token_threshold = 50
+    settings.decider_no_prose_ratio = 0.15
+    settings.decider_bulk_token_threshold = 20_000
+    settings.decider_digit_ratio = 0.40
+    settings.decider_table_char_pct = 0.50
+    settings.decider_repetition_score = 0.92
+    settings.decider_short_line_ratio = 0.95
+    settings.decider_medium_token_threshold = 50_000
+    settings.decider_medium_prose_ratio = 0.50
+    settings.embedding_triage_llm_model = None
     return settings
 
 

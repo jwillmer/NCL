@@ -129,8 +129,9 @@ class Settings(BaseSettings):
     #   3 - Added context summaries
     #   4 - Added topic extraction
     #   5 - Sanitized archive keys (underscores), stripped LlamaParse image refs
+    #   6 - Two-tier PDF parser (PyMuPDF -> Gemini) + per-doc embedding_mode
     current_ingest_version: int = Field(
-        default=5, validation_alias="CURRENT_INGEST_VERSION"
+        default=6, validation_alias="CURRENT_INGEST_VERSION"
     )
 
     # Processing Options
@@ -164,7 +165,8 @@ class Settings(BaseSettings):
         default=3, ge=1, le=50, validation_alias="TOPIC_LOOSENING_MIN_CHUNKS"
     )
 
-    # LlamaParse Configuration (for legacy formats like .doc, .xls, .ppt)
+    # LlamaParse Configuration (legacy binary Office only: .doc, .xls, .ppt).
+    # Modern formats and PDFs route to PyMuPDF4LLM -> Gemini instead.
     llama_cloud_api_key: str | None = Field(
         default=None, validation_alias="LLAMA_CLOUD_API_KEY"
     )
@@ -175,10 +177,84 @@ class Settings(BaseSettings):
         """LlamaParse is auto-enabled when API key is set."""
         return self.llama_cloud_api_key is not None
 
+    # Gemini PDF parser (via OpenRouter). Used when a PDF is scanned,
+    # produces empty text via PyMuPDF, or otherwise classifies COMPLEX.
+    gemini_pdf_model: str = Field(
+        default="openrouter/google/gemini-2.5-flash",
+        validation_alias="GEMINI_PDF_MODEL",
+    )
+    max_concurrent_gemini_pdf: int = Field(
+        default=4, validation_alias="MAX_CONCURRENT_GEMINI_PDF"
+    )
+    gemini_pdf_page_batch_size: int = Field(
+        default=25, validation_alias="GEMINI_PDF_PAGE_BATCH_SIZE"
+    )
+    gemini_pdf_hard_page_ceiling: int = Field(
+        default=200, validation_alias="GEMINI_PDF_HARD_PAGE_CEILING"
+    )
+    gemini_pdf_max_cost_usd_per_doc: float = Field(
+        default=0.50, validation_alias="GEMINI_PDF_MAX_COST_USD_PER_DOC"
+    )
+
+    @computed_field
+    @property
+    def gemini_pdf_enabled(self) -> bool:
+        """Gemini PDF parser auto-enabled when OpenRouter key is present."""
+        return bool(self.openrouter_api_key)
+
+    # Reject attachments above this byte size before loading into memory.
+    attachment_max_bytes: int = Field(
+        default=100 * 1024 * 1024, validation_alias="ATTACHMENT_MAX_BYTES"
+    )
+
+    # Embedding-mode decider thresholds (tune via env; no code change needed).
+    # See src/mtss/ingest/embedding_decider.py for the decision tree.
+    decider_short_token_threshold: int = Field(
+        default=50, validation_alias="DECIDER_SHORT_TOKEN_THRESHOLD"
+    )
+    decider_no_prose_ratio: float = Field(
+        default=0.15, validation_alias="DECIDER_NO_PROSE_RATIO"
+    )
+    decider_bulk_token_threshold: int = Field(
+        default=20_000, validation_alias="DECIDER_BULK_TOKEN_THRESHOLD"
+    )
+    decider_digit_ratio: float = Field(
+        default=0.40, validation_alias="DECIDER_DIGIT_RATIO"
+    )
+    decider_table_char_pct: float = Field(
+        default=0.50, validation_alias="DECIDER_TABLE_CHAR_PCT"
+    )
+    # Tuned 2026-04-19 from a 150-doc dry-run inventory: prose vessel-status
+    # reports were getting demoted to SUMMARY because section headers/footers
+    # repeat across hundreds of pages, inflating repetition_score even though
+    # the per-section content is meaningful. Sensor logs (the intended target)
+    # have *unique* per-row values so this rule never caught them anyway —
+    # digit_ratio + table_char_pct are the right discriminators for those.
+    decider_repetition_score: float = Field(
+        default=0.92, validation_alias="DECIDER_REPETITION_SCORE"
+    )
+    decider_short_line_ratio: float = Field(
+        default=0.95, validation_alias="DECIDER_SHORT_LINE_RATIO"
+    )
+    decider_medium_token_threshold: int = Field(
+        default=50_000, validation_alias="DECIDER_MEDIUM_TOKEN_THRESHOLD"
+    )
+    decider_medium_prose_ratio: float = Field(
+        default=0.50, validation_alias="DECIDER_MEDIUM_PROSE_RATIO"
+    )
+    embedding_triage_llm_model: str | None = Field(
+        default=None, validation_alias="EMBEDDING_TRIAGE_LLM_MODEL"
+    )
+
     # ZIP Extraction Limits (DoS protection)
     zip_max_files: int = Field(default=100, validation_alias="ZIP_MAX_FILES")
     zip_max_depth: int = Field(default=3, validation_alias="ZIP_MAX_DEPTH")
     zip_max_total_size_mb: int = Field(default=500, validation_alias="ZIP_MAX_TOTAL_SIZE_MB")
+
+    # Skip PDFs above this page count during ingest. Large operational logs
+    # (800+ page sensor dumps, etc.) cost orders of magnitude more at LlamaParse
+    # than they return in useful RAG signal; better to skip and log.
+    pdf_max_pages: int = Field(default=40, validation_alias="PDF_MAX_PAGES")
 
     # Embedding batch size
     embedding_batch_size: int = Field(default=100, validation_alias="EMBEDDING_BATCH_SIZE")

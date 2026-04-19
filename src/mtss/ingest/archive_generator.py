@@ -582,7 +582,12 @@ class ArchiveGenerator:
         folder_id: str,
         attachment_map: Dict[str, Dict[str, str]],
     ) -> None:
-        """Upload metadata.json for programmatic access."""
+        """Seed metadata.json with email + attachment metadata.
+
+        Called from ``generate_archive`` before processing runs. Per-step
+        model + timestamp data is written later by
+        ``finalize_metadata_processing`` once the pipeline finishes.
+        """
         meta = parsed_email.metadata
         metadata: Dict[str, Any] = {
             "doc_id": doc_id,
@@ -603,6 +608,42 @@ class ArchiveGenerator:
             json.dumps(metadata, indent=2),
             "application/json",
         )
+
+    def finalize_metadata_processing(
+        self,
+        doc_id: str,
+        processing: Dict[str, Any],
+    ) -> bool:
+        """Merge a ``processing`` key into an existing ``metadata.json``.
+
+        Called at the end of ``process_email`` once the in-memory
+        ``ProcessingTrail`` is complete. Reads the file written during
+        ``generate_archive``, adds/overwrites the ``processing`` key,
+        writes it back.
+
+        Returns True on success, False if metadata.json is missing (e.g.
+        archive generation failed earlier). Never raises — trail
+        persistence must not break ingest.
+        """
+        folder_id = doc_id[:16]
+        path = f"{folder_id}/metadata.json"
+        try:
+            if not self.storage.file_exists(path):
+                return False
+            raw = self.storage.download_text(path)
+            data = json.loads(raw)
+            data["processing"] = processing
+            self.storage.upload_text(
+                path,
+                json.dumps(data, indent=2),
+                "application/json",
+            )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "finalize_metadata_processing failed for %s: %s", folder_id, e
+            )
+            return False
 
     def get_archive_uris(self, doc_id: str) -> Dict[str, Optional[str]]:
         """Get archive URIs for a document if it exists.

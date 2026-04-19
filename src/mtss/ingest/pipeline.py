@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from ..config import get_settings
 from ..ingest.archive_generator import _sanitize_storage_key
-from ..models.document import ProcessingStatus
+from ..models.document import EmbeddingMode, ProcessingStatus
 from ..parsers.email_cleaner import (
     clean_email_body,
     remove_boilerplate_from_message,
@@ -26,6 +26,15 @@ from ..processing.topics import sanitize_input
 from ..utils import compute_chunk_id, compute_doc_id, normalize_source_id
 from .attachment_handler import _count_zip_members, process_attachment
 from .helpers import noop_verbose
+from .processing_trail import (
+    STEP_CONTENT_CLEANUP,
+    STEP_CONTEXT,
+    STEP_EMBED,
+    STEP_PARSE,
+    STEP_THREAD_DIGEST,
+    STEP_TOPICS,
+    ProcessingTrail,
+)
 
 if TYPE_CHECKING:
     from ..models.chunk import Chunk
@@ -48,6 +57,25 @@ class EmailResult:
 
 
 _noop_verbose = noop_verbose  # backward compat alias
+
+
+def _stamp_embed_by_document(
+    trail: ProcessingTrail,
+    chunks: list,
+    embedding_model: str,
+) -> None:
+    """Stamp one ``embed`` entry per distinct ``document_id`` in ``chunks``.
+
+    Routes by the trail's registered doc_id→slot map, so chunks for
+    unregistered documents (shouldn't happen, but safe) silently drop.
+    """
+    from collections import Counter
+
+    counts = Counter(str(ch.document_id) for ch in chunks)
+    for doc_id, n in counts.items():
+        trail.stamp_by_document_id(
+            doc_id, STEP_EMBED, model=embedding_model, chunk_count=n
+        )
 
 
 def _count_progress_units(attachments) -> int:
@@ -298,9 +326,12 @@ def _create_body_chunks(
                 source_title=email_doc.source_title,
                 archive_browse_uri=email_doc.archive_browse_uri,
                 archive_download_uri=email_doc.archive_download_uri,
+                embedding_mode=EmbeddingMode.FULL,
             )
         )
 
+    # Emails skip the decider — bodies are always prose.
+    email_doc.embedding_mode = EmbeddingMode.FULL
     return chunks
 
 
@@ -408,6 +439,7 @@ Date range: {date_start} to {date_end}
         source_title=email_doc.source_title,
         archive_browse_uri=email_doc.archive_browse_uri,
         archive_download_uri=email_doc.archive_download_uri,
+        embedding_mode=EmbeddingMode.FULL,
     )
 
 
@@ -447,6 +479,7 @@ async def process_email(
     source_eml_path = str(eml_path)
     file_ctx = eml_path.name  # Short filename for logging
     settings = get_settings()
+    trail = ProcessingTrail()
 
     # Use hierarchy_manager's ingest_root to ensure consistent doc_id computation
     source_id = normalize_source_id(source_eml_path, components.hierarchy_manager.ingest_root)
@@ -474,6 +507,7 @@ async def process_email(
 
     # Step 2: Parse email
     parsed_email = components.eml_parser.parse_file(eml_path)
+    trail.stamp_email(STEP_PARSE, parser="eml_local")
     vprint(f"Parsed: \"{parsed_email.metadata.subject}\" - {len(parsed_email.attachments)} attachments", file_ctx)
 
     # Notify progress callback with attachment count.
@@ -502,6 +536,7 @@ async def process_email(
     email_doc = components.hierarchy_manager.build_email_document(
         eml_path, parsed_email, archive_result=archive_result
     )
+    trail.register_email_document(email_doc.id)
 
     # Get email body text (used for vessel matching, context, topics, and chunking)
     email_chunks: list["Chunk"] = []
@@ -529,6 +564,7 @@ async def process_email(
             context_summary = await components.context_generator.generate_context(
                 email_doc, body_text[:4000]
             )
+            trail.stamp_email(STEP_CONTEXT, model=components.context_generator.model)
             vprint(f"Context generated: {len(context_summary)} chars", file_ctx)
         except Exception as e:
             vprint(f"Context generation failed: {e}", file_ctx)
@@ -537,6 +573,12 @@ async def process_email(
     topic_ids = await _extract_topics(
         components, parsed_email, body_text, archive_result, context_summary, vprint, file_ctx
     )
+    if topic_ids and components.topic_extractor is not None:
+        trail.stamp_email(
+            STEP_TOPICS,
+            model=components.topic_extractor.llm_model,
+            topic_count=len(topic_ids),
+        )
 
     # Step 4: Body chunks (extracted)
     digest_task = None
@@ -545,6 +587,7 @@ async def process_email(
         settings = get_settings()
         cleaner_model = settings.get_model(settings.email_cleaner_model)
         cleaned_body = await clean_email_body(body_text, model=cleaner_model)
+        trail.stamp_email(STEP_CONTENT_CLEANUP, model=cleaner_model)
 
         body_chunks_list = _create_body_chunks(
             email_doc, cleaned_body, context_summary,
@@ -612,6 +655,7 @@ async def process_email(
             email_context_summary=context_summary,
             collect_docs=attachment_docs,
             on_member_complete=_tick,
+            trail=trail,
         )
         return chunks
 
@@ -636,6 +680,10 @@ async def process_email(
             digest_chunk = await digest_task
             if digest_chunk:
                 email_chunks.append(digest_chunk)
+                trail.stamp_email(
+                    STEP_THREAD_DIGEST,
+                    model=settings.get_model(settings.thread_digest_model),
+                )
                 vprint("Thread digest generated", file_ctx)
         except Exception as e:
             vprint(f"Thread digest failed (continuing): {e}", file_ctx)
@@ -663,6 +711,9 @@ async def process_email(
     if email_chunks:
         vprint(f"Generating embeddings for {len(email_chunks)} chunks...", file_ctx)
         email_chunks = await components.embeddings.embed_chunks(email_chunks)
+        _stamp_embed_by_document(
+            trail, email_chunks, components.embeddings.model
+        )
 
     # Atomic persist: all documents + chunks + topic counts in one operation
     email_doc.status = ProcessingStatus.COMPLETED
@@ -675,6 +726,19 @@ async def process_email(
         chunk_delta=len(email_chunks),
     )
     vprint(f"Persisted {len(email_chunks)} chunks + {len(attachment_docs)} attachment docs", file_ctx)
+
+    # Persist the processing trail to archive/<folder>/metadata.json.
+    # Must come after archive generation (metadata.json exists) and after
+    # all steps have had a chance to stamp. Failures here don't fail
+    # ingest — the data is already persisted.
+    if components.archive_generator and email_doc.doc_id:
+        try:
+            components.archive_generator.finalize_metadata_processing(
+                email_doc.doc_id, trail.to_json()
+            )
+        except Exception as e:  # noqa: BLE001
+            vprint(f"Trail persist failed (non-fatal): {e}", file_ctx)
+
     await tracker.mark_completed(eml_path)
 
     # Clean up attachment folder after successful processing

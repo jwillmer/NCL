@@ -20,15 +20,42 @@ from ..ingest.helpers import (
 )
 from ..models.document import ProcessingStatus
 
+from .processing_trail import (
+    STEP_CONTEXT,
+    STEP_DECIDER,
+    STEP_PARSE,
+    STEP_SUMMARY,
+    STEP_VISION,
+)
+
 if TYPE_CHECKING:
     from ..models.chunk import Chunk
     from ..models.document import Document
     from ..storage.unsupported_file_logger import UnsupportedFileLogger
     from .components import IngestComponents
     from .helpers import IssueTracker
+    from .processing_trail import ProcessingTrail
 
 
 _noop_verbose = noop_verbose  # backward compat alias
+
+
+def _resolve_parser_model(parser_name: str | None) -> str | None:
+    """Map an effective parser name to its underlying LLM model, if any.
+
+    Local parsers are deterministic and return ``None``. LLM-backed parsers
+    (LlamaParse, Gemini PDF) return the configured model name so the trail
+    records which model produced the markdown.
+    """
+    if not parser_name:
+        return None
+    if parser_name == "gemini_pdf":
+        return getattr(get_settings(), "gemini_pdf_model", None)
+    if parser_name == "llamaparse":
+        # llama-cloud 2.x doesn't expose a user-facing model name — record the
+        # tier instead so consumers know which vendor ran.
+        return "llamaparse:agentic"
+    return None
 
 
 def _extract_content_from_cached_markdown(cached_md: str) -> str | None:
@@ -51,6 +78,153 @@ def _extract_content_from_cached_markdown(cached_md: str) -> str | None:
     return content if content else None
 
 
+async def _decide_and_build_chunks(
+    *,
+    document: "Document",
+    parsed_content: str,
+    components: "IngestComponents",
+    file_path: Path,
+    filename: str,
+    source_eml_path: str,
+    vprint: Callable[[str, str | None], None] | None,
+    file_ctx: str | None,
+    trail: "ProcessingTrail | None" = None,
+    trail_key: str | None = None,
+) -> list["Chunk"]:
+    """Run the embedding-mode decider and build chunks via the shared
+    dispatcher. Used by both the non-ZIP and ZIP-member paths so they can't
+    drift. When no context_generator is wired, force FULL (the decider's
+    SUMMARY mode needs the LLM to synthesize the summary chunk)."""
+    from ..models.document import EmbeddingMode
+    from ..parsers.chunker import build_chunks_for_mode
+
+    if components.context_generator is None:
+        document.embedding_mode = EmbeddingMode.FULL
+        return await build_chunks_for_mode(
+            mode=EmbeddingMode.FULL,
+            document=document,
+            markdown=parsed_content,
+            chunker=components.attachment_processor.chunker,
+            context_generator=None,
+            source_file=str(file_path),
+        )
+
+    from ..ingest.embedding_decider import decide_embedding_mode
+
+    decision = await decide_embedding_mode(parsed_content, document)
+    document.embedding_mode = decision.mode
+    if trail is not None and trail_key is not None:
+        # Triage model is only actually consulted in the medium-confidence band —
+        # stamp the model only for triage-sourced reasons, otherwise leave it
+        # None so consumers know the decision was deterministic.
+        triage_reasons = {"triage_prose", "triage_dense", "triage_noise", "triage_failed"}
+        triage_model: str | None = None
+        if decision.reason in triage_reasons:
+            ts = get_settings()
+            triage_model = (
+                ts.embedding_triage_llm_model or ts.get_model(ts.context_llm_model)
+            )
+        trail.stamp_attachment(
+            trail_key,
+            STEP_DECIDER,
+            model=triage_model,
+            mode=decision.mode.value,
+            reason=decision.reason,
+        )
+    if vprint and file_ctx is not None:
+        vprint(
+            f"  -> embedding_mode={decision.mode.value} ({decision.reason})",
+            file_ctx,
+        )
+    try:
+        components.db.log_ingest_event(
+            document_id=document.id,
+            event_type="embedding_mode_decided",
+            severity="info",
+            message=f"{decision.mode.value}: {decision.reason}",
+            file_path=str(file_path),
+            file_name=filename,
+            source_eml_path=source_eml_path,
+        )
+    except Exception:
+        logger.debug("log_ingest_event(embedding_mode_decided) failed", exc_info=True)
+
+    attach_chunks = await build_chunks_for_mode(
+        mode=decision.mode,
+        document=document,
+        markdown=parsed_content,
+        chunker=components.attachment_processor.chunker,
+        context_generator=components.context_generator,
+        source_file=str(file_path),
+    )
+    if trail is not None and trail_key is not None:
+        from ..models.document import EmbeddingMode
+
+        ctx_model = components.context_generator.model
+        if decision.mode == EmbeddingMode.SUMMARY:
+            # SUMMARY mode has no separate context step — the one LLM call is
+            # the summary itself.
+            trail.stamp_attachment(trail_key, STEP_SUMMARY, model=ctx_model)
+        elif decision.mode == EmbeddingMode.FULL:
+            trail.stamp_attachment(trail_key, STEP_CONTEXT, model=ctx_model)
+        # METADATA_ONLY makes no LLM call — no stamp.
+    if vprint and file_ctx is not None:
+        vprint(
+            f"  -> {len(attach_chunks)} chunks ({decision.mode.value})",
+            file_ctx,
+        )
+    return attach_chunks
+
+
+async def _archive_only_attachment(
+    *,
+    attachment,
+    file_path: Path,
+    email_doc: "Document",
+    source_eml_path: str,
+    components: "IngestComponents",
+    skip_reason: str,
+    archive_file_result,
+    collect_docs: list["Document"] | None,
+) -> None:
+    """Register a PDF we deliberately chose not to parse.
+
+    The email-level archive step already uploaded the original file — this
+    helper only adds the doc record (status=FAILED, error_message carrying
+    the pdf_too_large reason) so a follow-up `mtss mark-failed` + `mtss ingest
+    --retry-failed` (or `mtss re-embed --doc-id <uuid> --mode summary`) can
+    discover these docs by their error marker and process them later on a
+    dedicated token budget. No stub .md is written; absence of the .md is the
+    on-disk signal that the PDF hasn't been parsed yet.
+    """
+    attach_doc = components.hierarchy_manager.build_attachment_document(
+        parent_doc=email_doc,
+        attachment_path=file_path,
+        content_type=attachment.content_type,
+        size_bytes=attachment.size_bytes,
+        original_filename=attachment.filename,
+        archive_file_result=archive_file_result,
+    )
+    attach_doc.status = ProcessingStatus.FAILED
+    attach_doc.error_message = skip_reason
+
+    try:
+        components.db.log_ingest_event(
+            document_id=attach_doc.id,
+            event_type="pdf_parse_skipped",
+            severity="info",
+            message=skip_reason,
+            file_path=str(file_path),
+            file_name=attachment.filename,
+            source_eml_path=source_eml_path,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    if collect_docs is not None:
+        collect_docs.append(attach_doc)
+
+
 async def process_attachment(
     attachment,
     email_doc: "Document",
@@ -69,6 +243,7 @@ async def process_attachment(
     email_context_summary: str | None = None,
     collect_docs: list["Document"] | None = None,
     on_member_complete: Callable[[], None] | None = None,
+    trail: "ProcessingTrail | None" = None,
 ) -> list["Chunk"]:
     """Process a single attachment and return its chunks.
 
@@ -113,8 +288,26 @@ async def process_attachment(
 
         # Handle based on preprocess result
         if not result.should_process:
-            # Log skipped file
             reason = result.skip_reason or "unsupported_format"
+
+            # pdf_too_large: archive the original + stub .md but skip parsing.
+            # The file has already been uploaded by the email-level archive step;
+            # here we just register a doc record + stub md so browse/validate
+            # see why it wasn't parsed and don't flag it as orphaned.
+            if reason.startswith("pdf_too_large"):
+                vprint(f"  -> Archived only (parse skipped): {reason}", file_ctx)
+                await _archive_only_attachment(
+                    attachment=attachment,
+                    file_path=file_path,
+                    email_doc=email_doc,
+                    source_eml_path=source_eml_path,
+                    components=components,
+                    skip_reason=reason,
+                    archive_file_result=archive_file_result,
+                    collect_docs=collect_docs,
+                )
+                return chunks
+
             if "non_content" in reason.lower() or result.is_image:
                 vprint("  -> Skipped: non-content image (logo/banner/signature)", file_ctx)
                 reason = "classified_as_non_content"
@@ -149,6 +342,8 @@ async def process_attachment(
                     email_context_summary=email_context_summary,
                     collect_docs=collect_docs,
                     on_member_complete=on_member_complete,
+                    trail=trail,
+                    zip_filename=attachment.filename,
                 )
             )
             return chunks
@@ -173,6 +368,7 @@ async def process_attachment(
             result=result,
             chunks=chunks,
             vprint=vprint,
+            trail=trail,
         )
     finally:
         if on_member_complete and not _suppress_tick:
@@ -202,6 +398,7 @@ async def _process_non_zip_attachment(
     result,
     chunks: list["Chunk"],
     vprint: Callable[[str, str | None], None],
+    trail: "ProcessingTrail | None" = None,
 ) -> list["Chunk"]:
     """Main body of process_attachment for non-ZIP attachments.
 
@@ -218,6 +415,9 @@ async def _process_non_zip_attachment(
         original_filename=attachment.filename,
         archive_file_result=archive_file_result,
     )
+    trail_key = attachment.filename
+    if trail is not None:
+        trail.register_attachment_document(attach_doc.id, trail_key)
 
     try:
         parsed_content: str | None = None
@@ -229,6 +429,12 @@ async def _process_non_zip_attachment(
             )
             chunks.append(chunk)
             parsed_content = result.image_description
+            if trail is not None:
+                trail.stamp_attachment(
+                    trail_key,
+                    STEP_VISION,
+                    model=components.attachment_processor.image_processor.model,
+                )
             vprint("  -> 1 chunk created (image described)", file_ctx)
             attach_doc.status = ProcessingStatus.COMPLETED
         elif result.is_image:
@@ -239,6 +445,12 @@ async def _process_non_zip_attachment(
             chunks.extend(attach_chunks)
             if attach_chunks:
                 parsed_content = attach_chunks[0].content
+                if trail is not None:
+                    trail.stamp_attachment(
+                        trail_key,
+                        STEP_VISION,
+                        model=components.attachment_processor.image_processor.model,
+                    )
             vprint(f"  -> {len(attach_chunks)} chunks created (image described)", file_ctx)
             attach_doc.status = ProcessingStatus.COMPLETED
         else:
@@ -264,25 +476,27 @@ async def _process_non_zip_attachment(
                     cached_content = None
 
             if cached_content:
-                # Use cached content - create chunks directly
-                attach_chunks = components.attachment_processor.chunker.chunk_text(
-                    text=cached_content,
-                    document_id=attach_doc.id,
-                    source_file=str(file_path),
-                    is_markdown=True,
-                )
                 parsed_content = cached_content
-                vprint(f"  -> {len(attach_chunks)} chunks created (from cache)", file_ctx)
-            else:
-                # Parse with LlamaParse (or other parser)
-                attach_chunks = await components.attachment_processor.process_attachment(
-                    file_path, attach_doc.id, attachment.content_type
+                if trail is not None:
+                    trail.stamp_attachment(trail_key, STEP_PARSE, parser="cached_md")
+                vprint(
+                    f"  -> cached content ({len(cached_content)} chars)", file_ctx
                 )
-                if attach_chunks:
-                    # Combine all chunks for the .md file
-                    parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
-                    vprint(f"  -> {len(attach_chunks)} chunks created", file_ctx)
-                else:
+            else:
+                parsed_content, _parser_name = (
+                    await components.attachment_processor.parse_to_text(
+                        file_path, attachment.content_type
+                    )
+                )
+                if trail is not None:
+                    trail.stamp_attachment(
+                        trail_key,
+                        STEP_PARSE,
+                        model=_resolve_parser_model(_parser_name),
+                        parser=_parser_name,
+                    )
+
+                if not parsed_content:
                     vprint("  -> 0 chunks (document has no extractable text)", file_ctx)
                     components.db.log_ingest_event(
                         document_id=attach_doc.id,
@@ -294,22 +508,20 @@ async def _process_non_zip_attachment(
                         source_eml_path=source_eml_path,
                     )
 
-            # Generate context summary for better search relevance
-            if attach_chunks and components.context_generator and parsed_content:
-                try:
-                    attach_context = await components.context_generator.generate_context(
-                        attach_doc, parsed_content[:4000]
-                    )
-                    if attach_context:
-                        vprint(f"  -> Context generated: {len(attach_context)} chars", file_ctx)
-                        # Apply context summary to ALL chunks
-                        for chunk in attach_chunks:
-                            chunk.context_summary = attach_context
-                            chunk.embedding_text = components.context_generator.build_embedding_text(
-                                attach_context, chunk.content
-                            )
-                except Exception as e:
-                    vprint(f"  -> Context generation failed: {e}", file_ctx)
+            attach_chunks = []
+            if parsed_content:
+                attach_chunks = await _decide_and_build_chunks(
+                    document=attach_doc,
+                    parsed_content=parsed_content,
+                    components=components,
+                    file_path=file_path,
+                    filename=attachment.filename,
+                    source_eml_path=source_eml_path,
+                    vprint=vprint,
+                    file_ctx=file_ctx,
+                    trail=trail,
+                    trail_key=trail_key,
+                )
 
             chunks.extend(attach_chunks)
             attach_doc.status = ProcessingStatus.COMPLETED
@@ -389,6 +601,8 @@ async def process_zip_attachment(
     email_context_summary: str | None = None,
     collect_docs: list["Document"] | None = None,
     on_member_complete: Callable[[], None] | None = None,
+    trail: "ProcessingTrail | None" = None,
+    zip_filename: str | None = None,
 ) -> list["Chunk"]:
     """Extract and process files from a ZIP attachment.
 
@@ -428,6 +642,8 @@ async def process_zip_attachment(
                         vessel_classes=vessel_classes,
                         vprint=vprint,
                         issue_tracker=issue_tracker,
+                        trail=trail,
+                        zip_filename=zip_filename or attachment.filename,
                     )
                 finally:
                     if on_member_complete:
@@ -498,6 +714,8 @@ async def _process_zip_member(
     vessel_classes: list[str],
     vprint: Callable[[str, str | None], None],
     issue_tracker: "IssueTracker | None",
+    trail: "ProcessingTrail | None" = None,
+    zip_filename: str | None = None,
 ) -> tuple["Document | None", list["Chunk"]]:
     """Process a single ZIP member.
 
@@ -530,6 +748,16 @@ async def _process_zip_member(
         size_bytes=extracted_path.stat().st_size,
         original_filename=extracted_path.name,
     )
+    # ZIP members use "<zip_filename>/<member>" as trail key so identical
+    # basenames across different ZIPs (or between top-level + nested) stay
+    # distinct.
+    trail_key = (
+        f"{zip_filename}/{extracted_path.name}"
+        if zip_filename
+        else extracted_path.name
+    )
+    if trail is not None:
+        trail.register_attachment_document(attach_doc.id, trail_key)
 
     attach_chunks: list["Chunk"] = []
     try:
@@ -540,13 +768,26 @@ async def _process_zip_member(
             )
             if attach_chunks:
                 parsed_content = attach_chunks[0].content
+                if trail is not None:
+                    trail.stamp_attachment(
+                        trail_key,
+                        STEP_VISION,
+                        model=components.attachment_processor.image_processor.model,
+                    )
         else:
-            attach_chunks = await components.attachment_processor.process_attachment(
-                extracted_path, attach_doc.id, extracted_content_type
+            parsed_content, _zip_parser = (
+                await components.attachment_processor.parse_to_text(
+                    extracted_path, extracted_content_type
+                )
             )
-            if attach_chunks:
-                parsed_content = "\n\n".join(c.content for c in attach_chunks if c.content)
-            else:
+            if trail is not None:
+                trail.stamp_attachment(
+                    trail_key,
+                    STEP_PARSE,
+                    model=_resolve_parser_model(_zip_parser),
+                    parser=_zip_parser,
+                )
+            if not parsed_content:
                 components.db.log_ingest_event(
                     document_id=attach_doc.id,
                     event_type="no_body_chunks",
@@ -557,19 +798,19 @@ async def _process_zip_member(
                     source_eml_path=source_eml_path,
                 )
 
-        if attach_chunks and components.context_generator and parsed_content:
-            try:
-                attach_context = await components.context_generator.generate_context(
-                    attach_doc, parsed_content[:4000]
+            if parsed_content:
+                attach_chunks = await _decide_and_build_chunks(
+                    document=attach_doc,
+                    parsed_content=parsed_content,
+                    components=components,
+                    file_path=extracted_path,
+                    filename=extracted_path.name,
+                    source_eml_path=source_eml_path,
+                    vprint=None,
+                    file_ctx=None,
+                    trail=trail,
+                    trail_key=trail_key,
                 )
-                if attach_context:
-                    for chunk in attach_chunks:
-                        chunk.context_summary = attach_context
-                        chunk.embedding_text = components.context_generator.build_embedding_text(
-                            attach_context, chunk.content
-                        )
-            except Exception as e:
-                vprint(f"  -> Context generation failed: {e}", file_ctx)
 
         enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
         if vessel_ids or vessel_types or vessel_classes:

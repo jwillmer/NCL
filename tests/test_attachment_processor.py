@@ -297,9 +297,9 @@ class TestIsSupported:
         assert processor.is_supported("archive.tar.gz") is False
 
 
-class TestLlamaParseFallback:
-    """Process_attachment should fall back to LlamaParse when a local parser
-    reports empty content (EmptyContentError), and only then."""
+class TestGeminiFallback:
+    """Process_attachment should fall back to Gemini when a local parser
+    reports EmptyContentError. LlamaParse is no longer the generic fallback."""
 
     @pytest.fixture
     def tmp_docx(self, tmp_path):
@@ -308,7 +308,7 @@ class TestLlamaParseFallback:
         return p
 
     @pytest.mark.asyncio
-    async def test_fallback_to_llamaparse_on_empty_content(self, processor, tmp_docx):
+    async def test_fallback_to_gemini_on_empty_content(self, processor, tmp_docx):
         from uuid import uuid4
 
         from unittest.mock import AsyncMock
@@ -319,23 +319,22 @@ class TestLlamaParseFallback:
         local.name = "local_docx"
         local.parse = AsyncMock(side_effect=EmptyContentError("empty"))
 
-        llp = MagicMock()
-        llp.name = "llamaparse"
-        llp.is_available = True
-        llp.parse = AsyncMock(return_value="# Extracted\n\nReal content from LlamaParse.")
+        gemini = MagicMock()
+        gemini.name = "gemini_pdf"
+        gemini.is_available = True
+        gemini.parse = AsyncMock(return_value="# Extracted\n\nReal content from Gemini.")
 
         with patch.object(processor, "_get_tiered_parser", return_value=local):
-            with patch("mtss.parsers.attachment_processor.get_settings"):
-                with patch("mtss.parsers.llamaparse_parser.LlamaParseParser", return_value=llp):
-                    chunks = await processor.process_attachment(tmp_docx, uuid4())
+            with patch("mtss.parsers.gemini_pdf_parser.GeminiPDFParser", return_value=gemini):
+                chunks = await processor.process_attachment(tmp_docx, uuid4())
 
         local.parse.assert_awaited_once()
-        llp.parse.assert_awaited_once()
+        gemini.parse.assert_awaited_once()
         assert len(chunks) > 0
-        assert chunks[0].metadata.get("parser") == "llamaparse"
+        assert chunks[0].metadata.get("parser") == "gemini_pdf"
 
     @pytest.mark.asyncio
-    async def test_no_fallback_when_llamaparse_disabled(self, processor, tmp_docx):
+    async def test_no_fallback_when_gemini_unavailable(self, processor, tmp_docx):
         from uuid import uuid4
 
         from unittest.mock import AsyncMock
@@ -346,16 +345,16 @@ class TestLlamaParseFallback:
         local.name = "local_docx"
         local.parse = AsyncMock(side_effect=EmptyContentError("empty"))
 
-        llp = MagicMock()
-        llp.is_available = False
-        llp.parse = AsyncMock()
+        gemini = MagicMock()
+        gemini.is_available = False
+        gemini.parse = AsyncMock()
 
         with patch.object(processor, "_get_tiered_parser", return_value=local):
-            with patch("mtss.parsers.llamaparse_parser.LlamaParseParser", return_value=llp):
+            with patch("mtss.parsers.gemini_pdf_parser.GeminiPDFParser", return_value=gemini):
                 with pytest.raises(EmptyContentError):
                     await processor.process_attachment(tmp_docx, uuid4())
 
-        llp.parse.assert_not_awaited()
+        gemini.parse.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_fallback_on_non_empty_value_error(self, processor, tmp_docx):
@@ -368,34 +367,92 @@ class TestLlamaParseFallback:
         local.name = "local_docx"
         local.parse = AsyncMock(side_effect=ValueError("Local DOCX parsing failed: corrupt"))
 
-        llp = MagicMock()
-        llp.is_available = True
-        llp.parse = AsyncMock()
+        gemini = MagicMock()
+        gemini.is_available = True
+        gemini.parse = AsyncMock()
 
         with patch.object(processor, "_get_tiered_parser", return_value=local):
-            with patch("mtss.parsers.llamaparse_parser.LlamaParseParser", return_value=llp):
+            with patch("mtss.parsers.gemini_pdf_parser.GeminiPDFParser", return_value=gemini):
                 with pytest.raises(ValueError, match="corrupt"):
                     await processor.process_attachment(tmp_docx, uuid4())
 
-        llp.parse.assert_not_awaited()
+        gemini.parse.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_no_fallback_when_primary_already_llamaparse(self, processor, tmp_docx):
-        """If the primary parser is LlamaParse itself and it raises EmptyContentError,
-        don't recurse into LlamaParse again."""
+    async def test_no_fallback_when_primary_is_gemini(self, processor, tmp_docx):
+        """If the primary parser is Gemini itself and it raises EmptyContentError,
+        don't recurse."""
         from uuid import uuid4
 
         from unittest.mock import AsyncMock
 
         from mtss.parsers.base import EmptyContentError
 
-        llp_primary = MagicMock()
-        llp_primary.name = "llamaparse"
-        llp_primary.parse = AsyncMock(side_effect=EmptyContentError("empty"))
+        gemini_primary = MagicMock()
+        gemini_primary.name = "gemini_pdf"
+        gemini_primary.parse = AsyncMock(side_effect=EmptyContentError("empty"))
 
-        with patch.object(processor, "_get_tiered_parser", return_value=llp_primary):
+        with patch.object(processor, "_get_tiered_parser", return_value=gemini_primary):
             with pytest.raises(EmptyContentError):
                 await processor.process_attachment(tmp_docx, uuid4())
+
+
+class TestLegacyOfficeRoutesToLlamaParse:
+    """Only .doc / .xls / .ppt still route to LlamaParse in the tiered router."""
+
+    def test_doc_routes_to_llamaparse(self, processor, tmp_path):
+        from mtss.parsers.llamaparse_parser import LlamaParseParser
+
+        p = tmp_path / "legacy.doc"
+        p.write_bytes(b"fake-doc")
+
+        # Force is_available=True so the router returns the parser instance.
+        with patch.object(LlamaParseParser, "is_available", True):
+            parser = processor._get_tiered_parser(p, "application/msword")
+        assert parser is not None
+        assert parser.__class__.__name__ == "LlamaParseParser"
+
+    def test_xls_routes_to_llamaparse(self, processor, tmp_path):
+        from mtss.parsers.llamaparse_parser import LlamaParseParser
+
+        p = tmp_path / "legacy.xls"
+        p.write_bytes(b"fake-xls")
+        with patch.object(LlamaParseParser, "is_available", True):
+            parser = processor._get_tiered_parser(p, "application/vnd.ms-excel")
+        assert parser is not None
+        assert parser.__class__.__name__ == "LlamaParseParser"
+
+    def test_ppt_routes_to_llamaparse(self, processor, tmp_path):
+        from mtss.parsers.llamaparse_parser import LlamaParseParser
+
+        p = tmp_path / "legacy.ppt"
+        p.write_bytes(b"fake-ppt")
+        with patch.object(LlamaParseParser, "is_available", True):
+            parser = processor._get_tiered_parser(p, "application/vnd.ms-powerpoint")
+        assert parser is not None
+        assert parser.__class__.__name__ == "LlamaParseParser"
+
+
+class TestComplexPdfRoutesToGemini:
+    """PDFs classified COMPLEX should route to Gemini (not LlamaParse)."""
+
+    def test_complex_pdf_returns_gemini(self, processor, tmp_path):
+        from mtss.parsers.gemini_pdf_parser import GeminiPDFParser
+        from mtss.parsers.pdf_classifier import PDFComplexity
+
+        p = tmp_path / "scanned.pdf"
+        p.write_bytes(b"%PDF-1.4\n")
+
+        with patch(
+            "mtss.parsers.attachment_processor.classify_pdf",
+            return_value=PDFComplexity.COMPLEX,
+        ) if False else patch(
+            "mtss.parsers.pdf_classifier.classify_pdf",
+            return_value=PDFComplexity.COMPLEX,
+        ), patch.object(GeminiPDFParser, "is_available", True):
+            parser = processor._get_tiered_parser(p, "application/pdf")
+        assert parser is not None
+        assert parser.__class__.__name__ == "GeminiPDFParser"
 
 
 class TestLlamaParseParseCallKwargs:
@@ -626,3 +683,194 @@ class TestImageMimeDocTypeParity:
         processor = AttachmentProcessor()
         assert processor.get_document_type("image/gif") is DocumentType.ATTACHMENT_IMAGE
         assert processor.get_document_type("image/webp") is DocumentType.ATTACHMENT_IMAGE
+
+
+class TestPdfClassifierLoosened:
+    """classify_pdf must not flag text-layer PDFs complex just because they
+    contain an embedded image. Scanned PDFs and form PDFs still route to
+    LlamaParse; logo-bearing invoices and reports now go local."""
+
+    def _mock_reader(self, *, pages_text, has_fields=False, page_has_image=False):
+        from unittest.mock import MagicMock
+
+        reader = MagicMock()
+        reader.get_fields.return_value = {"x": 1} if has_fields else None
+        pages = []
+        for text in pages_text:
+            page = MagicMock()
+            page.extract_text.return_value = text
+            if page_has_image:
+                xobj = MagicMock()
+                xobj.get.return_value = "/Image"
+                xobjects = {"Im0": MagicMock()}
+                xobjects["Im0"].get_object.return_value = xobj
+                resources_xobject = MagicMock()
+                resources_xobject.get_object.return_value = xobjects
+                page.get.return_value = {"/XObject": resources_xobject}
+            else:
+                page.get.return_value = {}
+            pages.append(page)
+        reader.pages = pages
+        return reader
+
+    def test_text_layer_with_embedded_image_is_simple(self, tmp_path):
+        """Logos/stamps inside a text-layer PDF should no longer force LlamaParse."""
+        from unittest.mock import patch
+
+        from mtss.parsers.pdf_classifier import PDFComplexity, classify_pdf
+
+        pdf = tmp_path / "invoice_with_logo.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        reader = self._mock_reader(
+            pages_text=["Invoice header with plenty of readable text for classification."] * 3,
+            page_has_image=True,
+        )
+        with patch("pypdf.PdfReader", return_value=reader):
+            assert classify_pdf(pdf) == PDFComplexity.SIMPLE
+
+    def test_scanned_page_is_still_complex(self, tmp_path):
+        from unittest.mock import patch
+
+        from mtss.parsers.pdf_classifier import PDFComplexity, classify_pdf
+
+        pdf = tmp_path / "scanned.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        reader = self._mock_reader(pages_text=["", ""])  # no text layer
+        with patch("pypdf.PdfReader", return_value=reader):
+            assert classify_pdf(pdf) == PDFComplexity.COMPLEX
+
+    def test_form_pdf_is_still_complex(self, tmp_path):
+        from unittest.mock import patch
+
+        from mtss.parsers.pdf_classifier import PDFComplexity, classify_pdf
+
+        pdf = tmp_path / "form.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        reader = self._mock_reader(
+            pages_text=["Fillable form with plenty of static text content."],
+            has_fields=True,
+        )
+        with patch("pypdf.PdfReader", return_value=reader):
+            assert classify_pdf(pdf) == PDFComplexity.COMPLEX
+
+    def test_estimator_classifier_agrees(self):
+        """The estimator now delegates to parsers.pdf_classifier.classify_reader
+        — confirm the shared helper still ranks a text-layer PDF as simple
+        regardless of embedded images."""
+        from mtss.parsers.pdf_classifier import PDFComplexity, classify_reader
+
+        reader = self._mock_reader(
+            pages_text=["Operational report with a plain text layer that easily clears the 50-char threshold."] * 2,
+            page_has_image=True,
+        )
+        assert classify_reader(reader) == PDFComplexity.SIMPLE
+
+
+class TestPreprocessorPdfPageLimit:
+    """Preprocessor skips PDFs above settings.pdf_max_pages to avoid blowing
+    LlamaParse budget on multi-hundred-page sensor-log dumps."""
+
+    @pytest.mark.asyncio
+    async def test_pdf_over_limit_is_skipped(self, tmp_path):
+        from unittest.mock import patch
+
+        from mtss.parsers.preprocessor import DocumentPreprocessor
+
+        pdf = tmp_path / "huge.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        fake_settings = MagicMock()
+        fake_settings.pdf_max_pages = 40
+        fake_settings.attachment_max_bytes = 100 * 1024 * 1024
+
+        with patch("mtss.parsers.preprocessor._safe_count_pdf_pages", return_value=818):
+            with patch("mtss.parsers.preprocessor.get_settings", return_value=fake_settings):
+                result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+
+        assert result.should_process is False
+        assert result.skip_reason is not None
+        assert "pdf_too_large" in result.skip_reason
+        assert "818" in result.skip_reason
+
+    @pytest.mark.asyncio
+    async def test_pdf_under_limit_routes_to_local(self, tmp_path):
+        from unittest.mock import patch
+
+        from mtss.parsers.preprocessor import DocumentPreprocessor
+
+        pdf = tmp_path / "ok.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        fake_settings = MagicMock()
+        fake_settings.pdf_max_pages = 40
+        fake_settings.attachment_max_bytes = 100 * 1024 * 1024
+
+        with patch("mtss.parsers.preprocessor._safe_count_pdf_pages", return_value=5):
+            with patch("mtss.parsers.preprocessor.get_settings", return_value=fake_settings):
+                result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+
+        assert result.should_process is True
+        assert result.parser_name == "local"
+        assert result.skip_reason is None
+
+    @pytest.mark.asyncio
+    async def test_unreadable_pdf_does_not_block(self, tmp_path):
+        """If pypdf can't parse the file at all, we let the parser layer fail
+        with its own error rather than pre-skipping with a misleading reason."""
+        from unittest.mock import patch
+
+        from mtss.parsers.preprocessor import DocumentPreprocessor
+
+        pdf = tmp_path / "broken.pdf"
+        pdf.write_bytes(b"not really a pdf")
+
+        fake_settings = MagicMock()
+        fake_settings.pdf_max_pages = 40
+        fake_settings.attachment_max_bytes = 100 * 1024 * 1024
+
+        with patch("mtss.parsers.preprocessor._safe_count_pdf_pages", return_value=None):
+            with patch("mtss.parsers.preprocessor.get_settings", return_value=fake_settings):
+                result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+
+        assert result.should_process is True
+        assert result.parser_name == "local"
+
+    @pytest.mark.asyncio
+    async def test_attachment_over_byte_cap_is_skipped(self, tmp_path):
+        """The attachment_max_bytes guard fires before any parser/route work,
+        protecting Gemini from base64-loading a multi-GB attachment."""
+        from unittest.mock import patch
+
+        from mtss.parsers.preprocessor import DocumentPreprocessor
+
+        big = tmp_path / "huge.pdf"
+        big.write_bytes(b"%PDF-1.4\n" + b"x" * 2_000)  # 2 KB of payload
+
+        fake_settings = MagicMock()
+        fake_settings.pdf_max_pages = 40
+        fake_settings.attachment_max_bytes = 1_000  # cap below file size
+
+        with patch("mtss.parsers.preprocessor.get_settings", return_value=fake_settings):
+            result = await DocumentPreprocessor().preprocess(big, "application/pdf")
+
+        assert result.should_process is False
+        assert result.skip_reason is not None
+        assert "attachment_too_large" in result.skip_reason
+
+    @pytest.mark.asyncio
+    async def test_crdownload_partial_is_rejected(self, tmp_path):
+        """Chrome partial-download suffix must be rejected before parser routing.
+
+        These files are truncated bytes, not a valid PDF/DOCX/etc. Previously
+        they fell through to the LlamaParse fallback which wasted API calls.
+        """
+        from mtss.parsers.preprocessor import DocumentPreprocessor
+
+        partial = tmp_path / "report.pdf.crdownload"
+        partial.write_bytes(b"%PDF-1.4\npartial bytes")
+
+        result = await DocumentPreprocessor().preprocess(partial)
+
+        assert result.should_process is False
+        assert result.skip_reason is not None
+        assert "partial_download" in result.skip_reason

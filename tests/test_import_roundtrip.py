@@ -155,6 +155,46 @@ class TestChunkRoundtrip:
         result = _roundtrip_chunk(sample_chunk)
         assert result.metadata == sample_chunk.metadata
 
+    def test_embedding_mode_preserved(self, sample_chunk):
+        sample_chunk.embedding_mode = "summary"
+        result = _roundtrip_chunk(sample_chunk)
+        assert result.embedding_mode == "summary"
+
+    def test_embedding_mode_none_when_unset(self, sample_chunk):
+        sample_chunk.embedding_mode = None
+        result = _roundtrip_chunk(sample_chunk)
+        assert result.embedding_mode is None
+
+
+class TestDocumentEmbeddingModeRoundtrip:
+    """Verify Document.embedding_mode survives JSONL round-trip."""
+
+    def test_full_mode_round_trips(self, sample_document):
+        from mtss.models.document import EmbeddingMode
+
+        sample_document.embedding_mode = EmbeddingMode.FULL
+        result = _roundtrip_doc(sample_document)
+        assert result.embedding_mode == EmbeddingMode.FULL
+
+    def test_summary_mode_round_trips(self, sample_document):
+        from mtss.models.document import EmbeddingMode
+
+        sample_document.embedding_mode = EmbeddingMode.SUMMARY
+        result = _roundtrip_doc(sample_document)
+        assert result.embedding_mode == EmbeddingMode.SUMMARY
+
+    def test_metadata_only_mode_round_trips(self, sample_document):
+        from mtss.models.document import EmbeddingMode
+
+        sample_document.embedding_mode = EmbeddingMode.METADATA_ONLY
+        result = _roundtrip_doc(sample_document)
+        assert result.embedding_mode == EmbeddingMode.METADATA_ONLY
+
+    def test_none_when_unset(self, sample_document):
+        sample_document.embedding_mode = None
+        result = _roundtrip_doc(sample_document)
+        assert result.embedding_mode is None
+
 
 class TestTopicRoundtrip:
     """Verify Topic fields survive JSONL serialization roundtrip."""

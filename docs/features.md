@@ -632,6 +632,50 @@ MTSS clean-archive-md
 MTSS clean-archive-md --output-dir ./alt-output
 ```
 
+### `MTSS re-embed`
+
+Re-run the embedding decider + chunker + embedder against existing archive markdown — no re-parse, no extra parser spend. Successor to the deleted `scripts/repair_failed_llamaparse_attachments.py` for in-place embedding fixes.
+
+```bash
+MTSS re-embed [OPTIONS]
+
+Options:
+  --doc-id TEXT                Process a single doc by doc_id or UUID
+  --all                        Process every doc with archive_browse_uri
+  --mode [auto|full|summary|metadata_only]
+                               Force a mode, or 'auto' runs the decider (default)
+  --dry-run                    Print decisions, write nothing
+  --limit INT                  Process at most N docs (staged rollout)
+  --force                      Re-process even when mode already matches
+  -v, --verbose                Verbose per-doc output
+  --output-dir PATH            Directory holding documents.jsonl + chunks.jsonl
+```
+
+**Embedding modes** (decided per-document by `embedding_decider.py`):
+
+| Mode | Meaning | Typical content |
+|---|---|---|
+| `full` | Standard chunk + context + embed | Prose, contracts, reports |
+| `summary` | One synthesized summary chunk | Sensor-log dumps, repetitive tabular |
+| `metadata_only` | One filename-only stub chunk | Empty/noise PDFs |
+
+Idempotent — docs already at the decided mode are skipped unless `--force`. The decider runs deterministic rules first; if uncertain, an LLM triage call (always on the medium-confidence band, not flag-gated) classifies the doc.
+
+**Examples:**
+```bash
+# Inventory: what mode would each doc get?
+MTSS re-embed --all --dry-run
+
+# Single doc
+MTSS re-embed --doc-id <uuid>
+
+# Force a mode regardless of decider
+MTSS re-embed --doc-id <uuid> --mode summary
+
+# Staged rollout — first 20 docs only
+MTSS re-embed --all --limit 20
+```
+
 ### `MTSS reindex-chunks`
 
 Re-create chunks from archived markdown files with line numbers and context.

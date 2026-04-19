@@ -77,14 +77,17 @@ def _classify_file(filename: str) -> str:
 # Categories that have meaningful page counts
 PAGE_COUNT_CATEGORIES = {"PDF", "DOCX", "PPTX", "XLSX", "DOC", "PPT", "XLS", "Other Docs"}
 
-# Categories processed by LlamaParse
-LLAMAPARSE_CATEGORIES = {"PDF", "DOCX", "PPTX", "XLSX", "DOC", "PPT", "XLS", "Other Docs"}
+# Categories processed by a cloud parser (Gemini for modern formats, LlamaParse for legacy Office)
+CLOUD_PARSE_CATEGORIES = {"PDF", "DOCX", "PPTX", "XLSX", "DOC", "PPT", "XLS", "Other Docs"}
 
 # Categories parsed locally (free, no API cost)
 LOCAL_PARSE_CATEGORIES = {"DOCX", "XLSX"}
 
-# Categories that always require LlamaParse (no local parser)
-LLAMAPARSE_ONLY_CATEGORIES = {"PPTX", "DOC", "PPT", "XLS", "Other Docs"}
+# Legacy binary Office categories — LlamaParse is the only parser that handles these
+LEGACY_OFFICE_CATEGORIES = {"DOC", "PPT", "XLS"}
+
+# Categories Gemini handles (modern formats + .pptx + assorted other docs)
+GEMINI_PARSE_CATEGORIES = {"PDF", "PPTX", "Other Docs"}
 
 # Categories processed by vision API
 VISION_CATEGORIES = {"Images"}
@@ -470,7 +473,7 @@ class IngestEstimator:
         """Count PDF pages and classify complexity using pypdf.
 
         Returns (page_count, issue_or_none, complexity).
-        complexity is 'simple' (free local parsing) or 'complex' (LlamaParse).
+        complexity is 'simple' (free local parsing) or 'complex' (Gemini).
 
         Fallback chain for page counting:
         1. pypdf on raw file (also classifies)
@@ -497,7 +500,8 @@ class IngestEstimator:
             reader = PdfReader(io.BytesIO(pdf_data))
             count = len(reader.pages)
             if count > 0:
-                complexity = self._classify_pdf_from_reader(reader)
+                from ..parsers.pdf_classifier import classify_reader
+                complexity = classify_reader(reader).value
                 return count, None, complexity
         except (PyPdfError, OSError, ValueError):
             pass
@@ -519,43 +523,6 @@ class IngestEstimator:
             issue="parse_error",
             detail="could not determine page count (pypdf + regex fallbacks failed)",
         ), "complex"
-
-    @staticmethod
-    def _classify_pdf_from_reader(reader) -> str:
-        """Classify a PDF as 'simple' or 'complex' using an already-opened PdfReader.
-
-        Mirrors the logic in parsers.pdf_classifier.classify_pdf but reuses
-        the reader that _count_pdf_pages already created.
-        """
-        from pypdf.errors import PyPdfError
-
-        if not reader.pages:
-            return "complex"
-        try:
-            if reader.get_fields():
-                return "complex"
-        except (PyPdfError, KeyError, AttributeError, TypeError):
-            return "complex"
-
-        for page in reader.pages:
-            try:
-                text = page.extract_text() or ""
-            except (PyPdfError, KeyError, AttributeError, TypeError, ValueError):
-                return "complex"
-            if len(text.strip()) < 50:
-                return "complex"
-            try:
-                resources = page.get("/Resources") or {}
-                if "/XObject" in resources:
-                    xobjects = resources["/XObject"].get_object()
-                    for obj_name in xobjects:
-                        xobj = xobjects[obj_name].get_object()
-                        if xobj.get("/Subtype") == "/Image":
-                            return "complex"
-            except (KeyError, AttributeError, TypeError):
-                return "complex"
-
-        return "simple"
 
     def _count_docx_pages(self, path: Path, rel: str) -> tuple[int, Optional[FileIssue]]:
         """Count DOCX pages from metadata or structural analysis."""

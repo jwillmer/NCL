@@ -127,7 +127,9 @@
       "Bash(tee /tmp/validate-baseline.txt)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(.venv/Scripts/pip.exe show *)"
+      "Bash(.venv/Scripts/pip.exe show *)",
+      "WebFetch(domain:aiengineerguide.com)",
+      "Read(//c/Users/mail/AppData/Local/Temp/claude/C--Projects-GitHub-NCL/171126ce-b080-490a-8c4a-57b6a98a543d/tasks/**)"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\MTSS\\web\\src\\app\\chat\\[threadId]"
