@@ -1456,6 +1456,190 @@ class TestSilentFailureEventEmission:
         ]
         assert "zip_member_upload_failed" in event_types
 
+class TestAttachmentCacheParserIdentity:
+    """Cache reads must skip when the stored parser differs from the router's
+    current choice. Without the sidecar check, a config flip
+    (Gemini↔LlamaParse) silently reuses the prior parser's output."""
+
+    def _build_components(self, *, parser_name: str, cached_meta_parser: str | None):
+        components = MagicMock()
+        components.attachment_processor = MagicMock()
+        components.attachment_processor.parse_to_text = AsyncMock(
+            return_value=("freshly parsed", parser_name, None)
+        )
+        from mtss.parsers.chunker import DocumentChunker
+        components.attachment_processor.chunker = DocumentChunker()
+
+        preprocess = MagicMock(
+            should_process=True,
+            is_image=False,
+            is_zip=False,
+            skip_reason=None,
+            parser_name=parser_name,
+            image_description=None,
+            oversized_pdf=False,
+            preview_markdown=None,
+            total_pages=None,
+        )
+        components.attachment_processor.preprocess = AsyncMock(return_value=preprocess)
+
+        components.hierarchy_manager = MagicMock()
+        components.archive_generator = MagicMock()
+        storage = MagicMock()
+        # Sidecar-based exists map; the .md exists for every run, the sidecar
+        # only exists when cached_meta_parser is set.
+        existing = {
+            "stable1234567890/attachments/notes.txt.md": True,
+        }
+        if cached_meta_parser is not None:
+            existing["stable1234567890/attachments/notes.txt.meta.json"] = True
+
+        storage.file_exists = MagicMock(side_effect=lambda p: existing.get(p, False))
+        import json as _json
+        meta_txt = (
+            _json.dumps({
+                "parser": cached_meta_parser,
+                "model": None,
+                "parsed_at": "2026-01-01T00:00:00Z",
+            })
+            if cached_meta_parser else ""
+        )
+        storage.download_text = MagicMock(
+            side_effect=lambda p: {
+                "stable1234567890/attachments/notes.txt.md":
+                    "# header\n\n## Content\ncached original content",
+                "stable1234567890/attachments/notes.txt.meta.json": meta_txt,
+            }[p]
+        )
+        components.archive_generator.storage = storage
+        components.archive_generator.update_attachment_markdown = MagicMock(
+            return_value="stable1234567890/attachments/notes.txt.md"
+        )
+        components.context_generator = None
+
+        components.db = MagicMock()
+        components.db.log_ingest_event = MagicMock()
+        return components
+
+    @pytest.mark.asyncio
+    async def test_cache_reused_when_parser_matches_sidecar(
+        self, tmp_path, sample_document, sample_attachment_document
+    ):
+        """Same parser in sidecar and router → use cached content, skip parse_to_text."""
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_attachment
+
+        att_path = tmp_path / "notes.txt"
+        att_path.write_text("ignored (cache hit)")
+        attachment = ParsedAttachment(
+            filename="notes.txt",
+            content_type="text/plain",
+            size_bytes=att_path.stat().st_size,
+            saved_path=str(att_path),
+        )
+        sample_document.doc_id = "stable1234567890def"
+        components = self._build_components(
+            parser_name="local_text", cached_meta_parser="local_text",
+        )
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        await process_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        # Cache hit → no fresh parse.
+        components.attachment_processor.parse_to_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_skipped_when_parser_differs_from_sidecar(
+        self, tmp_path, sample_document, sample_attachment_document
+    ):
+        """Sidecar parser != router parser → stale cache, re-parse."""
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_attachment
+
+        att_path = tmp_path / "notes.txt"
+        att_path.write_text("content")
+        attachment = ParsedAttachment(
+            filename="notes.txt",
+            content_type="text/plain",
+            size_bytes=att_path.stat().st_size,
+            saved_path=str(att_path),
+        )
+        sample_document.doc_id = "stable1234567890def"
+        components = self._build_components(
+            parser_name="local_text", cached_meta_parser="gemini_pdf",
+        )
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        await process_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        # Stale cache → fresh parse runs.
+        components.attachment_processor.parse_to_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cache_trusted_when_sidecar_missing_legacy(
+        self, tmp_path, sample_document, sample_attachment_document
+    ):
+        """Pre-migration archives have no sidecar. Trust the cache on first
+        encounter so the fix does not force a mass re-parse at deploy."""
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_attachment
+
+        att_path = tmp_path / "notes.txt"
+        att_path.write_text("content")
+        attachment = ParsedAttachment(
+            filename="notes.txt",
+            content_type="text/plain",
+            size_bytes=att_path.stat().st_size,
+            saved_path=str(att_path),
+        )
+        sample_document.doc_id = "stable1234567890def"
+        components = self._build_components(
+            parser_name="local_text", cached_meta_parser=None,
+        )
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        await process_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        # Legacy cache (no sidecar) → still treated as a hit.
+        components.attachment_processor.parse_to_text.assert_not_called()
+
+
 class TestOversizedPdfPeek:
     """Oversized PDFs route through the preprocessor peek so the full cloud
     parser is never invoked. attachment_handler must use the preview as

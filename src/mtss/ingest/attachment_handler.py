@@ -54,6 +54,8 @@ def _write_attachment_archive_md(
     filename: str,
     content_type: str,
     size_bytes: int,
+    parser_name: str | None = None,
+    parser_model: str | None = None,
 ) -> str | None:
     """Write the attachment's .md preview to the archive and stamp browse/download URIs.
 
@@ -63,6 +65,10 @@ def _write_attachment_archive_md(
 
     Callers MUST check ``archive_generator``, ``parsed_content``, and
     ``email_doc_id`` truthiness before invoking; the helper assumes all three.
+
+    When ``parser_name`` is provided, a ``.meta.json`` sidecar is written
+    alongside the ``.md`` so subsequent cache reads can skip stale caches
+    from a different parser generation.
     """
     md_path = archive_generator.update_attachment_markdown(
         doc_id=email_doc_id,
@@ -70,6 +76,8 @@ def _write_attachment_archive_md(
         content_type=content_type,
         size_bytes=size_bytes,
         parsed_content=parsed_content,
+        parser_name=parser_name,
+        parser_model=parser_model,
     )
     if md_path:
         # md_path is already sanitized by _sanitize_storage_key — don't re-quote.
@@ -533,21 +541,55 @@ async def _process_non_zip_attachment(
         else:
             # Document - check for cached parsed content before calling LlamaParse
             cached_content: str | None = None
+            # Tracked across branches so the archive .md write can stamp the
+            # parser into the sidecar meta.json — cache reads use it to skip
+            # stale output from a prior parser generation. Only set when we
+            # freshly parse; cache hits leave it None so the existing sidecar
+            # is preserved unchanged.
+            _parser_name_for_archive: str | None = None
+            _parser_model_for_archive: str | None = None
+            # Parser that the router chose up front — validates cached content
+            # against current routing. If the cached meta.json says a different
+            # parser, the cache is stale and we re-parse.
+            routed_parser_name = result.parser_name
             if (
                 not force_reparse
                 and components.archive_generator
                 and email_doc.doc_id
-                and result.parser_name  # Only for documents that use parsers
+                and routed_parser_name  # Only for documents that use parsers
             ):
                 folder_id = email_doc.doc_id[:16]
                 safe_filename = _sanitize_storage_key(attachment.filename)
                 cached_md_path = f"{folder_id}/attachments/{safe_filename}.md"
+                cached_meta_path = f"{folder_id}/attachments/{safe_filename}.meta.json"
                 try:
                     if components.archive_generator.storage.file_exists(cached_md_path):
-                        cached_md = components.archive_generator.storage.download_text(cached_md_path)
-                        cached_content = _extract_content_from_cached_markdown(cached_md)
-                        if cached_content:
-                            vprint(f"  -> Using cached content ({len(cached_content)} chars)", file_ctx)
+                        # Validate sidecar before trusting the cached content.
+                        # Missing sidecar = legacy cache (pre-migration); trust it
+                        # on this pass so we don't force mass re-parse. Parser
+                        # mismatch = stale; skip and re-parse.
+                        meta_ok = True
+                        if components.archive_generator.storage.file_exists(cached_meta_path):
+                            import json as _json
+                            try:
+                                meta_txt = components.archive_generator.storage.download_text(
+                                    cached_meta_path
+                                )
+                                meta = _json.loads(meta_txt)
+                                if meta.get("parser") and meta["parser"] != routed_parser_name:
+                                    meta_ok = False
+                                    vprint(
+                                        f"  -> Cache stale: parser changed "
+                                        f"({meta['parser']} -> {routed_parser_name})",
+                                        file_ctx,
+                                    )
+                            except (ValueError, KeyError):
+                                meta_ok = True  # malformed sidecar → trust .md
+                        if meta_ok:
+                            cached_md = components.archive_generator.storage.download_text(cached_md_path)
+                            cached_content = _extract_content_from_cached_markdown(cached_md)
+                            if cached_content:
+                                vprint(f"  -> Using cached content ({len(cached_content)} chars)", file_ctx)
                 except Exception as e:
                     logger.warning(
                         "Cache check failed for %s: %s", attachment.filename, e
@@ -586,6 +628,7 @@ async def _process_non_zip_attachment(
                     trail=trail,
                     trail_key=trail_key,
                 )
+                _parser_name_for_archive = "oversized_pdf_peek"
                 vprint(
                     f"  -> oversized PDF peek ({result.total_pages} pages, "
                     f"{len(result.preview_markdown)} chars preview)",
@@ -597,6 +640,8 @@ async def _process_non_zip_attachment(
                         file_path, attachment.content_type
                     )
                 )
+                _parser_name_for_archive = _parser_name
+                _parser_model_for_archive = _parser_model
                 if trail is not None:
                     trail.stamp_attachment(
                         trail_key,
@@ -646,6 +691,8 @@ async def _process_non_zip_attachment(
                 filename=attachment.filename,
                 content_type=attachment.content_type or "application/octet-stream",
                 size_bytes=attachment.size_bytes or 0,
+                parser_name=_parser_name_for_archive,
+                parser_model=_parser_model_for_archive,
             )
             if md_path:
                 vprint(f"  -> Archive updated: {md_path}", file_ctx)
@@ -864,6 +911,10 @@ async def _process_zip_member(
     attach_chunks: list["Chunk"] = []
     try:
         parsed_content = None
+        # Parser identity stamped into the archive sidecar; see non-ZIP path
+        # for the same pattern.
+        _zip_parser_for_archive: str | None = None
+        _zip_model_for_archive: str | None = None
         if result.is_image:
             attach_chunks = await components.attachment_processor.process_document_image(
                 extracted_path, attach_doc.id
@@ -876,6 +927,10 @@ async def _process_zip_member(
                         STEP_VISION,
                         model=components.attachment_processor.image_processor.model_name,
                     )
+                _zip_parser_for_archive = "image_processor"
+                _zip_model_for_archive = (
+                    components.attachment_processor.image_processor.model_name
+                )
         elif result.oversized_pdf and result.preview_markdown:
             # Oversized PDF inside a ZIP: same treatment as at the top level —
             # skip the full parser and feed the local peek to the decider.
@@ -889,12 +944,15 @@ async def _process_zip_member(
                 trail=trail,
                 trail_key=trail_key,
             )
+            _zip_parser_for_archive = "oversized_pdf_peek"
         else:
             parsed_content, _zip_parser, _zip_model = (
                 await components.attachment_processor.parse_to_text(
                     extracted_path, extracted_content_type
                 )
             )
+            _zip_parser_for_archive = _zip_parser
+            _zip_model_for_archive = _zip_model
             if trail is not None:
                 trail.stamp_attachment(
                     trail_key,
@@ -979,6 +1037,8 @@ async def _process_zip_member(
                 filename=extracted_path.name,
                 content_type=extracted_content_type,
                 size_bytes=extracted_path.stat().st_size,
+                parser_name=_zip_parser_for_archive,
+                parser_model=_zip_model_for_archive,
             )
     except Exception as e:
         if issue_tracker:

@@ -467,6 +467,9 @@ class ArchiveGenerator:
         content_type: str,
         size_bytes: int,
         parsed_content: str,
+        *,
+        parser_name: Optional[str] = None,
+        parser_model: Optional[str] = None,
     ) -> Optional[str]:
         """Update or create an attachment's .md file with parsed content.
 
@@ -477,12 +480,20 @@ class ArchiveGenerator:
         been uploaded to storage before calling this method. This ensures data
         consistency - no .md file without its corresponding original.
 
+        When ``parser_name`` is supplied a sibling ``.meta.json`` sidecar is
+        written alongside the ``.md``. The cache-read path uses the sidecar to
+        detect parser-routing changes and skip stale caches — without it, a
+        config flip (Gemini↔LlamaParse) would silently reuse prior output.
+
         Args:
             doc_id: Document ID (truncated to 16 chars for folder).
             filename: Original attachment filename.
             content_type: MIME type of the attachment.
             size_bytes: File size in bytes.
             parsed_content: Extracted text content.
+            parser_name: Name of the parser that produced ``parsed_content``.
+                When set, triggers the meta.json sidecar write.
+            parser_model: Optional model string (for LLM-backed parsers).
 
         Returns:
             Relative path to the created .md file, or None if skipped.
@@ -521,6 +532,18 @@ class ArchiveGenerator:
             markdown_path,
             md_content,
         )
+
+        # Sidecar metadata so cache reads can detect parser-routing changes.
+        if parser_name:
+            from datetime import timezone
+
+            meta_path = f"{folder_id}/attachments/{safe_filename}.meta.json"
+            meta = {
+                "parser": parser_name,
+                "model": parser_model,
+                "parsed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.storage.upload_text(meta_path, json.dumps(meta, indent=2))
 
         logger.debug(f"  Uploaded: {markdown_path}")
         return markdown_path
