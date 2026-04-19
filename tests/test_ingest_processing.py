@@ -1273,6 +1273,151 @@ class TestEmptyAttachmentEventEmission:
         assert kwargs["file_name"] == "empty.docx"
 
 
+class TestSilentFailureEventEmission:
+    """Failures that previously swallowed to vprint/pass must now leave an
+    ingest_events.jsonl row so `mtss validate` can surface them.
+    """
+
+    def _build_components(self, *, parser_name: str = "local_text"):
+        components = MagicMock()
+        components.attachment_processor = MagicMock()
+        components.attachment_processor.parse_to_text = AsyncMock(
+            return_value=("content", parser_name, None)
+        )
+        from mtss.parsers.chunker import DocumentChunker
+        components.attachment_processor.chunker = DocumentChunker()
+
+        preprocess = MagicMock(
+            should_process=True,
+            is_image=False,
+            is_zip=False,
+            skip_reason=None,
+            parser_name=parser_name,
+            image_description=None,
+            oversized_pdf=False,
+            preview_markdown=None,
+            total_pages=None,
+        )
+        components.attachment_processor.preprocess = AsyncMock(return_value=preprocess)
+
+        components.hierarchy_manager = MagicMock()
+        components.archive_generator = MagicMock()
+        components.archive_generator.storage = MagicMock()
+        components.context_generator = None
+
+        components.db = MagicMock()
+        components.db.log_ingest_event = MagicMock()
+        return components
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_cache_check_failure_emits_event(
+        self, tmp_path, sample_document, sample_attachment_document
+    ):
+        """Cache lookup that raises during download_text must emit
+        `cache_check_failed`, not swallow silently."""
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_attachment
+
+        att_path = tmp_path / "notes.txt"
+        att_path.write_text("hello")
+        attachment = ParsedAttachment(
+            filename="notes.txt",
+            content_type="text/plain",
+            size_bytes=att_path.stat().st_size,
+            saved_path=str(att_path),
+        )
+
+        components = self._build_components()
+        # email_doc must have doc_id for the cache branch to run.
+        sample_document.doc_id = "abc1234567890123def"
+        components.archive_generator.storage.file_exists = MagicMock(return_value=True)
+        components.archive_generator.storage.download_text = MagicMock(
+            side_effect=RuntimeError("storage unreachable")
+        )
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        await process_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        event_types = [
+            c.kwargs.get("event_type")
+            for c in components.db.log_ingest_event.call_args_list
+        ]
+        assert "cache_check_failed" in event_types
+        cache_call = next(
+            c for c in components.db.log_ingest_event.call_args_list
+            if c.kwargs.get("event_type") == "cache_check_failed"
+        )
+        assert cache_call.kwargs["document_id"] == sample_attachment_document.id
+        assert "storage unreachable" in cache_call.kwargs["message"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_zip_member_upload_failure_emits_event(
+        self, tmp_path, sample_document, sample_attachment_document
+    ):
+        """Archive upload of a ZIP member that raises must emit
+        `zip_member_upload_failed` — without the event, the .md can exist but
+        the download_uri points to a missing original."""
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_zip_attachment
+
+        zip_path = tmp_path / "container.zip"
+        zip_path.write_bytes(b"PK")
+        extracted = tmp_path / "extracted" / "report.txt"
+        extracted.parent.mkdir(parents=True, exist_ok=True)
+        extracted.write_text("some parseable content")
+
+        attachment = ParsedAttachment(
+            filename="container.zip",
+            content_type="application/zip",
+            size_bytes=zip_path.stat().st_size,
+            saved_path=str(zip_path),
+        )
+
+        components = self._build_components()
+        # Swap in the ZIP-specific preprocess (extract_zip) plumbing.
+        components.attachment_processor.extract_zip = MagicMock(
+            return_value=[(extracted, "text/plain")]
+        )
+        sample_document.doc_id = "abc1234567890123def"
+        components.archive_generator.storage.upload_file = MagicMock(
+            side_effect=RuntimeError("s3 503")
+        )
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        await process_zip_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        event_types = [
+            c.kwargs.get("event_type")
+            for c in components.db.log_ingest_event.call_args_list
+        ]
+        assert "zip_member_upload_failed" in event_types
+
 class TestOversizedPdfPeek:
     """Oversized PDFs route through the preprocessor peek so the full cloud
     parser is never invoked. attachment_handler must use the preview as

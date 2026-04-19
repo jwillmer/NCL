@@ -8,6 +8,7 @@ Extracted from cli.py for better modularity.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,9 @@ if TYPE_CHECKING:
     from .components import IngestComponents
     from .helpers import IssueTracker
     from .version_manager import VersionManager
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -518,6 +522,7 @@ async def process_email(
 
     # Generate archive if generator is available
     archive_result = None
+    archive_gen_error: str | None = None
     if components.archive_generator:
         try:
             archive_result = await components.archive_generator.generate_archive(
@@ -527,6 +532,8 @@ async def process_email(
             )
             vprint(f"Archive generated: {archive_result.archive_path} ({len(archive_result.attachment_files)} attachments)", file_ctx)
         except Exception as e:
+            archive_gen_error = str(e)
+            logger.warning("Archive generation failed for %s: %s", eml_path, e)
             vprint(f"Archive generation failed: {e}", file_ctx)
 
     # Build email document in memory (deferred DB insert for atomic persist)
@@ -534,6 +541,18 @@ async def process_email(
         eml_path, parsed_email, archive_result=archive_result
     )
     trail.register_email_document(email_doc.id)
+
+    # Persist archive-gen failure event now that we have a doc to attach it to.
+    # Without this, chunks land with null archive URIs and validate can't explain
+    # why — the silent path was the recurring historical bug this event closes.
+    if archive_gen_error is not None:
+        components.db.log_ingest_event(
+            document_id=email_doc.id,
+            event_type="archive_generation_failed",
+            severity="warning",
+            message=archive_gen_error[:500],
+            source_eml_path=email_doc.source_id,
+        )
 
     # Get email body text (used for vessel matching, context, topics, and chunking)
     email_chunks: list["Chunk"] = []
@@ -564,7 +583,15 @@ async def process_email(
             trail.stamp_email(STEP_CONTEXT, model=components.context_generator.model_name)
             vprint(f"Context generated: {len(context_summary)} chars", file_ctx)
         except Exception as e:
+            logger.warning("Context generation failed for %s: %s", eml_path, e)
             vprint(f"Context generation failed: {e}", file_ctx)
+            components.db.log_ingest_event(
+                document_id=email_doc.id,
+                event_type="context_generation_failed",
+                severity="warning",
+                message=str(e)[:500],
+                source_eml_path=email_doc.source_id,
+            )
 
     # Step 3: Topics (extracted)
     topic_ids = await _extract_topics(
@@ -683,7 +710,15 @@ async def process_email(
                 )
                 vprint("Thread digest generated", file_ctx)
         except Exception as e:
+            logger.warning("Thread digest failed for %s: %s", eml_path, e)
             vprint(f"Thread digest failed (continuing): {e}", file_ctx)
+            components.db.log_ingest_event(
+                document_id=email_doc.id,
+                event_type="thread_digest_failed",
+                severity="warning",
+                message=str(e)[:500],
+                source_eml_path=email_doc.source_id,
+            )
 
     # Summary of attachments processed
     if parsed_email.attachments:

@@ -263,8 +263,12 @@ async def _archive_only_attachment(
             file_name=attachment.filename,
             source_eml_path=source_eml_path,
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "log_ingest_event(pdf_parse_skipped) failed for %s: %s",
+            attachment.filename,
+            e,
+        )
 
     if collect_docs is not None:
         collect_docs.append(attach_doc)
@@ -447,8 +451,8 @@ async def process_attachment(
         if on_member_complete and not _suppress_tick:
             try:
                 on_member_complete()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Progress tick failed for %s: %s", attachment.filename, e)
 
 
 async def _process_non_zip_attachment(
@@ -545,8 +549,20 @@ async def _process_non_zip_attachment(
                         if cached_content:
                             vprint(f"  -> Using cached content ({len(cached_content)} chars)", file_ctx)
                 except Exception as e:
+                    logger.warning(
+                        "Cache check failed for %s: %s", attachment.filename, e
+                    )
                     vprint(f"  -> Cache check failed: {e}", file_ctx)
                     cached_content = None
+                    components.db.log_ingest_event(
+                        document_id=attach_doc.id,
+                        event_type="cache_check_failed",
+                        severity="warning",
+                        message=str(e)[:500],
+                        file_path=str(file_path),
+                        file_name=attachment.filename,
+                        source_eml_path=source_eml_path,
+                    )
 
             if cached_content:
                 parsed_content = cached_content
@@ -726,8 +742,12 @@ async def process_zip_attachment(
                     if on_member_complete:
                         try:
                             on_member_complete()
-                        except Exception:  # noqa: BLE001
-                            pass
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug(
+                                "ZIP member progress tick failed for %s: %s",
+                                extracted_path.name,
+                                e,
+                            )
 
         results = await asyncio.gather(
             *(_run_one(ep, ct) for ep, ct in extracted_files)
@@ -755,8 +775,12 @@ async def process_zip_attachment(
             for _ in range(max(0, expected - member_count)):
                 try:
                     on_member_complete()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        "ZIP catch-up tick failed for %s: %s",
+                        attachment.filename,
+                        e,
+                    )
 
     return chunks
 
@@ -773,7 +797,8 @@ def _count_zip_members(zip_path: Path) -> int:
     try:
         with zipfile.ZipFile(zip_path) as zf:
             return sum(1 for m in zf.infolist() if not m.is_dir())
-    except Exception:
+    except Exception as e:
+        logger.warning("ZIP member count failed for %s: %s", zip_path, e)
         return 0
 
 
@@ -932,7 +957,19 @@ async def _process_zip_member(
                     extracted_content_type,
                 )
             except Exception as e:
+                logger.warning(
+                    "ZIP member upload failed for %s: %s", extracted_path.name, e
+                )
                 vprint(f"  -> Failed to upload ZIP member original {safe_member_name}: {e}", file_ctx)
+                components.db.log_ingest_event(
+                    document_id=attach_doc.id,
+                    event_type="zip_member_upload_failed",
+                    severity="warning",
+                    message=str(e)[:500],
+                    file_path=str(extracted_path),
+                    file_name=extracted_path.name,
+                    source_eml_path=source_eml_path,
+                )
 
             _write_attachment_archive_md(
                 components.archive_generator,
