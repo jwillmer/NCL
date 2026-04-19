@@ -26,6 +26,7 @@ from typing import List, Tuple
 
 import litellm
 
+from .._io import read_bytes_async
 from ..config import get_settings
 from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from .base import BaseParser, EmptyContentError
@@ -63,6 +64,11 @@ class GeminiPDFParser(BaseParser):
         self._semaphore = asyncio.Semaphore(get_settings().max_concurrent_gemini_pdf)
 
     @property
+    def model_name(self) -> str | None:
+        # Resolved lazily so tests / runtime config changes see the current value.
+        return getattr(get_settings(), "gemini_pdf_model", None)
+
+    @property
     def is_available(self) -> bool:
         # OpenRouter routes PDFs natively to Gemini; we trust the configured
         # model rather than asking LiteLLM. Its ``supports_pdf_input`` table
@@ -71,13 +77,36 @@ class GeminiPDFParser(BaseParser):
         return bool(getattr(get_settings(), "openrouter_api_key", None))
 
     async def parse(self, file_path: Path) -> str:
+        settings = get_settings()
+        # End-to-end cap: halving + per-batch timeouts can stack if every
+        # batch goes pathological. This guarantees a doc either returns
+        # within budget or fails with something the caller can recover from.
+        return await asyncio.wait_for(
+            self._parse_impl(file_path),
+            timeout=settings.gemini_pdf_doc_timeout_seconds,
+        )
+
+    async def _parse_impl(self, file_path: Path) -> str:
         from pypdf import PdfReader
 
+        from .preprocessor import _safe_count_pdf_pages
+
         settings = get_settings()
-        pdf_bytes = file_path.read_bytes()
+        # Cheap header-only page-count peek (pymupdf) so a multi-hundred-MB
+        # PDF over the ceiling can be rejected without pulling the whole file
+        # into memory. `_safe_count_pdf_pages` returns None on any read error;
+        # the full pypdf parse below is the authoritative count either way.
+        peek_count = await asyncio.to_thread(_safe_count_pdf_pages, file_path)
+        if peek_count is not None and peek_count > settings.gemini_pdf_hard_page_ceiling:
+            raise TooLargeError(
+                f"PDF has {peek_count} pages, exceeds hard ceiling "
+                f"{settings.gemini_pdf_hard_page_ceiling}"
+            )
+
+        # File read + pypdf parse off the event loop — PDFs can be 100s of MB.
+        pdf_bytes = await read_bytes_async(file_path)
         reader = PdfReader(io.BytesIO(pdf_bytes))
-        pages = list(reader.pages)
-        page_count = len(pages)
+        page_count = len(reader.pages)
         if page_count > settings.gemini_pdf_hard_page_ceiling:
             raise TooLargeError(
                 f"PDF has {page_count} pages, exceeds hard ceiling "
@@ -98,11 +127,16 @@ class GeminiPDFParser(BaseParser):
             for start in range(0, page_count, batch_size)
         ]
 
+        # Per-doc halving counter, shared across all batches. Prevents a
+        # scanned form where every batch triggers halving from running the
+        # recursion into the doc timeout.
+        halvings_remaining = [settings.gemini_pdf_max_halvings_per_doc]
+
         async def _run_batch(batch_range: Tuple[int, int]) -> str:
             start, end = batch_range
             async with self._semaphore:
                 return await self._parse_range_adaptive(
-                    pages, file_path.stem, start, end
+                    pdf_bytes, file_path.stem, start, end, halvings_remaining
                 )
 
         outputs = await asyncio.gather(
@@ -124,24 +158,70 @@ class GeminiPDFParser(BaseParser):
         return markdown
 
     async def _parse_range_adaptive(
-        self, pages, stem: str, start: int, end: int
+        self,
+        pdf_bytes: bytes,
+        stem: str,
+        start: int,
+        end: int,
+        halvings_remaining: list,
     ) -> str:
-        """Parse pages [start, end); halve on truncation until batch size = 1."""
-        text, truncated = await self._call_for_range(pages, stem, start, end)
+        """Parse pages [start, end); halve on truncation OR timeout until
+        batch size = 1. A single dense page that blows past the per-call
+        timeout is reported as empty rather than blocking the ingest.
+        ``halvings_remaining`` is a single-element list used as a mutable
+        shared counter across all batches of one doc."""
+        try:
+            text, truncated = await self._call_for_range(pdf_bytes, stem, start, end)
+        except asyncio.TimeoutError:
+            if end - start <= 1:
+                logger.warning(
+                    "Gemini batch timed out on single page %s p%d; skipping",
+                    stem,
+                    start + 1,
+                )
+                return ""
+            logger.info(
+                "Gemini batch timed out on %s p%d-%d; halving",
+                stem,
+                start + 1,
+                end,
+            )
+            truncated = True
+            text = ""
+
         if not truncated or end - start <= 1:
             return text
 
+        if halvings_remaining[0] <= 0:
+            logger.warning(
+                "Gemini halving budget exhausted for %s at p%d-%d; "
+                "returning partial output",
+                stem,
+                start + 1,
+                end,
+            )
+            return text
+        halvings_remaining[0] -= 1
+
         mid = start + (end - start) // 2
-        left = await self._parse_range_adaptive(pages, stem, start, mid)
-        right = await self._parse_range_adaptive(pages, stem, mid, end)
+        left = await self._parse_range_adaptive(
+            pdf_bytes, stem, start, mid, halvings_remaining
+        )
+        right = await self._parse_range_adaptive(
+            pdf_bytes, stem, mid, end, halvings_remaining
+        )
         return f"{left}\n\n{right}" if left and right else (left or right)
 
     async def _call_for_range(
-        self, pages, stem: str, start: int, end: int
+        self, pdf_bytes: bytes, stem: str, start: int, end: int
     ) -> Tuple[str, bool]:
         """Run one LiteLLM call against pages [start, end); return (text, truncated)."""
         settings = get_settings()
-        b64 = _slice_pages_to_base64(pages, start, end)
+        # Slice + base64 on a worker thread: PdfWriter + base64.b64encode is
+        # CPU-bound (tens of ms for large batches) and blocks every other
+        # coroutine when run on the loop. Each call builds its own PdfReader
+        # from pdf_bytes, so threads share no pypdf state.
+        b64 = await asyncio.to_thread(_slice_pages_to_base64, pdf_bytes, start, end)
         content = [
             {"type": "text", "text": _PROMPT},
             {
@@ -152,26 +232,55 @@ class GeminiPDFParser(BaseParser):
                 },
             },
         ]
-        response = await litellm.acompletion(
-            model=settings.gemini_pdf_model,
-            messages=[{"role": "user", "content": content}],
-            temperature=0.0,
-            extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
+        response = await asyncio.wait_for(
+            litellm.acompletion(
+                model=settings.gemini_pdf_model,
+                messages=[{"role": "user", "content": content}],
+                temperature=0.0,
+                extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
+            ),
+            timeout=settings.gemini_pdf_call_timeout_seconds,
         )
         choice = response.choices[0]
         text = (choice.message.content or "").strip()
         finish_reason = getattr(choice, "finish_reason", None)
         truncated = finish_reason == "length"
+
+        # Output-size kill switch: on scanned forms Gemini hallucinates
+        # repetitive content, blowing past any reasonable chars-per-page
+        # ratio. Force the halving path so we converge on a smaller range
+        # that either produces sensible output or gets skipped.
+        pages_in_batch = max(1, end - start)
+        max_chars = settings.gemini_pdf_max_chars_per_page * pages_in_batch
+        if len(text) > max_chars:
+            logger.info(
+                "Gemini output for %s p%d-%d is %d chars (limit %d); "
+                "treating as truncated so halving can recover",
+                stem,
+                start + 1,
+                end,
+                len(text),
+                max_chars,
+            )
+            truncated = True
+
         return text, truncated
 
 
-def _slice_pages_to_base64(pages, start: int, end: int) -> str:
-    """Build a PDF from ``pages[start:end]`` and return its base64 encoding."""
-    from pypdf import PdfWriter
+def _slice_pages_to_base64(pdf_bytes: bytes, start: int, end: int) -> str:
+    """Build a PDF from ``pages[start:end]`` and return its base64 encoding.
 
+    Takes the raw PDF bytes rather than a shared ``PdfReader`` so each caller
+    (including those invoked via ``asyncio.to_thread``) works on its own
+    reader/writer instances — pypdf is not documented as thread-safe for
+    concurrent reads of a shared reader.
+    """
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
     writer = PdfWriter()
     for idx in range(start, end):
-        writer.add_page(pages[idx])
+        writer.add_page(reader.pages[idx])
     buf = io.BytesIO()
     writer.write(buf)
     return base64.b64encode(buf.getvalue()).decode("ascii")

@@ -16,12 +16,24 @@ anywhere in the package without cycles.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
+
+
+async def read_bytes_async(path: Path) -> bytes:
+    """Read a file's bytes on a worker thread so the event loop stays free.
+
+    Centralises the ``await asyncio.to_thread(path.read_bytes)`` pattern used
+    for large-file reads inside async hot paths (PDF parsing, ZIP-member
+    uploads). Callers using this helper surface consistently in grep, and
+    the executor indirection is easy to swap (e.g. aiofiles) later.
+    """
+    return await asyncio.to_thread(path.read_bytes)
 
 
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:

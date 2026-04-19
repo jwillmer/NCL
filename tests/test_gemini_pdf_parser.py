@@ -275,6 +275,111 @@ class TestGeminiPDFParserPagination:
             assert m.await_count == 3
             assert "half1" in out and "half2" in out
 
+    @pytest.mark.asyncio
+    async def test_output_size_guard_triggers_halving(
+        self, tmp_path, comprehensive_mock_settings
+    ):
+        """Gemini occasionally emits hallucinated repetitive content on
+        scanned forms (seen: 1M chars for 5 pages). That must trip the
+        halving path even when finish_reason is stop, so we converge on a
+        smaller range that produces sensible output."""
+        from mtss.parsers.gemini_pdf_parser import GeminiPDFParser
+
+        src = _build_pdf_with_pages(tmp_path / "dense.pdf", page_count=2)
+        comprehensive_mock_settings.openrouter_api_key = "sk-or-test"
+        comprehensive_mock_settings.gemini_pdf_page_batch_size = 2
+        comprehensive_mock_settings.gemini_pdf_max_chars_per_page = 100
+
+        huge = "x" * 5000  # 5000 chars for a 2-page batch = 2500 chars/page > 100
+        responses = [
+            _make_completion(huge, finish_reason="stop"),
+            _make_completion("clean page 1", finish_reason="stop"),
+            _make_completion("clean page 2", finish_reason="stop"),
+        ]
+
+        with patch(
+            "mtss.parsers.gemini_pdf_parser.get_settings",
+            return_value=comprehensive_mock_settings,
+        ), patch(
+            "mtss.parsers.gemini_pdf_parser.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=responses,
+        ) as m:
+            out = await GeminiPDFParser().parse(src)
+            assert m.await_count == 3  # oversized batch + 2 halves
+            assert "clean page 1" in out and "clean page 2" in out
+
+    @pytest.mark.asyncio
+    async def test_halving_budget_bounds_recursion(
+        self, tmp_path, comprehensive_mock_settings
+    ):
+        """A scanned PDF where every batch hallucinates forever must not
+        recurse into unbounded halving. Once the per-doc halving counter
+        hits zero, the parser returns whatever it has and exits."""
+        from mtss.parsers.gemini_pdf_parser import GeminiPDFParser
+
+        src = _build_pdf_with_pages(tmp_path / "scan.pdf", page_count=4)
+        comprehensive_mock_settings.openrouter_api_key = "sk-or-test"
+        comprehensive_mock_settings.gemini_pdf_page_batch_size = 4
+        comprehensive_mock_settings.gemini_pdf_max_halvings_per_doc = 1
+
+        # Every call reports truncation → would halve forever without the cap.
+        always_truncated = AsyncMock(
+            return_value=_make_completion("partial", finish_reason="length")
+        )
+
+        with patch(
+            "mtss.parsers.gemini_pdf_parser.get_settings",
+            return_value=comprehensive_mock_settings,
+        ), patch(
+            "mtss.parsers.gemini_pdf_parser.litellm.acompletion",
+            new=always_truncated,
+        ):
+            out = await GeminiPDFParser().parse(src)
+            # Original call + 1 half (budget=1) + 1 more recursive call before
+            # the single-page floor; not an unbounded tree.
+            assert always_truncated.await_count <= 6
+            assert "partial" in out
+
+    @pytest.mark.asyncio
+    async def test_call_timeout_triggers_halving(
+        self, tmp_path, comprehensive_mock_settings
+    ):
+        """A hung Gemini call (asyncio.TimeoutError from the wait_for wrapper)
+        must trigger the same halving path as `finish_reason=length`. This is
+        the fix for the 7-minute stuck ingest where LiteLLM silently retried
+        without timing out. Single-page timeout returns empty, not a crash."""
+        import asyncio
+
+        from mtss.parsers.gemini_pdf_parser import GeminiPDFParser
+
+        src = _build_pdf_with_pages(tmp_path / "slow.pdf", page_count=2)
+        comprehensive_mock_settings.openrouter_api_key = "sk-or-test"
+        comprehensive_mock_settings.gemini_pdf_page_batch_size = 2
+        comprehensive_mock_settings.gemini_pdf_call_timeout_seconds = 0.05
+
+        async def slow_then_fast(*args, **kwargs):
+            # First call (2-page batch) hangs past the timeout; halves resolve.
+            if slow_then_fast.n == 0:
+                slow_then_fast.n += 1
+                await asyncio.sleep(1.0)  # exceeds 0.05 s wait_for
+                return _make_completion("unreachable", finish_reason="stop")
+            slow_then_fast.n += 1
+            return _make_completion(f"page {slow_then_fast.n - 1}", finish_reason="stop")
+
+        slow_then_fast.n = 0
+
+        with patch(
+            "mtss.parsers.gemini_pdf_parser.get_settings",
+            return_value=comprehensive_mock_settings,
+        ), patch(
+            "mtss.parsers.gemini_pdf_parser.litellm.acompletion",
+            side_effect=slow_then_fast,
+        ):
+            out = await GeminiPDFParser().parse(src)
+            # Timed-out 2-page batch → halving into two 1-page calls.
+            assert "page 1" in out or "page 2" in out
+
 
 # ---------------------------- small PDF helper ---------------------------- #
 

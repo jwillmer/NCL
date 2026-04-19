@@ -319,17 +319,19 @@ class TestGeminiFallback:
 
         gemini = MagicMock()
         gemini.name = "gemini_pdf"
+        gemini.model_name = "openrouter/google/gemini-2.5-flash"
         gemini.is_available = True
         gemini.parse = AsyncMock(return_value="# Extracted\n\nReal content from Gemini.")
 
         with patch.object(processor, "_get_tiered_parser", return_value=local):
             with patch("mtss.parsers.gemini_pdf_parser.GeminiPDFParser", return_value=gemini):
-                text, parser_name = await processor.parse_to_text(tmp_docx)
+                text, parser_name, parser_model = await processor.parse_to_text(tmp_docx)
 
         local.parse.assert_awaited_once()
         gemini.parse.assert_awaited_once()
         assert text.startswith("# Extracted")
         assert parser_name == "gemini_pdf"
+        assert parser_model == "openrouter/google/gemini-2.5-flash"
 
     @pytest.mark.asyncio
     async def test_no_fallback_when_gemini_unavailable(self, processor, tmp_docx):
@@ -758,6 +760,51 @@ class TestPdfClassifierLoosened:
         assert classify_reader(reader) == PDFComplexity.SIMPLE
 
 
+class TestGeminiTimeoutPeekFallback:
+    """When the Gemini parser blows its doc timeout, parse_to_text must fall
+    back to the local PyMuPDF4LLM peek so the attachment still lands as
+    something (decider will classify as full/metadata_only) rather than
+    failing the whole doc. This is the safety net for dense-scanned PDFs
+    whose peek happens to show prose (so the pre-Gemini bypass doesn't
+    fire) but Gemini can't actually extract them."""
+
+    @pytest.mark.asyncio
+    async def test_gemini_timeout_falls_back_to_local_peek(
+        self, tmp_path, comprehensive_mock_settings
+    ):
+        from mtss.parsers.attachment_processor import AttachmentProcessor
+
+        pdf = tmp_path / "slow.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        peek_text = "# Scanned Report\n\nLocal peek extracted this."
+
+        from mtss.parsers.gemini_pdf_parser import GeminiPDFParser
+
+        async def _raise_timeout(_self, _path):
+            import asyncio as _asyncio
+            raise _asyncio.TimeoutError("doc timeout")
+
+        with patch(
+            "mtss.parsers.attachment_processor.get_settings",
+            return_value=comprehensive_mock_settings,
+        ), patch.object(
+            AttachmentProcessor,
+            "_get_tiered_parser",
+            return_value=GeminiPDFParser(),
+        ), patch.object(
+            GeminiPDFParser, "parse", new=_raise_timeout
+        ), patch(
+            "mtss.parsers.preprocessor._peek_pdf_markdown", return_value=peek_text
+        ):
+            text, parser_name, _ = await AttachmentProcessor().parse_to_text(
+                pdf, "application/pdf"
+            )
+
+        assert peek_text in text
+        assert parser_name == "gemini_pdf_timeout_peek_fallback"
+
+
 class TestPreprocessorPdfPageLimit:
     """Preprocessor diverts oversized PDFs to a cheap local peek so the decider
     can classify them as SUMMARY/METADATA_ONLY without paying to parse the
@@ -795,6 +842,93 @@ class TestPreprocessorPdfPageLimit:
         assert "818 pages" in result.preview_markdown
         assert result.total_pages == 818
         assert result.parser_name == "oversized_pdf_peek"
+
+    @pytest.mark.asyncio
+    async def test_complex_pdf_with_no_prose_peek_bypasses_gemini(self, tmp_path):
+        """COMPLEX-classified PDFs whose local peek shows no prose must
+        bypass Gemini entirely. The PMC-22 class of scanned forms: image-
+        dominant, classifies COMPLEX, and Gemini would burn minutes on
+        hallucinated output that the decider throws away as METADATA_ONLY."""
+        from unittest.mock import patch
+
+        from mtss.parsers.preprocessor import DocumentPreprocessor
+
+        pdf = tmp_path / "scan.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        fake_settings = MagicMock()
+        fake_settings.pdf_max_pages = 40
+        fake_settings.attachment_max_bytes = 100 * 1024 * 1024
+
+        # 3-page peek returns a tiny image-dominant noise preview.
+        noise_preview = "page 1\n\npage 2\n\npage 3"
+        from mtss.parsers.pdf_classifier import PDFComplexity
+
+        with patch(
+            "mtss.parsers.preprocessor._safe_count_pdf_pages", return_value=5
+        ), patch(
+            "mtss.parsers.preprocessor._peek_pdf_markdown", return_value=noise_preview
+        ), patch(
+            "mtss.parsers.preprocessor.get_settings", return_value=fake_settings
+        ), patch(
+            "mtss.parsers.pdf_classifier.classify_pdf",
+            return_value=PDFComplexity.COMPLEX,
+        ):
+            result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+
+        assert result.should_process is True
+        assert result.oversized_pdf is True
+        assert result.parser_name == "oversized_pdf_peek"
+        assert result.preview_markdown is not None
+        assert "no prose" in result.preview_markdown.lower()
+
+    @pytest.mark.asyncio
+    async def test_complex_pdf_with_prose_peek_still_routes_to_gemini(self, tmp_path):
+        """Complement: a COMPLEX PDF whose peek shows real prose must NOT
+        short-circuit — route through the normal parser so Gemini can parse
+        the full document."""
+        from unittest.mock import patch
+
+        from mtss.parsers.preprocessor import DocumentPreprocessor
+
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        fake_settings = MagicMock()
+        fake_settings.pdf_max_pages = 40
+        fake_settings.attachment_max_bytes = 100 * 1024 * 1024
+
+        # Realistic prose preview with headings — clears the noise threshold
+        # (>=50 tokens with healthy prose_ratio and at least one heading).
+        prose_preview = (
+            "# Executive Summary\n\n"
+            "The vessel performance during the quarter exceeded baseline "
+            "expectations across all measured metrics. Fuel efficiency "
+            "improved by four percent year over year. Maintenance incidents "
+            "decreased significantly compared to the prior reporting period.\n\n"
+            "## Detailed Findings\n\n"
+            "Detailed analysis of operational parameters follows in the "
+            "sections below. Each system was evaluated independently and "
+            "results have been cross-checked against the prior quarter baseline."
+        )
+        from mtss.parsers.pdf_classifier import PDFComplexity
+
+        with patch(
+            "mtss.parsers.preprocessor._safe_count_pdf_pages", return_value=5
+        ), patch(
+            "mtss.parsers.preprocessor._peek_pdf_markdown", return_value=prose_preview
+        ), patch(
+            "mtss.parsers.preprocessor.get_settings", return_value=fake_settings
+        ), patch(
+            "mtss.parsers.pdf_classifier.classify_pdf",
+            return_value=PDFComplexity.COMPLEX,
+        ):
+            result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+
+        # Falls through to the normal local-parser routing, not the peek path.
+        assert result.should_process is True
+        assert result.oversized_pdf is False
+        assert result.preview_markdown is None
 
     @pytest.mark.asyncio
     async def test_oversized_pdf_skips_when_peek_fails(self, tmp_path):

@@ -19,17 +19,85 @@ logger = logging.getLogger(__name__)
 def _safe_count_pdf_pages(file_path: Path) -> Optional[int]:
     """Return page count for a PDF, or None if it can't be determined.
 
-    None is treated as "don't block" — the parser layer will surface any
-    unreadability as its own failure.
+    Uses PyMuPDF — page_count is a header-read (milliseconds for any size),
+    versus pypdf which walks the full page tree. Returning None lets the
+    parser layer surface any real unreadability as its own failure.
     """
     try:
-        from pypdf import PdfReader
-
-        reader = PdfReader(str(file_path))
-        return len(reader.pages)
+        import pymupdf
+    except ImportError:
+        return None
+    try:
+        with pymupdf.open(str(file_path)) as doc:
+            return doc.page_count
     except Exception as e:
         logger.warning(f"Cannot count pages in {file_path.name}: {e}")
         return None
+
+
+def _peek_pdf_markdown(file_path: Path, pages: int = 3) -> Optional[str]:
+    """Extract the first ``pages`` pages as markdown locally via PyMuPDF4LLM.
+
+    Used by the oversized-PDF branch so the embedding-mode decider can
+    classify the doc from a cheap local preview rather than paying the full
+    cloud parser. Returns None when the libs are missing or the file can't
+    be opened — the caller falls back to a skip in that case.
+    """
+    try:
+        import pymupdf4llm
+    except ImportError:
+        return None
+    try:
+        md = pymupdf4llm.to_markdown(str(file_path), pages=list(range(pages)))
+    except Exception as e:
+        logger.warning(f"PDF peek failed for {file_path.name}: {e}")
+        return None
+    return md if md and md.strip() else None
+
+
+def _peek_complex_pdf_if_noise(
+    file_path: Path, page_count: Optional[int]
+) -> Optional[str]:
+    """Short-circuit Gemini for COMPLEX PDFs whose local peek shows no prose.
+
+    Scanned forms with no text layer (e.g. image-only regulatory circulars)
+    classify COMPLEX, but Gemini burns minutes producing either junk or
+    hallucinated content that the embedding-mode decider discards as
+    METADATA_ONLY. Detecting this up-front costs ~100ms of PyMuPDF work.
+
+    Returns an annotated preview string when the PDF should bypass Gemini,
+    or None to let the normal parser routing run. Uses the decider's own
+    rule 1 thresholds so the classification outcome is identical.
+    """
+    try:
+        from .pdf_classifier import PDFComplexity, classify_pdf
+        from ..ingest.embedding_decider import analyze
+    except ImportError:
+        return None
+
+    try:
+        complexity = classify_pdf(file_path)
+    except Exception:
+        return None
+    if complexity != PDFComplexity.COMPLEX:
+        return None
+
+    preview = _peek_pdf_markdown(file_path, pages=3)
+    if not preview:
+        return None
+    shape = analyze(preview)
+    # Mirror embedding_decider rule 1: METADATA_ONLY when tiny or no-prose.
+    is_noise = shape.total_tokens < 50 or (
+        shape.prose_ratio < 0.15 and shape.heading_count == 0
+    )
+    if not is_noise:
+        return None
+    pages_label = f"{page_count} pages" if page_count else "unknown pages"
+    return (
+        f"_Complex PDF ({pages_label}) — local preview indicated no prose. "
+        f"The following is the first 3 pages._\n\n"
+        f"{preview}"
+    )
 
 
 @dataclass
@@ -44,6 +112,13 @@ class PreprocessResult:
     content_type: Optional[str] = None
     # For images that passed classification, store the description
     image_description: Optional[str] = None
+    # For oversized PDFs where the preprocessor already extracted a cheap
+    # first-page preview, attachment_handler uses this as parsed_content
+    # instead of calling the full parser — the decider then classifies the
+    # doc as SUMMARY / METADATA_ONLY from the preview alone.
+    oversized_pdf: bool = False
+    preview_markdown: Optional[str] = None
+    total_pages: Optional[int] = None
 
 
 # Extensions and MIME types handled by local parsers (tiered routing)
@@ -228,18 +303,56 @@ class DocumentPreprocessor:
                     content_type=actual_type,
                 )
 
-        # Skip oversized PDFs before they reach the parser. Large operational
-        # dumps (multi-hundred-page sensor logs) cost disproportionately at
-        # LlamaParse and produce embedding noise rather than signal.
+        # PDF pre-Gemini guard. Two related cases short-circuit the expensive
+        # cloud parser by handing a local peek to the embedding-mode decider:
+        #
+        #   1. Oversized PDFs (> pdf_max_pages) — large sensor/log dumps that
+        #      produce embedding noise; SUMMARY is always the right outcome.
+        #   2. COMPLEX PDFs with a noise-only peek (no prose, no headings) —
+        #      scanned forms where Gemini would burn minutes producing garbage
+        #      that the decider would then throw away as METADATA_ONLY.
+        #
+        # For case 2 we run the same peek and shape-check as the decider's
+        # rule 1 (prose_ratio < 0.15 AND heading_count == 0 → metadata_only).
+        # If the peek clears that bar we leave routing to the normal parser
+        # so genuinely prose-heavy complex PDFs still get Gemini.
         ext = file_path.suffix.lower()
         if ext == ".pdf" or actual_type == "application/pdf":
-            max_pages = get_settings().pdf_max_pages
             page_count = _safe_count_pdf_pages(file_path)
-            if page_count is not None and page_count > max_pages:
+            max_pages = get_settings().pdf_max_pages
+            oversized = page_count is not None and page_count > max_pages
+            if oversized:
+                preview = _peek_pdf_markdown(file_path, pages=3)
+                if preview is None:
+                    return PreprocessResult(
+                        should_process=False,
+                        skip_reason=f"pdf_too_large_unreadable: {page_count} pages",
+                        content_type=actual_type,
+                    )
+                annotated = (
+                    f"_Oversized PDF — {page_count} pages total. "
+                    f"The following is a preview of the first 3 pages._\n\n"
+                    f"{preview}"
+                )
                 return PreprocessResult(
-                    should_process=False,
-                    skip_reason=f"pdf_too_large: {page_count} pages exceeds limit of {max_pages}",
+                    should_process=True,
+                    parser_name="oversized_pdf_peek",
                     content_type=actual_type,
+                    oversized_pdf=True,
+                    preview_markdown=annotated,
+                    total_pages=page_count,
+                )
+
+            # Not oversized — try the COMPLEX-PDF short-circuit.
+            complex_peek = _peek_complex_pdf_if_noise(file_path, page_count)
+            if complex_peek is not None:
+                return PreprocessResult(
+                    should_process=True,
+                    parser_name="oversized_pdf_peek",
+                    content_type=actual_type,
+                    oversized_pdf=True,
+                    preview_markdown=complex_peek,
+                    total_pages=page_count,
                 )
 
         # Check local parsers first (not in registry, handled by tiered routing)

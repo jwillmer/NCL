@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
+import shutil
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -196,15 +198,18 @@ class AttachmentProcessor:
         self,
         file_path: Path,
         content_type: Optional[str] = None,
-    ) -> Tuple[str, str]:
-        """Run the tiered parser chain and return raw markdown + parser name.
+    ) -> Tuple[str, str, Optional[str]]:
+        """Run the tiered parser chain and return raw markdown + parser name + model.
 
         Keeps parsing and chunking separate so callers can run the embedding
         decider against the raw text before deciding how to chunk it.
 
         Returns:
-            (markdown_text, effective_parser_name). Empty string if the parser
-            successfully opened the file but extracted no content.
+            (markdown_text, effective_parser_name, effective_parser_model).
+            ``effective_parser_model`` is ``None`` for deterministic parsers
+            (local_pdf, local_docx, …) and the provider/model string for
+            LLM-backed parsers. Text is ``""`` when the parser opened the file
+            but extracted no content.
 
         Raises:
             FileNotFoundError: If the file doesn't exist.
@@ -223,6 +228,7 @@ class AttachmentProcessor:
         from .base import EmptyContentError
 
         effective_parser_name = parser.name
+        effective_parser_model = parser.model_name
         try:
             text = await parser.parse(file_path)
         except EmptyContentError:
@@ -238,6 +244,24 @@ class AttachmentProcessor:
             )
             text = await fallback.parse(file_path)
             effective_parser_name = fallback.name
+            effective_parser_model = fallback.model_name
+        except asyncio.TimeoutError:
+            # Gemini doc-timeout: the cloud parser blew its budget (dense
+            # scans, hallucinated output, etc). Rather than fail the whole
+            # attachment, fall back to the local PyMuPDF4LLM peek so the
+            # decider can still produce at least a stub. Local peek is free,
+            # bounded, and better than nothing.
+            if parser.name != "gemini_pdf" or file_path.suffix.lower() != ".pdf":
+                raise
+            from .preprocessor import _peek_pdf_markdown
+
+            logger.warning(
+                f"Gemini parser timed out on {file_path.name}; "
+                f"falling back to local peek"
+            )
+            text = await asyncio.to_thread(_peek_pdf_markdown, file_path, 3) or ""
+            effective_parser_name = "gemini_pdf_timeout_peek_fallback"
+            effective_parser_model = None
 
         if effective_parser_name not in ("llamaparse", "gemini_pdf"):
             from ..cli._common import _service_counter
@@ -245,7 +269,7 @@ class AttachmentProcessor:
 
         if not text or not text.strip():
             logger.warning(f"No text extracted from {file_path.name}")
-            return "", effective_parser_name
+            return "", effective_parser_name, effective_parser_model
 
         text_len = len(text.strip())
         logger.info(f"Extracted {text_len} chars from {file_path.name}")
@@ -253,7 +277,7 @@ class AttachmentProcessor:
             logger.warning(
                 f"Very little text from {file_path.name}: {repr(text.strip()[:100])}"
             )
-        return text, effective_parser_name
+        return text, effective_parser_name, effective_parser_model
 
     # Fallback when filename has no/mangled extension (e.g. trailing dot)
     _MIMETYPE_TO_EXT = {
@@ -558,9 +582,11 @@ class AttachmentProcessor:
                     # Create parent directories
                     target_path.parent.mkdir(parents=True, exist_ok=True)
 
-                    # Extract
+                    # Extract — stream in 1 MiB chunks so a single large member
+                    # (up to zip_max_total_size_mb) doesn't spike RSS by its
+                    # full size before touching disk.
                     with zf.open(member) as src, open(target_path, "wb") as dst:
-                        dst.write(src.read())
+                        shutil.copyfileobj(src, dst, length=1024 * 1024)
 
                     _file_count += 1
                     _total_size += info.file_size

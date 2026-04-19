@@ -78,7 +78,8 @@ Email bodies skip the decider — they're always `full`. All thresholds are Pyda
 
 ## Ingest-time pipeline gotchas
 
-- `process_attachment` and `process_zip_attachment` (both in `src/mtss/ingest/attachment_handler.py`) must stay in sync: both call `context_generator.generate_context` + set `archive_browse_uri/download_uri`. The ZIP path historically forgot both — keep them mirrored.
+- `_process_non_zip_attachment` and `_process_zip_member` (both in `src/mtss/ingest/attachment_handler.py`) route through shared helpers (`_decide_and_build_chunks` for context + chunking, `_write_attachment_archive_md` for the .md write + URI stamps, `_apply_vessel_metadata_to_chunks` for vessel fields). Don't inline these steps in a new branch — the helpers exist specifically to prevent the ZIP path from drifting (a recurring historical bug).
+- LLM-backed ingest components (`EmbeddingGenerator`, `ContextGenerator`, `ImageProcessor`, `TopicExtractor`, every `BaseParser` subclass) expose `.model_name: str | None` for `ProcessingTrail` stamp sites. Use `component.model_name` when stamping the trail — don't reach for `.model` / `.llm_model` / `settings.get_model(...)` directly.
 - `LocalClient.flush()` (`src/mtss/storage/local_client.py`) dedupes chunks by `chunk_id` for both prior-run AND current-run writes. Relies on the deterministic chunk_id (`doc_id + char_start + char_end`) from `compute_chunk_id`.
 - `LocalProgressTracker.get_pending_files` uses file hash (not path) to decide pending vs completed — same email re-sent gets re-ingested only if its content hash changes.
 

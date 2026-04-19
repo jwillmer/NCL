@@ -117,6 +117,11 @@ User question: {query}"""
         settings = get_settings()
         self.llm_model = llm_model or settings.context_llm_model
 
+    @property
+    def model_name(self) -> str:
+        """Canonical accessor used by ProcessingTrail stamp sites."""
+        return self.llm_model
+
     async def extract_topics(
         self, content: str, max_topics: int = 5
     ) -> List[ExtractedTopic]:

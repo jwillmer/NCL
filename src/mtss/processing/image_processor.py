@@ -147,6 +147,11 @@ class ImageProcessor:
         settings = get_settings()
         self.model = settings.get_model(settings.image_llm_model)
 
+    @property
+    def model_name(self) -> str:
+        """Canonical accessor used by ProcessingTrail stamp sites."""
+        return self.model
+
     def is_supported(self, content_type: Optional[str]) -> bool:
         """Check if the image type is supported for Vision API."""
         return content_type in self.SUPPORTED_TYPES

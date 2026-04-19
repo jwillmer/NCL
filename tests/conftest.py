@@ -187,6 +187,10 @@ def comprehensive_mock_settings():
     settings.gemini_pdf_page_batch_size = 25
     settings.gemini_pdf_hard_page_ceiling = 200
     settings.gemini_pdf_max_cost_usd_per_doc = 0.50
+    settings.gemini_pdf_call_timeout_seconds = 90.0
+    settings.gemini_pdf_doc_timeout_seconds = 240.0
+    settings.gemini_pdf_max_chars_per_page = 20000
+    settings.gemini_pdf_max_halvings_per_doc = 6
     settings.attachment_max_bytes = 100 * 1024 * 1024
     # Embedding decider thresholds
     settings.decider_short_token_threshold = 50

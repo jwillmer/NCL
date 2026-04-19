@@ -118,6 +118,13 @@ class LlamaParseParser(BaseParser):
     """
 
     name = "llamaparse"
+    # llama-cloud 2.x doesn't expose a user-facing model name — record the
+    # tier instead so consumers know which vendor ran.
+    _MODEL_NAME = "llamaparse:agentic"
+
+    @property
+    def model_name(self) -> str | None:
+        return self._MODEL_NAME
 
     supported_mimetypes = {
         # PDF

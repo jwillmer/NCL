@@ -51,6 +51,11 @@ Document:
         self.model = settings.get_model(settings.context_llm_model)
         self.fallback_model = settings.get_model(settings.context_llm_fallback)
 
+    @property
+    def model_name(self) -> str:
+        """Canonical accessor used by ProcessingTrail stamp sites."""
+        return self.model
+
     async def _call_llm_with_retry(
         self, model: str, messages: list, max_retries: int = 3
     ) -> Optional[str]:

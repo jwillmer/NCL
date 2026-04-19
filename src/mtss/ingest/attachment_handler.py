@@ -11,9 +11,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from .._io import read_bytes_async
 from ..config import get_settings
 from ..ingest.archive_generator import _sanitize_storage_key
 from ..ingest.helpers import (
+    apply_filter_metadata,
     enrich_chunks_with_document_metadata,
     get_format_name,
     noop_verbose,
@@ -43,22 +45,62 @@ logger = logging.getLogger(__name__)
 _noop_verbose = noop_verbose  # backward compat alias
 
 
-def _resolve_parser_model(parser_name: str | None) -> str | None:
-    """Map an effective parser name to its underlying LLM model, if any.
+def _write_attachment_archive_md(
+    archive_generator,
+    attach_doc: "Document",
+    email_doc_id: str,
+    parsed_content: str,
+    *,
+    filename: str,
+    content_type: str,
+    size_bytes: int,
+) -> str | None:
+    """Write the attachment's .md preview to the archive and stamp browse/download URIs.
 
-    Local parsers are deterministic and return ``None``. LLM-backed parsers
-    (LlamaParse, Gemini PDF) return the configured model name so the trail
-    records which model produced the markdown.
+    Shared by non-ZIP (`_process_non_zip_attachment`) and ZIP-member
+    (`_process_zip_member`) paths so the URI pattern can't drift — a class
+    of bug CLAUDE.md used to call out explicitly for this file.
+
+    Callers MUST check ``archive_generator``, ``parsed_content``, and
+    ``email_doc_id`` truthiness before invoking; the helper assumes all three.
     """
-    if not parser_name:
-        return None
-    if parser_name == "gemini_pdf":
-        return getattr(get_settings(), "gemini_pdf_model", None)
-    if parser_name == "llamaparse":
-        # llama-cloud 2.x doesn't expose a user-facing model name — record the
-        # tier instead so consumers know which vendor ran.
-        return "llamaparse:agentic"
-    return None
+    md_path = archive_generator.update_attachment_markdown(
+        doc_id=email_doc_id,
+        filename=filename,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        parsed_content=parsed_content,
+    )
+    if md_path:
+        # md_path is already sanitized by _sanitize_storage_key — don't re-quote.
+        attach_doc.archive_browse_uri = f"/archive/{md_path}"
+        attach_doc.archive_download_uri = f"/archive/{md_path.removesuffix('.md')}"
+    return md_path
+
+
+def _apply_vessel_metadata_to_chunks(
+    chunks: list,
+    vessel_ids: list[str],
+    vessel_types: list[str],
+    vessel_classes: list[str],
+) -> None:
+    """Stamp vessel fields onto each chunk's metadata dict.
+
+    Thin wrapper over ``apply_filter_metadata`` that handles the per-chunk
+    fan-out + ``metadata=None`` initialization. No-op when all three vessel
+    lists are empty.
+    """
+    if not (vessel_ids or vessel_types or vessel_classes):
+        return
+    for chunk in chunks:
+        if chunk.metadata is None:
+            chunk.metadata = {}
+        apply_filter_metadata(
+            chunk.metadata,
+            vessel_ids=vessel_ids,
+            vessel_types=vessel_types,
+            vessel_classes=vessel_classes,
+        )
 
 
 def _extract_content_from_cached_markdown(cached_md: str) -> str | None:
@@ -163,7 +205,7 @@ async def _decide_and_build_chunks(
     if trail is not None and trail_key is not None:
         from ..models.document import EmbeddingMode
 
-        ctx_model = components.context_generator.model
+        ctx_model = components.context_generator.model_name
         if decision.mode == EmbeddingMode.SUMMARY:
             # SUMMARY mode has no separate context step — the one LLM call is
             # the summary itself.
@@ -226,6 +268,34 @@ async def _archive_only_attachment(
 
     if collect_docs is not None:
         collect_docs.append(attach_doc)
+
+
+def _apply_oversized_pdf_peek(
+    *,
+    result,
+    attach_doc_id,
+    file_path: Path,
+    file_name: str,
+    source_eml_path: str,
+    components: "IngestComponents",
+    trail: "ProcessingTrail | None",
+    trail_key: str | None,
+) -> str:
+    """Handle the oversized-PDF branch: stamp trail + emit event + return
+    the preview markdown. Shared between the top-level and ZIP-member paths
+    so they can't drift — see the sync invariant called out in CLAUDE.md."""
+    if trail is not None and trail_key is not None:
+        trail.stamp_attachment(trail_key, STEP_PARSE, parser="oversized_pdf_peek")
+    components.db.log_ingest_event(
+        document_id=attach_doc_id,
+        event_type="oversized_pdf_peek",
+        severity="info",
+        message=f"peek used in lieu of full parse ({result.total_pages} pages)",
+        file_path=str(file_path),
+        file_name=file_name,
+        source_eml_path=source_eml_path,
+    )
+    return result.preview_markdown
 
 
 async def process_attachment(
@@ -436,7 +506,7 @@ async def _process_non_zip_attachment(
                 trail.stamp_attachment(
                     trail_key,
                     STEP_VISION,
-                    model=components.attachment_processor.image_processor.model,
+                    model=components.attachment_processor.image_processor.model_name,
                 )
             vprint("  -> 1 chunk created (image described)", file_ctx)
             attach_doc.status = ProcessingStatus.COMPLETED
@@ -452,7 +522,7 @@ async def _process_non_zip_attachment(
                     trail.stamp_attachment(
                         trail_key,
                         STEP_VISION,
-                        model=components.attachment_processor.image_processor.model,
+                        model=components.attachment_processor.image_processor.model_name,
                     )
             vprint(f"  -> {len(attach_chunks)} chunks created (image described)", file_ctx)
             attach_doc.status = ProcessingStatus.COMPLETED
@@ -490,27 +560,23 @@ async def _process_non_zip_attachment(
                 # peek. Feed that to the decider instead of running the full
                 # cloud parser — SUMMARY/METADATA_ONLY is the right outcome
                 # for multi-hundred-page sensor dumps.
-                parsed_content = result.preview_markdown
-                if trail is not None:
-                    trail.stamp_attachment(
-                        trail_key, STEP_PARSE, parser="oversized_pdf_peek"
-                    )
+                parsed_content = _apply_oversized_pdf_peek(
+                    result=result,
+                    attach_doc_id=attach_doc.id,
+                    file_path=file_path,
+                    file_name=attachment.filename,
+                    source_eml_path=source_eml_path,
+                    components=components,
+                    trail=trail,
+                    trail_key=trail_key,
+                )
                 vprint(
                     f"  -> oversized PDF peek ({result.total_pages} pages, "
                     f"{len(result.preview_markdown)} chars preview)",
                     file_ctx,
                 )
-                components.db.log_ingest_event(
-                    document_id=attach_doc.id,
-                    event_type="oversized_pdf_peek",
-                    severity="info",
-                    message=f"peek used in lieu of full parse ({result.total_pages} pages)",
-                    file_path=str(file_path),
-                    file_name=attachment.filename,
-                    source_eml_path=source_eml_path,
-                )
             else:
-                parsed_content, _parser_name = (
+                parsed_content, _parser_name, _parser_model = (
                     await components.attachment_processor.parse_to_text(
                         file_path, attachment.content_type
                     )
@@ -519,7 +585,7 @@ async def _process_non_zip_attachment(
                     trail.stamp_attachment(
                         trail_key,
                         STEP_PARSE,
-                        model=_resolve_parser_model(_parser_name),
+                        model=_parser_model,
                         parser=_parser_name,
                     )
 
@@ -556,22 +622,17 @@ async def _process_non_zip_attachment(
         # Update archive with .md file for this attachment
         vprint(f"  -> MD check: archive_gen={components.archive_generator is not None}, parsed_content={len(parsed_content) if parsed_content else 0} chars, doc_id={email_doc.doc_id[:16] if email_doc.doc_id else None}", file_ctx)
         if components.archive_generator and parsed_content and email_doc.doc_id:
-            md_path = components.archive_generator.update_attachment_markdown(
-                doc_id=email_doc.doc_id,
+            md_path = _write_attachment_archive_md(
+                components.archive_generator,
+                attach_doc,
+                email_doc.doc_id,
+                parsed_content,
                 filename=attachment.filename,
                 content_type=attachment.content_type or "application/octet-stream",
                 size_bytes=attachment.size_bytes or 0,
-                parsed_content=parsed_content,
             )
             if md_path:
                 vprint(f"  -> Archive updated: {md_path}", file_ctx)
-                # Update document and chunks with archive URIs
-                # md_path is already sanitized by _sanitize_storage_key, don't quote again
-                browse_uri = f"/archive/{md_path}"
-                download_path = md_path.removesuffix('.md')
-                download_uri = f"/archive/{download_path}"
-                attach_doc.archive_browse_uri = browse_uri
-                attach_doc.archive_download_uri = download_uri
             else:
                 vprint("  -> update_attachment_markdown returned None", file_ctx)
         else:
@@ -595,18 +656,7 @@ async def _process_non_zip_attachment(
 
     # Enrich chunks with document citation metadata (source_id, source_title, archive URIs)
     enrich_chunks_with_document_metadata(chunks, attach_doc)
-
-    # Add vessel metadata to chunk metadata for filtering
-    if vessel_ids or vessel_types or vessel_classes:
-        for chunk in chunks:
-            if chunk.metadata is None:
-                chunk.metadata = {}
-            if vessel_ids:
-                chunk.metadata["vessel_ids"] = vessel_ids
-            if vessel_types:
-                chunk.metadata["vessel_types"] = vessel_types
-            if vessel_classes:
-                chunk.metadata["vessel_classes"] = vessel_classes
+    _apply_vessel_metadata_to_chunks(chunks, vessel_ids, vessel_types, vessel_classes)
 
     return chunks
 
@@ -799,27 +849,23 @@ async def _process_zip_member(
                     trail.stamp_attachment(
                         trail_key,
                         STEP_VISION,
-                        model=components.attachment_processor.image_processor.model,
+                        model=components.attachment_processor.image_processor.model_name,
                     )
         elif result.oversized_pdf and result.preview_markdown:
             # Oversized PDF inside a ZIP: same treatment as at the top level —
             # skip the full parser and feed the local peek to the decider.
-            parsed_content = result.preview_markdown
-            if trail is not None:
-                trail.stamp_attachment(
-                    trail_key, STEP_PARSE, parser="oversized_pdf_peek"
-                )
-            components.db.log_ingest_event(
-                document_id=attach_doc.id,
-                event_type="oversized_pdf_peek",
-                severity="info",
-                message=f"peek used in lieu of full parse ({result.total_pages} pages)",
-                file_path=str(extracted_path),
+            parsed_content = _apply_oversized_pdf_peek(
+                result=result,
+                attach_doc_id=attach_doc.id,
+                file_path=extracted_path,
                 file_name=extracted_path.name,
                 source_eml_path=source_eml_path,
+                components=components,
+                trail=trail,
+                trail_key=trail_key,
             )
         else:
-            parsed_content, _zip_parser = (
+            parsed_content, _zip_parser, _zip_model = (
                 await components.attachment_processor.parse_to_text(
                     extracted_path, extracted_content_type
                 )
@@ -828,7 +874,7 @@ async def _process_zip_member(
                 trail.stamp_attachment(
                     trail_key,
                     STEP_PARSE,
-                    model=_resolve_parser_model(_zip_parser),
+                    model=_zip_model,
                     parser=_zip_parser,
                 )
             if not parsed_content:
@@ -859,16 +905,9 @@ async def _process_zip_member(
             )
 
         enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
-        if vessel_ids or vessel_types or vessel_classes:
-            for chunk in attach_chunks:
-                if chunk.metadata is None:
-                    chunk.metadata = {}
-                if vessel_ids:
-                    chunk.metadata["vessel_ids"] = vessel_ids
-                if vessel_types:
-                    chunk.metadata["vessel_types"] = vessel_types
-                if vessel_classes:
-                    chunk.metadata["vessel_classes"] = vessel_classes
+        _apply_vessel_metadata_to_chunks(
+            attach_chunks, vessel_ids, vessel_types, vessel_classes
+        )
         attach_doc.status = ProcessingStatus.COMPLETED
 
         # Update archive with .md file for this extracted file.
@@ -882,28 +921,28 @@ async def _process_zip_member(
             safe_member_name = _sanitize_storage_key(extracted_path.name)
             original_archive_path = f"{folder_id}/attachments/{safe_member_name}"
             try:
-                with open(extracted_path, "rb") as mf:
-                    components.archive_generator.storage.upload_file(
-                        original_archive_path,
-                        mf.read(),
-                        extracted_content_type,
-                    )
+                # Read + upload off the event loop so N concurrent ZIP-member
+                # tasks (under Semaphore) actually overlap instead of serialising
+                # behind sync file I/O on the loop thread.
+                payload = await read_bytes_async(extracted_path)
+                await asyncio.to_thread(
+                    components.archive_generator.storage.upload_file,
+                    original_archive_path,
+                    payload,
+                    extracted_content_type,
+                )
             except Exception as e:
                 vprint(f"  -> Failed to upload ZIP member original {safe_member_name}: {e}", file_ctx)
 
-            md_path = components.archive_generator.update_attachment_markdown(
-                doc_id=email_doc.doc_id,
+            _write_attachment_archive_md(
+                components.archive_generator,
+                attach_doc,
+                email_doc.doc_id,
+                parsed_content,
                 filename=extracted_path.name,
                 content_type=extracted_content_type,
                 size_bytes=extracted_path.stat().st_size,
-                parsed_content=parsed_content,
             )
-            if md_path:
-                browse_uri = f"/archive/{md_path}"
-                download_path = md_path.removesuffix('.md')
-                download_uri = f"/archive/{download_path}"
-                attach_doc.archive_browse_uri = browse_uri
-                attach_doc.archive_download_uri = download_uri
     except Exception as e:
         if issue_tracker:
             await issue_tracker.track_async(file_ctx, f"{attachment.filename}/{extracted_path.name}", str(e))

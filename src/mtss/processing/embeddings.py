@@ -87,6 +87,11 @@ class EmbeddingGenerator:
             except KeyError:
                 self._encoding = tiktoken.get_encoding("cl100k_base")
 
+    @property
+    def model_name(self) -> str:
+        """Canonical accessor used by ProcessingTrail stamp sites."""
+        return self.model
+
     def _truncate_to_max_tokens(self, text: str) -> str:
         """Truncate text to fit within embedding model's token limit.
 

@@ -849,12 +849,14 @@ class TestZipAttachmentContextGeneration:
         preprocess_result.should_process = True
         preprocess_result.is_image = False
         preprocess_result.skip_reason = None
+        preprocess_result.oversized_pdf = False
+        preprocess_result.preview_markdown = None
         components.attachment_processor.preprocess = AsyncMock(return_value=preprocess_result)
         components.attachment_processor.process_attachment = AsyncMock()
         # New pipeline goes through parse_to_text → decider → build_chunks_for_mode.
         # Default: return the extracted file's text so the decider sees real content.
         components.attachment_processor.parse_to_text = AsyncMock(
-            return_value=(extracted_text_file.read_text(), "local_text")
+            return_value=(extracted_text_file.read_text(), "local_text", None)
         )
         # Real chunker so the splitter actually produces chunks from the text.
         from mtss.parsers.chunker import DocumentChunker
@@ -1088,7 +1090,7 @@ class TestEmptyAttachmentEventEmission:
             "" if not chunks_return else "something parseable and long enough"
         )
         components.attachment_processor.parse_to_text = AsyncMock(
-            return_value=(text, "local_text")
+            return_value=(text, "local_text", None)
         )
         # Keep legacy method mocked for any code path that still references it.
         components.attachment_processor.process_attachment = AsyncMock(
@@ -1104,6 +1106,9 @@ class TestEmptyAttachmentEventEmission:
             skip_reason=None,
             parser_name=None,
             image_description=None,
+            oversized_pdf=False,
+            preview_markdown=None,
+            total_pages=None,
         )
         components.attachment_processor.preprocess = AsyncMock(return_value=preprocess)
 
@@ -1268,6 +1273,97 @@ class TestEmptyAttachmentEventEmission:
         assert kwargs["file_name"] == "empty.docx"
 
 
+class TestOversizedPdfPeek:
+    """Oversized PDFs route through the preprocessor peek so the full cloud
+    parser is never invoked. attachment_handler must use the preview as
+    parsed_content and emit an ``oversized_pdf_peek`` event."""
+
+    def _build_components(self):
+        components = MagicMock()
+        components.attachment_processor = MagicMock()
+        # parse_to_text should NEVER be called — fail loudly if it is.
+        components.attachment_processor.parse_to_text = AsyncMock(
+            side_effect=AssertionError(
+                "parse_to_text must not run on the oversized_pdf path"
+            )
+        )
+        from mtss.parsers.chunker import DocumentChunker
+        components.attachment_processor.chunker = DocumentChunker()
+
+        preprocess = MagicMock(
+            should_process=True,
+            is_image=False,
+            is_zip=False,
+            skip_reason=None,
+            parser_name="oversized_pdf_peek",
+            image_description=None,
+            oversized_pdf=True,
+            preview_markdown=(
+                "_Oversized PDF — 818 pages total. "
+                "The following is a preview of the first 3 pages._\n\n"
+                "# Sensor Log\n\n"
+                + "12345 67890 11223 | 2025-07-01T00:00:00Z | 100.5\n" * 40
+            ),
+            total_pages=818,
+        )
+        components.attachment_processor.preprocess = AsyncMock(return_value=preprocess)
+
+        components.hierarchy_manager = MagicMock()
+        components.archive_generator = MagicMock()
+        components.archive_generator.storage = MagicMock()
+        components.archive_generator.storage.file_exists = MagicMock(return_value=False)
+        components.context_generator = None  # forces FULL mode → simple path
+
+        components.db = MagicMock()
+        components.db.log_ingest_event = MagicMock()
+        return components
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
+    async def test_oversized_pdf_skips_full_parse_and_logs_event(
+        self, tmp_path, sample_document, sample_attachment_document
+    ):
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_attachment
+
+        pdf = tmp_path / "huge.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        attachment = ParsedAttachment(
+            filename="huge.pdf",
+            content_type="application/pdf",
+            size_bytes=pdf.stat().st_size,
+            saved_path=str(pdf),
+        )
+
+        components = self._build_components()
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        chunks = await process_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+        )
+
+        # parse_to_text wasn't touched (its side_effect would have raised).
+        components.attachment_processor.parse_to_text.assert_not_called()
+        # Chunks were produced from the preview.
+        assert len(chunks) >= 1
+        # Event emitted with the peek identifier.
+        event_types = [
+            call.kwargs.get("event_type")
+            for call in components.db.log_ingest_event.call_args_list
+        ]
+        assert "oversized_pdf_peek" in event_types
+
+
 class TestProgressUnitsExpandZipMembers:
     """_count_progress_units must pre-size the progress denominator to one
     tick per ZIP member so image-heavy ZIPs don't freeze the bar at a tiny
@@ -1394,6 +1490,7 @@ class TestZipMemberConcurrency:
         preprocess = MagicMock(
             should_process=True, is_image=False, is_zip=False,
             skip_reason=None, parser_name=None, image_description=None,
+            oversized_pdf=False, preview_markdown=None, total_pages=None,
         )
         components.attachment_processor.preprocess = AsyncMock(return_value=preprocess)
 
@@ -1417,6 +1514,7 @@ class TestZipMemberConcurrency:
                 f"# {path.name}\n\n"
                 + ("parsed content for this extracted zip member. " * 30),
                 "local_text",
+                None,
             )
 
         components.attachment_processor.parse_to_text = AsyncMock(side_effect=slow_parse_text)

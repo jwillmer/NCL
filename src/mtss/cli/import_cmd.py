@@ -16,7 +16,7 @@ from uuid import UUID
 import typer
 
 from ._common import console, make_progress
-from .._io import retry_with_backoff
+from .._io import read_bytes_async, retry_with_backoff
 from ..models.serializers import dict_to_chunk as _dict_to_chunk
 from ..models.serializers import dict_to_document as _dict_to_document
 from ..models.serializers import dict_to_topic as _dict_to_topic
@@ -564,7 +564,7 @@ async def _import_archives(archive_dir: Path, local_doc_folder_ids: set, totals,
                         mimetypes.guess_type(str(local_path))[0]
                         or "application/octet-stream"
                     )
-                    payload = await asyncio.to_thread(local_path.read_bytes)
+                    payload = await read_bytes_async(local_path)
                     success = await asyncio.to_thread(
                         _upload_with_retry, storage, rel_key, payload, content_type
                     )

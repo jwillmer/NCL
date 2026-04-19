@@ -26,6 +26,16 @@ class BaseParser(ABC):
     supported_mimetypes: set[str] = set()
     supported_extensions: set[str] = set()
 
+    @property
+    def model_name(self) -> Optional[str]:
+        """Model identifier stamped onto the ProcessingTrail ``parse`` step.
+
+        Deterministic parsers (local_pdf, local_docx, …) return ``None`` — the
+        trail records the parser name only. LLM-backed parsers override to
+        return the provider/model string the ingest actually called.
+        """
+        return None
+
     @abstractmethod
     async def parse(self, file_path: Path) -> str:
         """Parse a document and return its text content.

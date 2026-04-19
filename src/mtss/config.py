@@ -195,6 +195,33 @@ class Settings(BaseSettings):
     gemini_pdf_max_cost_usd_per_doc: float = Field(
         default=0.50, validation_alias="GEMINI_PDF_MAX_COST_USD_PER_DOC"
     )
+    # Wall-clock ceiling per Gemini batch call. Dense scanned PDFs can make a
+    # single batch run for minutes while Gemini emits unbounded output, and
+    # LiteLLM's built-in ``timeout`` kwarg doesn't reliably cancel. We wrap
+    # the call in asyncio.wait_for using this value so the adaptive halving
+    # path can trigger in bounded time instead of blocking the ingest loop.
+    gemini_pdf_call_timeout_seconds: float = Field(
+        default=90.0, validation_alias="GEMINI_PDF_CALL_TIMEOUT_SECONDS"
+    )
+    # Hard wall-clock cap for parsing a single PDF end-to-end. Independent of
+    # per-batch timeout — guards against halving + retries stacking into
+    # unbounded total time. On timeout the parser returns partial output and
+    # the decider routes the doc to METADATA_ONLY.
+    gemini_pdf_doc_timeout_seconds: float = Field(
+        default=240.0, validation_alias="GEMINI_PDF_DOC_TIMEOUT_SECONDS"
+    )
+    # Kill-switch: a Gemini batch that returns more than this many chars per
+    # input page is almost always hallucinated repetition on a scanned form.
+    # Treat as truncation so the halving path triggers immediately.
+    gemini_pdf_max_chars_per_page: int = Field(
+        default=20000, validation_alias="GEMINI_PDF_MAX_CHARS_PER_PAGE"
+    )
+    # Give up on a doc after N total halving events across all batches.
+    # Protects against scanned-form PDFs where every batch triggers halving
+    # and the recursion burns minutes before hitting the doc timeout.
+    gemini_pdf_max_halvings_per_doc: int = Field(
+        default=6, validation_alias="GEMINI_PDF_MAX_HALVINGS_PER_DOC"
+    )
 
     @computed_field
     @property

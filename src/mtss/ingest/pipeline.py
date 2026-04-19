@@ -25,7 +25,7 @@ from ..parsers.email_cleaner import (
 from ..processing.topics import sanitize_input
 from ..utils import compute_chunk_id, compute_doc_id, normalize_source_id
 from .attachment_handler import _count_zip_members, process_attachment
-from .helpers import noop_verbose
+from .helpers import apply_filter_metadata, noop_verbose
 from .processing_trail import (
     STEP_CONTENT_CLEANUP,
     STEP_CONTEXT,
@@ -299,16 +299,14 @@ def _create_body_chunks(
         if context_summary:
             embedding_text = components.context_generator.build_embedding_text(context_summary, cleaned_message)
 
-        # Build chunk metadata including vessel and topic info for filtering
         chunk_metadata: dict = {"type": "email_body", "message_index": msg_idx}
-        if vessel_ids:
-            chunk_metadata["vessel_ids"] = vessel_ids
-        if vessel_types:
-            chunk_metadata["vessel_types"] = vessel_types
-        if vessel_classes:
-            chunk_metadata["vessel_classes"] = vessel_classes
-        if topic_ids:
-            chunk_metadata["topic_ids"] = topic_ids
+        apply_filter_metadata(
+            chunk_metadata,
+            vessel_ids=vessel_ids,
+            vessel_types=vessel_types,
+            vessel_classes=vessel_classes,
+            topic_ids=topic_ids,
+        )
 
         chunks.append(
             Chunk(
@@ -416,14 +414,13 @@ Date range: {date_start} to {date_end}
         )
 
     chunk_metadata: dict = {"type": "thread_digest", "message_count": len(messages)}
-    if vessel_ids:
-        chunk_metadata["vessel_ids"] = vessel_ids
-    if vessel_types:
-        chunk_metadata["vessel_types"] = vessel_types
-    if vessel_classes:
-        chunk_metadata["vessel_classes"] = vessel_classes
-    if topic_ids:
-        chunk_metadata["topic_ids"] = topic_ids
+    apply_filter_metadata(
+        chunk_metadata,
+        vessel_ids=vessel_ids,
+        vessel_types=vessel_types,
+        vessel_classes=vessel_classes,
+        topic_ids=topic_ids,
+    )
 
     return Chunk(
         document_id=email_doc.id,
@@ -564,7 +561,7 @@ async def process_email(
             context_summary = await components.context_generator.generate_context(
                 email_doc, body_text[:4000]
             )
-            trail.stamp_email(STEP_CONTEXT, model=components.context_generator.model)
+            trail.stamp_email(STEP_CONTEXT, model=components.context_generator.model_name)
             vprint(f"Context generated: {len(context_summary)} chars", file_ctx)
         except Exception as e:
             vprint(f"Context generation failed: {e}", file_ctx)
@@ -576,7 +573,7 @@ async def process_email(
     if topic_ids and components.topic_extractor is not None:
         trail.stamp_email(
             STEP_TOPICS,
-            model=components.topic_extractor.llm_model,
+            model=components.topic_extractor.model_name,
             topic_count=len(topic_ids),
         )
 
@@ -712,7 +709,7 @@ async def process_email(
         vprint(f"Generating embeddings for {len(email_chunks)} chunks...", file_ctx)
         email_chunks = await components.embeddings.embed_chunks(email_chunks)
         _stamp_embed_by_document(
-            trail, email_chunks, components.embeddings.model
+            trail, email_chunks, components.embeddings.model_name
         )
 
     # Atomic persist: all documents + chunks + topic counts in one operation

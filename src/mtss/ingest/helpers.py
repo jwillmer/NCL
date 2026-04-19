@@ -90,6 +90,31 @@ def enrich_chunks_with_document_metadata(
         chunk.archive_download_uri = doc.archive_download_uri
 
 
+def apply_filter_metadata(
+    metadata: dict,
+    *,
+    vessel_ids: list[str] | None = None,
+    vessel_types: list[str] | None = None,
+    vessel_classes: list[str] | None = None,
+    topic_ids: list[str] | None = None,
+) -> None:
+    """Stamp vessel + topic fields onto a chunk-metadata dict.
+
+    Used both while constructing fresh email-body/thread-digest metadata
+    dicts (``pipeline.py``) and while mutating existing attachment-chunk
+    metadata (``attachment_handler.py``). Keeps the key names in one place.
+    Empty/None lists are skipped so we don't pollute the dict.
+    """
+    if vessel_ids:
+        metadata["vessel_ids"] = vessel_ids
+    if vessel_types:
+        metadata["vessel_types"] = vessel_types
+    if vessel_classes:
+        metadata["vessel_classes"] = vessel_classes
+    if topic_ids:
+        metadata["topic_ids"] = topic_ids
+
+
 class IssueTracker:
     """Track processing issues for end-of-run summary.
 
