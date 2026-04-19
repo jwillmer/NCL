@@ -58,10 +58,23 @@ class GeminiPDFParser(BaseParser):
     supported_extensions = {".pdf"}
     supported_mimetypes = {"application/pdf"}
 
-    def __init__(self) -> None:
-        # Process-wide throttle: this parser is shared across documents in the
-        # ingest, so the semaphore caps OpenRouter calls globally — not per-doc.
-        self._semaphore = asyncio.Semaphore(get_settings().max_concurrent_gemini_pdf)
+    # Class-level semaphore so the concurrency cap is truly process-wide.
+    # Previously instantiated per-instance in __init__, and callers in
+    # attachment_processor create a fresh GeminiPDFParser per attachment —
+    # that defeated the throttle entirely. Lazily initialised on first use
+    # because asyncio.Semaphore wants a running event loop.
+    _semaphore: asyncio.Semaphore | None = None
+    _semaphore_capacity: int | None = None
+
+    @classmethod
+    def _get_semaphore(cls) -> asyncio.Semaphore:
+        """Return the shared semaphore, (re)creating it if the configured
+        capacity has changed (e.g. tests tweaking settings between runs)."""
+        capacity = get_settings().max_concurrent_gemini_pdf
+        if cls._semaphore is None or cls._semaphore_capacity != capacity:
+            cls._semaphore = asyncio.Semaphore(capacity)
+            cls._semaphore_capacity = capacity
+        return cls._semaphore
 
     @property
     def model_name(self) -> str | None:
@@ -132,9 +145,11 @@ class GeminiPDFParser(BaseParser):
         # recursion into the doc timeout.
         halvings_remaining = [settings.gemini_pdf_max_halvings_per_doc]
 
+        semaphore = self._get_semaphore()
+
         async def _run_batch(batch_range: Tuple[int, int]) -> str:
             start, end = batch_range
-            async with self._semaphore:
+            async with semaphore:
                 return await self._parse_range_adaptive(
                     pdf_bytes, file_path.stem, start, end, halvings_remaining
                 )

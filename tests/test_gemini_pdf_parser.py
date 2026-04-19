@@ -51,6 +51,39 @@ class TestGeminiPDFParserAvailability:
         ):
             assert GeminiPDFParser().is_available is False
 
+    @pytest.mark.asyncio
+    async def test_semaphore_is_shared_across_instances(
+        self, comprehensive_mock_settings
+    ):
+        """The concurrency cap must hold across every GeminiPDFParser in the
+        process. attachment_processor constructs a fresh parser per attachment,
+        so an instance-level semaphore (the prior code) defeated the cap.
+        """
+        import asyncio as _asyncio
+
+        from mtss.parsers.gemini_pdf_parser import GeminiPDFParser
+
+        comprehensive_mock_settings.openrouter_api_key = "sk-or-test"
+        comprehensive_mock_settings.max_concurrent_gemini_pdf = 4
+        # Reset class state so the capacity change below actually takes effect.
+        GeminiPDFParser._semaphore = None
+        GeminiPDFParser._semaphore_capacity = None
+
+        async def _inner():
+            with patch(
+                "mtss.parsers.gemini_pdf_parser.get_settings",
+                return_value=comprehensive_mock_settings,
+            ):
+                a = GeminiPDFParser()
+                b = GeminiPDFParser()
+                sem_a = a._get_semaphore()
+                sem_b = b._get_semaphore()
+                assert sem_a is sem_b, "Semaphore must be shared across instances"
+                # Sanity: it's a real asyncio.Semaphore with configured capacity.
+                assert isinstance(sem_a, _asyncio.Semaphore)
+
+        await _inner()
+
     def test_available_when_openrouter_key_set(self, comprehensive_mock_settings):
         from mtss.parsers.gemini_pdf_parser import GeminiPDFParser
 
