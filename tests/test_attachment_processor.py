@@ -298,8 +298,8 @@ class TestIsSupported:
 
 
 class TestGeminiFallback:
-    """Process_attachment should fall back to Gemini when a local parser
-    reports EmptyContentError. LlamaParse is no longer the generic fallback."""
+    """parse_to_text should fall back to Gemini when a local parser raises
+    EmptyContentError. LlamaParse is no longer the generic fallback."""
 
     @pytest.fixture
     def tmp_docx(self, tmp_path):
@@ -309,8 +309,6 @@ class TestGeminiFallback:
 
     @pytest.mark.asyncio
     async def test_fallback_to_gemini_on_empty_content(self, processor, tmp_docx):
-        from uuid import uuid4
-
         from unittest.mock import AsyncMock
 
         from mtss.parsers.base import EmptyContentError
@@ -326,17 +324,15 @@ class TestGeminiFallback:
 
         with patch.object(processor, "_get_tiered_parser", return_value=local):
             with patch("mtss.parsers.gemini_pdf_parser.GeminiPDFParser", return_value=gemini):
-                chunks = await processor.process_attachment(tmp_docx, uuid4())
+                text, parser_name = await processor.parse_to_text(tmp_docx)
 
         local.parse.assert_awaited_once()
         gemini.parse.assert_awaited_once()
-        assert len(chunks) > 0
-        assert chunks[0].metadata.get("parser") == "gemini_pdf"
+        assert text.startswith("# Extracted")
+        assert parser_name == "gemini_pdf"
 
     @pytest.mark.asyncio
     async def test_no_fallback_when_gemini_unavailable(self, processor, tmp_docx):
-        from uuid import uuid4
-
         from unittest.mock import AsyncMock
 
         from mtss.parsers.base import EmptyContentError
@@ -352,15 +348,13 @@ class TestGeminiFallback:
         with patch.object(processor, "_get_tiered_parser", return_value=local):
             with patch("mtss.parsers.gemini_pdf_parser.GeminiPDFParser", return_value=gemini):
                 with pytest.raises(EmptyContentError):
-                    await processor.process_attachment(tmp_docx, uuid4())
+                    await processor.parse_to_text(tmp_docx)
 
         gemini.parse.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_fallback_on_non_empty_value_error(self, processor, tmp_docx):
         """Non-empty ValueError (e.g. corrupted file) should propagate, not fall back."""
-        from uuid import uuid4
-
         from unittest.mock import AsyncMock
 
         local = MagicMock()
@@ -374,7 +368,7 @@ class TestGeminiFallback:
         with patch.object(processor, "_get_tiered_parser", return_value=local):
             with patch("mtss.parsers.gemini_pdf_parser.GeminiPDFParser", return_value=gemini):
                 with pytest.raises(ValueError, match="corrupt"):
-                    await processor.process_attachment(tmp_docx, uuid4())
+                    await processor.parse_to_text(tmp_docx)
 
         gemini.parse.assert_not_awaited()
 
@@ -382,8 +376,6 @@ class TestGeminiFallback:
     async def test_no_fallback_when_primary_is_gemini(self, processor, tmp_docx):
         """If the primary parser is Gemini itself and it raises EmptyContentError,
         don't recurse."""
-        from uuid import uuid4
-
         from unittest.mock import AsyncMock
 
         from mtss.parsers.base import EmptyContentError
@@ -394,7 +386,7 @@ class TestGeminiFallback:
 
         with patch.object(processor, "_get_tiered_parser", return_value=gemini_primary):
             with pytest.raises(EmptyContentError):
-                await processor.process_attachment(tmp_docx, uuid4())
+                await processor.parse_to_text(tmp_docx)
 
 
 class TestLegacyOfficeRoutesToLlamaParse:
@@ -767,11 +759,14 @@ class TestPdfClassifierLoosened:
 
 
 class TestPreprocessorPdfPageLimit:
-    """Preprocessor skips PDFs above settings.pdf_max_pages to avoid blowing
-    LlamaParse budget on multi-hundred-page sensor-log dumps."""
+    """Preprocessor diverts oversized PDFs to a cheap local peek so the decider
+    can classify them as SUMMARY/METADATA_ONLY without paying to parse the
+    whole doc."""
 
     @pytest.mark.asyncio
-    async def test_pdf_over_limit_is_skipped(self, tmp_path):
+    async def test_oversized_pdf_uses_peek_when_pymupdf_succeeds(self, tmp_path):
+        """Peek succeeds → should_process=True with oversized_pdf flag +
+        preview_markdown set; the full-parse route is skipped entirely."""
         from unittest.mock import patch
 
         from mtss.parsers.preprocessor import DocumentPreprocessor
@@ -783,13 +778,51 @@ class TestPreprocessorPdfPageLimit:
         fake_settings.pdf_max_pages = 40
         fake_settings.attachment_max_bytes = 100 * 1024 * 1024
 
-        with patch("mtss.parsers.preprocessor._safe_count_pdf_pages", return_value=818):
-            with patch("mtss.parsers.preprocessor.get_settings", return_value=fake_settings):
-                result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+        preview = "# Report\n\nFirst-page preview text."
+        with patch(
+            "mtss.parsers.preprocessor._safe_count_pdf_pages", return_value=818
+        ), patch(
+            "mtss.parsers.preprocessor._peek_pdf_markdown", return_value=preview
+        ), patch(
+            "mtss.parsers.preprocessor.get_settings", return_value=fake_settings
+        ):
+            result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+
+        assert result.should_process is True
+        assert result.oversized_pdf is True
+        assert result.preview_markdown is not None
+        assert preview in result.preview_markdown
+        assert "818 pages" in result.preview_markdown
+        assert result.total_pages == 818
+        assert result.parser_name == "oversized_pdf_peek"
+
+    @pytest.mark.asyncio
+    async def test_oversized_pdf_skips_when_peek_fails(self, tmp_path):
+        """If PyMuPDF can't even extract a preview, fall back to the old skip
+        behavior so we don't route a truly corrupt file to the decider."""
+        from unittest.mock import patch
+
+        from mtss.parsers.preprocessor import DocumentPreprocessor
+
+        pdf = tmp_path / "corrupt_huge.pdf"
+        pdf.write_bytes(b"not really a pdf")
+
+        fake_settings = MagicMock()
+        fake_settings.pdf_max_pages = 40
+        fake_settings.attachment_max_bytes = 100 * 1024 * 1024
+
+        with patch(
+            "mtss.parsers.preprocessor._safe_count_pdf_pages", return_value=818
+        ), patch(
+            "mtss.parsers.preprocessor._peek_pdf_markdown", return_value=None
+        ), patch(
+            "mtss.parsers.preprocessor.get_settings", return_value=fake_settings
+        ):
+            result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
 
         assert result.should_process is False
         assert result.skip_reason is not None
-        assert "pdf_too_large" in result.skip_reason
+        assert "pdf_too_large_unreadable" in result.skip_reason
         assert "818" in result.skip_reason
 
     @pytest.mark.asyncio

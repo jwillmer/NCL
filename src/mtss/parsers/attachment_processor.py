@@ -255,28 +255,6 @@ class AttachmentProcessor:
             )
         return text, effective_parser_name
 
-    async def process_attachment(
-        self,
-        file_path: Path,
-        document_id: UUID,
-        content_type: Optional[str] = None,
-    ) -> List[Chunk]:
-        """Parse + chunk (legacy shape). Callers wanting to run the decider
-        should use ``parse_to_text`` and then build chunks per-mode.
-        """
-        text, effective_parser_name = await self.parse_to_text(file_path, content_type)
-        if not text:
-            return []
-        chunks = self.chunker.chunk_text(
-            text=text,
-            document_id=document_id,
-            source_file=str(file_path),
-            is_markdown=True,
-            metadata={"parser": effective_parser_name},
-        )
-        logger.info(f"Created {len(chunks)} chunks from {file_path.name}")
-        return chunks
-
     # Fallback when filename has no/mangled extension (e.g. trailing dot)
     _MIMETYPE_TO_EXT = {
         "application/pdf": ".pdf",
