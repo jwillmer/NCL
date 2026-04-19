@@ -7,6 +7,7 @@ extracted from cli.py for better modularity.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -36,6 +37,8 @@ if TYPE_CHECKING:
     from .helpers import IssueTracker
     from .processing_trail import ProcessingTrail
 
+
+logger = logging.getLogger(__name__)
 
 _noop_verbose = noop_verbose  # backward compat alias
 
@@ -482,6 +485,30 @@ async def _process_non_zip_attachment(
                 vprint(
                     f"  -> cached content ({len(cached_content)} chars)", file_ctx
                 )
+            elif result.oversized_pdf and result.preview_markdown:
+                # Oversized PDF: preprocessor already extracted a cheap local
+                # peek. Feed that to the decider instead of running the full
+                # cloud parser — SUMMARY/METADATA_ONLY is the right outcome
+                # for multi-hundred-page sensor dumps.
+                parsed_content = result.preview_markdown
+                if trail is not None:
+                    trail.stamp_attachment(
+                        trail_key, STEP_PARSE, parser="oversized_pdf_peek"
+                    )
+                vprint(
+                    f"  -> oversized PDF peek ({result.total_pages} pages, "
+                    f"{len(result.preview_markdown)} chars preview)",
+                    file_ctx,
+                )
+                components.db.log_ingest_event(
+                    document_id=attach_doc.id,
+                    event_type="oversized_pdf_peek",
+                    severity="info",
+                    message=f"peek used in lieu of full parse ({result.total_pages} pages)",
+                    file_path=str(file_path),
+                    file_name=attachment.filename,
+                    source_eml_path=source_eml_path,
+                )
             else:
                 parsed_content, _parser_name = (
                     await components.attachment_processor.parse_to_text(
@@ -774,6 +801,23 @@ async def _process_zip_member(
                         STEP_VISION,
                         model=components.attachment_processor.image_processor.model,
                     )
+        elif result.oversized_pdf and result.preview_markdown:
+            # Oversized PDF inside a ZIP: same treatment as at the top level —
+            # skip the full parser and feed the local peek to the decider.
+            parsed_content = result.preview_markdown
+            if trail is not None:
+                trail.stamp_attachment(
+                    trail_key, STEP_PARSE, parser="oversized_pdf_peek"
+                )
+            components.db.log_ingest_event(
+                document_id=attach_doc.id,
+                event_type="oversized_pdf_peek",
+                severity="info",
+                message=f"peek used in lieu of full parse ({result.total_pages} pages)",
+                file_path=str(extracted_path),
+                file_name=extracted_path.name,
+                source_eml_path=source_eml_path,
+            )
         else:
             parsed_content, _zip_parser = (
                 await components.attachment_processor.parse_to_text(
@@ -798,19 +842,21 @@ async def _process_zip_member(
                     source_eml_path=source_eml_path,
                 )
 
-            if parsed_content:
-                attach_chunks = await _decide_and_build_chunks(
-                    document=attach_doc,
-                    parsed_content=parsed_content,
-                    components=components,
-                    file_path=extracted_path,
-                    filename=extracted_path.name,
-                    source_eml_path=source_eml_path,
-                    vprint=None,
-                    file_ctx=None,
-                    trail=trail,
-                    trail_key=trail_key,
-                )
+        # Decider runs for any branch that produced parsed_content (normal
+        # parse OR the oversized-PDF peek). Image path handles its own chunks.
+        if not result.is_image and parsed_content:
+            attach_chunks = await _decide_and_build_chunks(
+                document=attach_doc,
+                parsed_content=parsed_content,
+                components=components,
+                file_path=extracted_path,
+                filename=extracted_path.name,
+                source_eml_path=source_eml_path,
+                vprint=None,
+                file_ctx=None,
+                trail=trail,
+                trail_key=trail_key,
+            )
 
         enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
         if vessel_ids or vessel_types or vessel_classes:

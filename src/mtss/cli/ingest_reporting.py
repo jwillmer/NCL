@@ -29,8 +29,6 @@ def write_run_summary(
     elapsed = time.monotonic() - run_start
     now = datetime.now(timezone.utc).isoformat()
 
-    # Count documents created during THIS run (by timestamp)
-    run_docs: dict[str, int] = {}  # doc_type -> count
     total_docs: dict[str, int] = {}
     docs_path = output_dir / "documents.jsonl"
     if docs_path.exists():

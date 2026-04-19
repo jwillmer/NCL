@@ -44,8 +44,9 @@ class ZipMemberExtractionError(Exception):
 class AttachmentProcessor:
     """Process attachments using parser plugins for text extraction and chunking.
 
-    Uses the parser registry to find appropriate parsers for different file types.
-    LlamaParse is the default parser for all document types.
+    Routing lives in ``_get_tiered_parser``: simple PDFs → local PyMuPDF4LLM,
+    complex PDFs → Gemini, legacy binary Office (.doc/.xls/.ppt) → LlamaParse,
+    modern Office / CSV / HTML → local parsers.
     """
 
     # Mapping of MIME types to DocumentType.
