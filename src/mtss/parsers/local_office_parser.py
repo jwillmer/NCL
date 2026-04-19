@@ -172,17 +172,20 @@ class LocalCsvParser(BaseParser):
                     rows.append(" | ".join(cells))
 
             content = "\n".join(rows)
-
-            if not content or not content.strip():
-                raise ValueError(f"CSV parser produced no content for {file_path}")
-
-            logger.info(
-                f"Local CSV parser extracted {len(content)} chars from {file_path.name}"
-            )
-            return content
-
+        except EmptyContentError:
+            raise
         except Exception as e:
             raise ValueError(f"Local CSV parsing failed for {file_path}: {e}") from e
+
+        if not content or not content.strip():
+            raise EmptyContentError(
+                f"CSV parser produced no content for {file_path}"
+            )
+
+        logger.info(
+            f"Local CSV parser extracted {len(content)} chars from {file_path.name}"
+        )
+        return content
 
 
 class LocalHtmlParser(BaseParser):
@@ -214,7 +217,9 @@ class LocalHtmlParser(BaseParser):
             content = parser.html_to_plain_text(html)
 
         if not content or not content.strip():
-            raise ValueError(f"HTML parser produced no content for {file_path}")
+            raise EmptyContentError(
+                f"HTML parser produced no content for {file_path}"
+            )
 
         logger.info(
             f"Local HTML parser extracted {len(content)} chars from {file_path.name}"

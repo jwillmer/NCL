@@ -36,3 +36,40 @@ async def test_recovers_from_binary_trailer(tmp_path):
     assert "a | 1" in out
     assert "b | 2" in out
     assert "garbage" not in out  # trailer was dropped
+
+
+@pytest.mark.asyncio
+async def test_empty_csv_raises_empty_content_error(tmp_path):
+    """Empty CSVs must raise ``EmptyContentError`` so the Gemini fallback
+    triggers — they previously raised generic ``ValueError`` and silently
+    failed the attachment."""
+    from mtss.parsers.base import EmptyContentError
+
+    p = tmp_path / "empty.csv"
+    p.write_bytes(b"")
+    with pytest.raises(EmptyContentError):
+        await LocalCsvParser().parse(p)
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_csv_raises_empty_content_error(tmp_path):
+    """A CSV whose rows are all blank should also be classified as empty."""
+    from mtss.parsers.base import EmptyContentError
+
+    p = tmp_path / "blank.csv"
+    p.write_bytes(b"\n\n,,,\n\n")
+    with pytest.raises(EmptyContentError):
+        await LocalCsvParser().parse(p)
+
+
+@pytest.mark.asyncio
+async def test_empty_html_raises_empty_content_error(tmp_path):
+    """Empty HTML bodies must raise ``EmptyContentError`` to trigger the
+    Gemini fallback — previously silent failures hid them from validate."""
+    from mtss.parsers.base import EmptyContentError
+    from mtss.parsers.local_office_parser import LocalHtmlParser
+
+    p = tmp_path / "empty.html"
+    p.write_bytes(b"<html><body></body></html>")
+    with pytest.raises(EmptyContentError):
+        await LocalHtmlParser().parse(p)
