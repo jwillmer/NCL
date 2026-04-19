@@ -549,7 +549,7 @@ async def build_chunks_summary(
     *,
     document: Document,
     markdown: str,
-    context_generator: ContextGenerator,
+    context_generator: Optional[ContextGenerator],
     source_file: str,
 ) -> List[Chunk]:
     """LLM-summary path. Returns exactly one chunk carrying the summary.
@@ -558,9 +558,25 @@ async def build_chunks_summary(
     synthesized — they do not correspond to a line range in the archive
     markdown. Deep-link-to-line citations don't resolve for these chunks;
     that's acceptable for sensor dumps and bulk numeric exports.
+
+    Falls back to ``build_chunks_metadata_only`` when no context_generator is
+    wired — SUMMARY needs an LLM to synthesize, and the previous signature's
+    non-Optional type was violated by callers that pass ``None`` when LLMs
+    are disabled. Without the guard, the first LLM call would raise
+    AttributeError mid-ingest.
     """
     from ..models.document import EmbeddingMode
     from ..utils import SUMMARY_CHUNK_POS, compute_chunk_id
+
+    if context_generator is None:
+        logger.warning(
+            "SUMMARY mode requested for %s but no context_generator is wired — "
+            "falling back to METADATA_ONLY",
+            document.file_name,
+        )
+        return build_chunks_metadata_only(
+            document=document, source_file=source_file
+        )
 
     summary_text = await context_generator.generate_context(
         document, markdown[:8000]
@@ -644,7 +660,7 @@ async def build_chunks_for_mode(
     document: Document,
     markdown: str,
     chunker: DocumentChunker,
-    context_generator: ContextGenerator,
+    context_generator: Optional[ContextGenerator],
     source_file: str,
 ) -> List[Chunk]:
     """Dispatch to the correct strategy based on an EmbeddingMode value.

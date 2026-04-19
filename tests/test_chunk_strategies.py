@@ -208,6 +208,23 @@ class TestBuildChunksSummary:
         expected = compute_chunk_id(fake_doc.doc_id, -1, 0)
         assert chunks[0].chunk_id == expected
 
+    @pytest.mark.asyncio
+    async def test_no_context_generator_falls_back_to_metadata_only(
+        self, fake_doc
+    ):
+        """SUMMARY mode without a context_generator must not crash — it falls
+        back to METADATA_ONLY so the document still gets a findable stub."""
+        from mtss.parsers.chunker import build_chunks_summary
+
+        chunks = await build_chunks_summary(
+            document=fake_doc,
+            markdown="irrelevant body\n" * 50,
+            context_generator=None,
+            source_file="s.pdf",
+        )
+        assert len(chunks) == 1
+        assert chunks[0].embedding_mode == "metadata_only"
+
 
 # ---------- TestBuildChunksMetadataOnly ---------- #
 
