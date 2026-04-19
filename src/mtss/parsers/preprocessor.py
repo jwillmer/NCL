@@ -47,8 +47,13 @@ def _peek_pdf_markdown(file_path: Path, pages: int = 3) -> Optional[str]:
         import pymupdf4llm
     except ImportError:
         return None
+    # Clamp page range to the PDF's actual length — pymupdf4llm rejects indices
+    # ≥ page_count with "'pages' parameter must be None, int, or a sequence of
+    # ints < 1", which happens on any PDF shorter than the requested peek depth.
+    actual = _safe_count_pdf_pages(file_path) or pages
+    count = max(1, min(pages, actual))
     try:
-        md = pymupdf4llm.to_markdown(str(file_path), pages=list(range(pages)))
+        md = pymupdf4llm.to_markdown(str(file_path), pages=list(range(count)))
     except Exception as e:
         logger.warning(f"PDF peek failed for {file_path.name}: {e}")
         return None
