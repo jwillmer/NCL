@@ -157,7 +157,22 @@ class Settings(BaseSettings):
         default=True, validation_alias="HYBRID_SEARCH_ENABLED"
     )
 
-    # Topic Loosening (query-time)
+    # Topic dedup (ingest-time). Tighter than the earlier 0.85 default to
+    # reduce long-tail fragmentation — raise if you start seeing false merges.
+    topic_dedup_threshold: float = Field(
+        default=0.80, ge=0.0, le=1.0, validation_alias="TOPIC_DEDUP_THRESHOLD"
+    )
+    # End-of-ingest auto-merge pairwise threshold (pairs above this merge).
+    topic_auto_merge_threshold: float = Field(
+        default=0.76, ge=0.0, le=1.0, validation_alias="TOPIC_AUTO_MERGE_THRESHOLD"
+    )
+    # Query-time topic match threshold (lenient — matches synonyms).
+    topic_query_match_threshold: float = Field(
+        default=0.70, ge=0.0, le=1.0, validation_alias="TOPIC_QUERY_MATCH_THRESHOLD"
+    )
+
+    # Topic Loosening (query-time). Kicks in when the strict match returns
+    # fewer than topic_loosening_min_chunks results.
     topic_match_threshold_loose: float = Field(
         default=0.55, ge=0.0, le=1.0, validation_alias="TOPIC_MATCH_THRESHOLD_LOOSE"
     )

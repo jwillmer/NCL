@@ -614,7 +614,10 @@ async def _ingest(
         # Merge near-duplicate topics before flushing
         console.print("[dim]Merging similar topics…[/dim]")
         try:
-            merges = db.merge_similar_topics(threshold=0.78)
+            from ..config import get_settings
+            merges = db.merge_similar_topics(
+                threshold=get_settings().topic_auto_merge_threshold
+            )
             if merges:
                 vprint(f"\nMerged {len(merges)} similar topics:")
                 for absorbed, kept, sim in merges:

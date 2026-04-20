@@ -713,27 +713,26 @@ class SqliteStorageClient:
                 t.chunk_count = (getattr(t, "chunk_count", 0) or 0) + chunk_delta
                 t.document_count = (getattr(t, "document_count", 0) or 0) + document_delta
 
-    def merge_similar_topics(self, threshold: float = 0.80) -> List[tuple]:
-        """Merge near-duplicate topics. Keeps the topic with more chunks.
+    def compute_cluster_merge_plan(self, threshold: float = 0.75) -> List[Dict[str, Any]]:
+        """Single-linkage hierarchical merge: transitive families collapse.
 
-        Returns ``(absorbed_name, kept_name, similarity)`` tuples for each
-        merge. Topic rows and their ``chunk_topics`` memberships are updated
-        atomically — no orphan references possible.
+        Pairwise merge misses chains (A-B=0.76, B-C=0.75, A-C=0.70) because
+        it never considers A-C on its own. Cluster merge runs union-find
+        over every pair at/above ``threshold`` so the whole connected
+        component lands under a single keeper. The keeper is always the
+        component's highest-chunk-count topic; every other member is
+        absorbed. Returns the same per-merge entry shape as
+        :meth:`compute_merge_plan` so the CLI/apply path doesn't branch.
         """
         rows = list(
             self._conn.execute(
-                "SELECT id, name, embedding, chunk_count FROM topics "
-                "WHERE embedding IS NOT NULL"
+                "SELECT id, name, display_name, embedding, chunk_count, document_count "
+                "FROM topics WHERE embedding IS NOT NULL"
             )
         )
         if len(rows) < 2:
             return []
-
-        # Sort by chunk_count desc so bigger topics absorb smaller ones.
-        rows.sort(key=lambda r: r["chunk_count"] or 0, reverse=True)
-
-        ids = [r["id"] for r in rows]
-        names = [r["name"] for r in rows]
+        n = len(rows)
         mat = np.stack(
             [np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]
         ).astype(np.float32)
@@ -742,52 +741,281 @@ class SqliteStorageClient:
         mat = mat / norms
         sims = mat @ mat.T
 
+        parent = list(range(n))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]  # path compression
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        iu, ju = np.triu_indices(n, k=1)
+        vals = sims[iu, ju]
+        hits = np.where(vals >= threshold)[0]
+        pair_sim: Dict[tuple, float] = {}
+        for k in hits:
+            i, j = int(iu[k]), int(ju[k])
+            union(i, j)
+            pair_sim[(i, j)] = float(vals[k])
+
+        # Group indices by component root.
+        components: Dict[int, list[int]] = {}
+        for i in range(n):
+            components.setdefault(find(i), []).append(i)
+
+        plan: list[Dict[str, Any]] = []
+        for members in components.values():
+            if len(members) < 2:
+                continue
+            members.sort(key=lambda idx: rows[idx]["chunk_count"] or 0, reverse=True)
+            keeper_idx = members[0]
+            keeper = rows[keeper_idx]
+            for absorbed_idx in members[1:]:
+                a, b = min(keeper_idx, absorbed_idx), max(keeper_idx, absorbed_idx)
+                # Pair may not be a direct edge — report the single-linkage
+                # sim via the max known edge between the two nodes, else
+                # fall back to the matrix value (diag-safe).
+                sim = pair_sim.get((a, b), float(sims[a, b]))
+                absorbed = rows[absorbed_idx]
+                plan.append({
+                    "keeper_id": keeper["id"],
+                    "keeper_name": keeper["name"],
+                    "keeper_display_name": keeper["display_name"] or keeper["name"],
+                    "keeper_chunks": keeper["chunk_count"] or 0,
+                    "keeper_docs": keeper["document_count"] or 0,
+                    "absorbed_id": absorbed["id"],
+                    "absorbed_name": absorbed["name"],
+                    "absorbed_display_name": absorbed["display_name"] or absorbed["name"],
+                    "absorbed_chunks": absorbed["chunk_count"] or 0,
+                    "absorbed_docs": absorbed["document_count"] or 0,
+                    "similarity": round(sim, 3),
+                })
+        return plan
+
+    def compute_name_merge_plan(self) -> List[Dict[str, Any]]:
+        """Bucket topics by their normalized name; merge each bucket with >1 member.
+
+        Uses :func:`mtss.processing.topics.normalize_topic_name` so this is
+        consistent with the runtime dedup path. Within each bucket the
+        topic with the highest chunk_count is the keeper. Returns entries
+        in the same shape as :meth:`compute_merge_plan` so the CLI can
+        render both strategies identically.
+        """
+        from ..processing.topics import normalize_topic_name
+
+        rows = list(
+            self._conn.execute(
+                "SELECT id, name, display_name, chunk_count, document_count FROM topics"
+            )
+        )
+        if not rows:
+            return []
+        buckets: Dict[str, list] = {}
+        for r in rows:
+            key = normalize_topic_name(r["display_name"] or r["name"])
+            if not key:
+                continue
+            buckets.setdefault(key, []).append(r)
+        plan: list[Dict[str, Any]] = []
+        for members in buckets.values():
+            if len(members) < 2:
+                continue
+            members.sort(key=lambda r: r["chunk_count"] or 0, reverse=True)
+            keeper = members[0]
+            for victim in members[1:]:
+                plan.append({
+                    "keeper_id": keeper["id"],
+                    "keeper_name": keeper["name"],
+                    "keeper_display_name": keeper["display_name"] or keeper["name"],
+                    "keeper_chunks": keeper["chunk_count"] or 0,
+                    "keeper_docs": keeper["document_count"] or 0,
+                    "absorbed_id": victim["id"],
+                    "absorbed_name": victim["name"],
+                    "absorbed_display_name": victim["display_name"] or victim["name"],
+                    "absorbed_chunks": victim["chunk_count"] or 0,
+                    "absorbed_docs": victim["document_count"] or 0,
+                    "similarity": 1.0,  # exact normalized-name match
+                })
+        return plan
+
+    def compute_merge_plan(self, threshold: float = 0.80) -> List[Dict[str, Any]]:
+        """Return the greedy merge plan that ``merge_similar_topics`` would execute.
+
+        Pure read — no SQL writes, no cache mutations. Each plan entry carries
+        keeper + absorbed IDs, names, chunk/doc counts, and the pair similarity.
+        The keeper/absorbed roles reflect the greedy order (biggest chunk_count
+        first) so a dry-run preview matches the real apply exactly.
+        """
+        rows = list(
+            self._conn.execute(
+                "SELECT id, name, display_name, embedding, chunk_count, document_count "
+                "FROM topics WHERE embedding IS NOT NULL"
+            )
+        )
+        if len(rows) < 2:
+            return []
+        # Sort by chunk_count desc so bigger topics absorb smaller ones.
+        rows.sort(key=lambda r: r["chunk_count"] or 0, reverse=True)
+        ids = [r["id"] for r in rows]
+        mat = np.stack(
+            [np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]
+        ).astype(np.float32)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        mat = mat / norms
+        sims = mat @ mat.T
         absorbed: set[str] = set()
-        merges: list[tuple] = []
+        plan: list[Dict[str, Any]] = []
+        for i in range(len(rows)):
+            if ids[i] in absorbed:
+                continue
+            for j in range(i + 1, len(rows)):
+                if ids[j] in absorbed:
+                    continue
+                sim = float(sims[i, j])
+                if sim < threshold:
+                    continue
+                plan.append({
+                    "keeper_id": ids[i],
+                    "keeper_name": rows[i]["name"],
+                    "keeper_display_name": rows[i]["display_name"] or rows[i]["name"],
+                    "keeper_chunks": rows[i]["chunk_count"] or 0,
+                    "keeper_docs": rows[i]["document_count"] or 0,
+                    "absorbed_id": ids[j],
+                    "absorbed_name": rows[j]["name"],
+                    "absorbed_display_name": rows[j]["display_name"] or rows[j]["name"],
+                    "absorbed_chunks": rows[j]["chunk_count"] or 0,
+                    "absorbed_docs": rows[j]["document_count"] or 0,
+                    "similarity": round(sim, 3),
+                })
+                absorbed.add(ids[j])
+        return plan
+
+    def apply_merge_plan(self, plan: List[Dict[str, Any]]) -> List[tuple]:
+        """Execute a pre-computed merge plan atomically.
+
+        Strategy-agnostic: callers assemble the plan (pairwise cosine,
+        hierarchical cluster, normalized-name bucket) and hand it here for
+        the SQL writes. Returns the same ``(absorbed_name, kept_name,
+        similarity)`` tuples as :meth:`merge_similar_topics`.
+        """
+        if not plan:
+            return []
+        merges = [
+            (p["absorbed_name"], p["keeper_name"], p["similarity"]) for p in plan
+        ]
         with self._conn:
             self._conn.execute("BEGIN")
-            for i in range(len(rows)):
-                if ids[i] in absorbed:
-                    continue
-                keeper_id = ids[i]
-                for j in range(i + 1, len(rows)):
-                    if ids[j] in absorbed:
-                        continue
-                    sim = float(sims[i, j])
-                    if sim < threshold:
-                        continue
-                    absorbed_id = ids[j]
-                    # Move chunk_topics memberships from absorbed → keeper.
-                    self._conn.execute(
-                        "INSERT OR IGNORE INTO chunk_topics(chunk_id, topic_id) "
-                        "SELECT chunk_id, ? FROM chunk_topics WHERE topic_id = ?",
-                        (keeper_id, absorbed_id),
-                    )
-                    self._conn.execute(
-                        "DELETE FROM chunk_topics WHERE topic_id = ?",
-                        (absorbed_id,),
-                    )
-                    # Transfer counts then delete the absorbed topic.
-                    self._conn.execute(
-                        "UPDATE topics SET "
-                        "  chunk_count = chunk_count + (SELECT chunk_count FROM topics WHERE id = ?), "
-                        "  document_count = document_count + (SELECT document_count FROM topics WHERE id = ?) "
-                        "WHERE id = ?",
-                        (absorbed_id, absorbed_id, keeper_id),
-                    )
-                    self._conn.execute(
-                        "DELETE FROM topics WHERE id = ?", (absorbed_id,)
-                    )
-                    absorbed.add(absorbed_id)
-                    self._merged_topic_map[absorbed_id] = keeper_id
-                    merges.append((names[j], names[i], round(sim, 3)))
-
+            for entry in plan:
+                keeper_id = entry["keeper_id"]
+                absorbed_id = entry["absorbed_id"]
+                # Move chunk_topics memberships from absorbed → keeper.
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO chunk_topics(chunk_id, topic_id) "
+                    "SELECT chunk_id, ? FROM chunk_topics WHERE topic_id = ?",
+                    (keeper_id, absorbed_id),
+                )
+                self._conn.execute(
+                    "DELETE FROM chunk_topics WHERE topic_id = ?",
+                    (absorbed_id,),
+                )
+                # Transfer counts then delete the absorbed topic.
+                self._conn.execute(
+                    "UPDATE topics SET "
+                    "  chunk_count = chunk_count + (SELECT chunk_count FROM topics WHERE id = ?), "
+                    "  document_count = document_count + (SELECT document_count FROM topics WHERE id = ?) "
+                    "WHERE id = ?",
+                    (absorbed_id, absorbed_id, keeper_id),
+                )
+                self._conn.execute(
+                    "DELETE FROM topics WHERE id = ?", (absorbed_id,)
+                )
+                self._merged_topic_map[absorbed_id] = keeper_id
         # Evict absorbed from caches.
-        for tid in absorbed:
-            t = self._topics.pop(tid, None)
+        for entry in plan:
+            t = self._topics.pop(entry["absorbed_id"], None)
             if t is not None and getattr(t, "name", None):
                 self._topics_by_name.pop(t.name, None)
         return merges
+
+    def merge_similar_topics(
+        self, threshold: float = 0.80, *, dry_run: bool = False
+    ) -> List[tuple]:
+        """Merge near-duplicate topics pairwise. Keeps the topic with more chunks.
+
+        Returns ``(absorbed_name, kept_name, similarity)`` tuples for each
+        merge. Topic rows and their ``chunk_topics`` memberships are updated
+        atomically — no orphan references possible. When ``dry_run=True`` the
+        plan is computed and returned without any SQL writes or cache
+        eviction; use :meth:`compute_merge_plan` for a richer dry-run view.
+        """
+        plan = self.compute_merge_plan(threshold)
+        if dry_run:
+            return [
+                (p["absorbed_name"], p["keeper_name"], p["similarity"]) for p in plan
+            ]
+        return self.apply_merge_plan(plan)
+
+    def audit_similar_topics(
+        self, lower: float = 0.75, upper: float = 0.85
+    ) -> List[Dict[str, Any]]:
+        """Return topic pairs whose embeddings land in the ``[lower, upper)`` band.
+
+        Read-only counterpart to ``merge_similar_topics``. Surfaces
+        near-duplicates that the ingest dedup (0.85) and end-of-run merge
+        (0.80 default) let through — candidates for a tighter consolidation
+        pass or a manual review. Pairs are sorted by similarity descending.
+        """
+        if lower < 0 or upper > 1 or lower >= upper:
+            raise ValueError("require 0 <= lower < upper <= 1")
+        rows = list(
+            self._conn.execute(
+                "SELECT id, name, display_name, embedding, chunk_count, document_count "
+                "FROM topics WHERE embedding IS NOT NULL"
+            )
+        )
+        if len(rows) < 2:
+            return []
+        mat = np.stack(
+            [np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]
+        ).astype(np.float32)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        mat = mat / norms
+        sims = mat @ mat.T
+        # Upper-triangle mask to avoid (A,B)+(B,A) dupes and self-pairs.
+        n = len(rows)
+        iu, ju = np.triu_indices(n, k=1)
+        vals = sims[iu, ju]
+        hits = np.where((vals >= lower) & (vals < upper))[0]
+        pairs: list[Dict[str, Any]] = []
+        for k in hits:
+            i, j = int(iu[k]), int(ju[k])
+            # Bigger chunk_count goes first — matches merge_similar_topics'
+            # keeper-picking rule so the reader sees which side would win.
+            a, b = rows[i], rows[j]
+            if (a["chunk_count"] or 0) < (b["chunk_count"] or 0):
+                a, b = b, a
+            pairs.append({
+                "keeper_id": a["id"],
+                "keeper_name": a["name"],
+                "keeper_display_name": a["display_name"] or a["name"],
+                "keeper_chunks": a["chunk_count"] or 0,
+                "keeper_docs": a["document_count"] or 0,
+                "absorbed_id": b["id"],
+                "absorbed_name": b["name"],
+                "absorbed_display_name": b["display_name"] or b["name"],
+                "absorbed_chunks": b["chunk_count"] or 0,
+                "absorbed_docs": b["document_count"] or 0,
+                "similarity": float(vals[k]),
+            })
+        pairs.sort(key=lambda p: p["similarity"], reverse=True)
+        return pairs
 
     # ── vessel / misc ────────────────────────────────────────────────
 

@@ -391,6 +391,203 @@ async def test_merge_similar_topics_moves_memberships(
     assert kept_rows[0]["topic_id"] == str(keeper.id)
 
 
+async def test_compute_name_merge_plan_groups_normalized_variants(tmp_client: SqliteStorageClient):
+    """Name-strategy merge buckets by normalize_topic_name; higher chunks keeps."""
+    keeper = Topic(id=uuid4(), name="pre inspection documentation",
+                   display_name="Pre-Inspection Documentation",
+                   embedding=[1.0, 0.0, 0.0, 0.0], chunk_count=9)
+    variant = Topic(id=uuid4(), name="pre-inspection, documentation",
+                    display_name="Pre-inspection, Documentation",
+                    embedding=[0.1, 0.9, 0.0, 0.0], chunk_count=3)
+    distinct = Topic(id=uuid4(), name="port call planning",
+                     display_name="Port Call Planning",
+                     embedding=[0.0, 0.0, 1.0, 0.0], chunk_count=4)
+    for t in (keeper, variant, distinct):
+        await tmp_client.insert_topic(t)
+
+    plan = tmp_client.compute_name_merge_plan()
+    assert len(plan) == 1
+    entry = plan[0]
+    assert entry["keeper_id"] == str(keeper.id)
+    assert entry["absorbed_id"] == str(variant.id)
+    assert entry["similarity"] == 1.0
+
+
+async def test_compute_cluster_merge_plan_collapses_transitive_chain(
+    tmp_client: SqliteStorageClient,
+):
+    """A-B and B-C both above threshold collapse {A,B,C} under the largest keeper."""
+    a = Topic(id=uuid4(), name="a", display_name="A",
+              embedding=[1.0, 0.0, 0.0, 0.0], chunk_count=10)
+    b = Topic(id=uuid4(), name="b", display_name="B",
+              embedding=[0.80, 0.60, 0.0, 0.0], chunk_count=3)   # sim(a,b) = 0.80
+    c = Topic(id=uuid4(), name="c", display_name="C",
+              embedding=[0.48, 0.877, 0.0, 0.0], chunk_count=2)  # sim(b,c) ≈ 0.91
+    far = Topic(id=uuid4(), name="far", display_name="Far",
+                embedding=[0.0, 0.0, 0.0, 1.0], chunk_count=5)
+    for t in (a, b, c, far):
+        await tmp_client.insert_topic(t)
+
+    # Pairwise at 0.75 only merges (a,b); b,c pair is 0.91 (merged); a,c pair ~0.527.
+    # Cluster strategy unifies {a,b,c} because the a-b and b-c edges both cross.
+    plan = tmp_client.compute_cluster_merge_plan(threshold=0.75)
+    absorbed_names = {e["absorbed_name"] for e in plan}
+    keeper_ids = {e["keeper_id"] for e in plan}
+    assert absorbed_names == {"b", "c"}
+    assert keeper_ids == {str(a.id)}  # `a` is highest chunk_count
+    # `far` is orthogonal and must not appear in the plan.
+    assert "far" not in absorbed_names
+
+
+def test_normalize_topic_name_strips_case_and_punctuation():
+    from mtss.processing.topics import normalize_topic_name
+    assert normalize_topic_name("Pre-Inspection Documentation") == "pre inspection documentation"
+    assert normalize_topic_name("pre-inspection, documentation") == "pre inspection documentation"
+    assert normalize_topic_name("  Spare  Parts   Receiving ") == "spare parts receiving"
+    assert normalize_topic_name("") == ""
+
+
+async def test_compute_merge_plan_matches_apply(
+    tmp_client: SqliteStorageClient, email_doc: Document, chunk_for: Chunk
+):
+    """compute_merge_plan previews exactly what merge_similar_topics executes."""
+    keeper = Topic(id=uuid4(), name="keeper", display_name="Keeper",
+                   embedding=[1.0, 0.0, 0.0, 0.0], chunk_count=5)
+    absorbed = Topic(id=uuid4(), name="absorbed", display_name="Absorbed",
+                     embedding=[0.99, 0.01, 0.0, 0.0], chunk_count=2)
+    await tmp_client.insert_topic(keeper)
+    await tmp_client.insert_topic(absorbed)
+
+    plan = tmp_client.compute_merge_plan(threshold=0.95)
+    assert len(plan) == 1
+    entry = plan[0]
+    assert entry["keeper_id"] == str(keeper.id)
+    assert entry["absorbed_id"] == str(absorbed.id)
+    # Dry-run must not mutate topic rows.
+    assert tmp_client._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0] == 2
+
+    merges_preview = tmp_client.merge_similar_topics(threshold=0.95, dry_run=True)
+    assert merges_preview == [(absorbed.name, keeper.name, entry["similarity"])]
+    # Still no mutation from dry_run.
+    assert tmp_client._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0] == 2
+
+    # Real apply removes absorbed and matches the preview tuples.
+    real = tmp_client.merge_similar_topics(threshold=0.95)
+    assert real == merges_preview
+    assert tmp_client._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0] == 1
+
+
+async def test_apply_merge_plan_direct_call(
+    tmp_client: SqliteStorageClient, email_doc: Document, chunk_for: Chunk
+):
+    """Hand-built merge plan (skipping compute_*) still rewires memberships + deletes absorbed.
+
+    apply_merge_plan is strategy-agnostic: any caller that can produce the
+    expected dict shape (keeper_id, absorbed_id, keeper_name, absorbed_name,
+    similarity) must get a working merge — we don't want hidden coupling to
+    compute_merge_plan's particular output.
+    """
+    keeper = Topic(id=uuid4(), name="keeper", display_name="Keeper",
+                   embedding=[1.0, 0.0, 0.0, 0.0], chunk_count=4)
+    absorbed = Topic(id=uuid4(), name="absorbed", display_name="Absorbed",
+                     embedding=[0.9, 0.1, 0.0, 0.0], chunk_count=1)
+    await tmp_client.insert_topic(keeper)
+    await tmp_client.insert_topic(absorbed)
+    await tmp_client.insert_document(email_doc)
+    chunk_for.metadata["topic_ids"] = [str(absorbed.id)]
+    await tmp_client.insert_chunks([chunk_for])
+
+    hand_plan = [
+        {
+            "keeper_id": str(keeper.id),
+            "keeper_name": keeper.name,
+            "keeper_display_name": keeper.display_name,
+            "keeper_chunks": 4,
+            "keeper_docs": 0,
+            "absorbed_id": str(absorbed.id),
+            "absorbed_name": absorbed.name,
+            "absorbed_display_name": absorbed.display_name,
+            "absorbed_chunks": 1,
+            "absorbed_docs": 0,
+            "similarity": 0.97,
+        }
+    ]
+
+    merges = tmp_client.apply_merge_plan(hand_plan)
+    assert merges == [("absorbed", "keeper", 0.97)]
+
+    # Absorbed gone, membership moved.
+    assert tmp_client._conn.execute(
+        "SELECT COUNT(*) FROM topics WHERE id = ?", (str(absorbed.id),)
+    ).fetchone()[0] == 0
+    kept_rows = tmp_client._conn.execute(
+        "SELECT topic_id FROM chunk_topics"
+    ).fetchall()
+    assert len(kept_rows) == 1
+    assert kept_rows[0]["topic_id"] == str(keeper.id)
+    # Merge map records the absorbed→keeper association for introspection.
+    assert tmp_client._merged_topic_map[str(absorbed.id)] == str(keeper.id)
+
+
+def test_apply_merge_plan_empty_is_noop(tmp_client: SqliteStorageClient):
+    """Empty plan returns [] without touching the DB or starting a transaction.
+
+    Guards against a future refactor that unconditionally opens ``BEGIN``
+    and tries to write — which would dirty the WAL on every no-op
+    consolidation.
+    """
+    before = tmp_client._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+    result = tmp_client.apply_merge_plan([])
+    assert result == []
+    after = tmp_client._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+    assert before == after
+    assert tmp_client._merged_topic_map == {}
+
+
+async def test_audit_similar_topics_flags_band_pairs(tmp_client: SqliteStorageClient):
+    """Exactly one pair lands in the audit band; orthogonal topics contribute nothing."""
+    # Vectors chosen so every off-band pair is orthogonal — isolates the band signal.
+    mid_a = Topic(id=uuid4(), name="mid_a", display_name="Mid A",
+                  embedding=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0], chunk_count=10)
+    mid_b = Topic(id=uuid4(), name="mid_b", display_name="Mid B",
+                  embedding=[0.80, 0.60, 0.0, 0.0, 0.0, 0.0], chunk_count=2)  # sim=0.80
+    far_c = Topic(id=uuid4(), name="far_c", display_name="Far C",
+                  embedding=[0.0, 0.0, 1.0, 0.0, 0.0, 0.0], chunk_count=5)
+    far_d = Topic(id=uuid4(), name="far_d", display_name="Far D",
+                  embedding=[0.0, 0.0, 0.0, 0.0, 1.0, 0.0], chunk_count=1)
+
+    for t in (mid_a, mid_b, far_c, far_d):
+        await tmp_client.insert_topic(t)
+
+    pairs = tmp_client.audit_similar_topics(lower=0.75, upper=0.95)
+    assert len(pairs) == 1
+    p = pairs[0]
+    # Keeper is the higher-chunk-count side.
+    assert p["keeper_name"] == "mid_a" and p["absorbed_name"] == "mid_b"
+    assert p["keeper_chunks"] == 10 and p["absorbed_chunks"] == 2
+    assert 0.79 <= p["similarity"] <= 0.81
+
+
+async def test_audit_similar_topics_excludes_above_upper(tmp_client: SqliteStorageClient):
+    """Pairs at/above `upper` are assumed already-merged and must not surface."""
+    t1 = Topic(id=uuid4(), name="t1", display_name="T1",
+               embedding=[1.0, 0.0, 0.0, 0.0], chunk_count=5)
+    t2 = Topic(id=uuid4(), name="t2", display_name="T2",
+               embedding=[0.99, 0.14, 0.0, 0.0], chunk_count=2)  # sim ≈ 0.99
+    for t in (t1, t2):
+        await tmp_client.insert_topic(t)
+
+    assert tmp_client.audit_similar_topics(lower=0.75, upper=0.95) == []
+
+
+def test_audit_similar_topics_validates_thresholds(tmp_client: SqliteStorageClient):
+    import pytest
+    with pytest.raises(ValueError):
+        tmp_client.audit_similar_topics(lower=0.9, upper=0.8)
+    with pytest.raises(ValueError):
+        tmp_client.audit_similar_topics(lower=-0.1, upper=0.5)
+
+
 # ── events ───────────────────────────────────────────────────────────
 
 def test_log_ingest_event_inserts_row(tmp_client: SqliteStorageClient):

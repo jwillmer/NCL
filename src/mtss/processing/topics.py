@@ -29,6 +29,28 @@ logger = logging.getLogger(__name__)
 # ============================================
 
 
+_NAME_PUNCT_RE = re.compile(r"[^\w\s]+")
+_NAME_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_topic_name(name: str) -> str:
+    """Aggressive normalization for topic-name dedup.
+
+    Collapses case, punctuation, and whitespace so that variants like
+    ``"Pre-Inspection Documentation"``, ``"pre-inspection documentation"``,
+    and ``"Pre Inspection, Documentation"`` all map to the same bucket.
+    Keeps underscores (``\\w`` retains them) because they are used in
+    machine-generated identifiers and are meaningful when present.
+    """
+    if not name:
+        return ""
+    lowered = name.lower().strip()
+    # Replace any run of punctuation (excluding word chars + whitespace) with a space.
+    without_punct = _NAME_PUNCT_RE.sub(" ", lowered)
+    collapsed = _NAME_WHITESPACE_RE.sub(" ", without_punct).strip()
+    return collapsed
+
+
 def sanitize_input(text: str, max_length: int = 500) -> str:
     """Sanitize user input before sending to LLM.
 
@@ -302,15 +324,13 @@ User question: {query}"""
 class TopicMatcher:
     """Match and deduplicate topics using embeddings.
 
-    Deduplication threshold: 0.85
-    - >= 0.85: Auto-merge with existing topic
-    - < 0.85: Create new topic
-
-    Query matching threshold: 0.70
-    - More lenient to match synonyms like "lubrication" -> "lubricants"
+    Thresholds come from ``Settings`` (``TOPIC_DEDUP_THRESHOLD`` and
+    ``TOPIC_QUERY_MATCH_THRESHOLD``). The class-level attributes below are
+    kept as module-load defaults so existing callers and tests that read
+    them directly keep working; the instance-level overrides win at runtime.
     """
 
-    SIMILARITY_THRESHOLD = 0.85  # For ingest deduplication (strict)
+    SIMILARITY_THRESHOLD = 0.80  # For ingest deduplication (strict)
     QUERY_SIMILARITY_THRESHOLD = 0.70  # For query-time matching (lenient)
 
     def __init__(self, db: "SupabaseClient", embeddings: "EmbeddingGenerator"):
@@ -320,13 +340,25 @@ class TopicMatcher:
             db: Database client for topic storage.
             embeddings: Embedding generator for semantic matching.
         """
+        from ..config import get_settings
+
+        settings = get_settings()
         self.db = db
         self.embeddings = embeddings
         self._name_cache: Dict[str, UUID] = {}  # name -> topic_id
+        # Per-instance thresholds so env overrides apply without touching
+        # class state (safer under pytest where multiple matchers coexist).
+        self.similarity_threshold = settings.topic_dedup_threshold
+        self.query_similarity_threshold = settings.topic_query_match_threshold
 
     def _normalize_name(self, name: str) -> str:
-        """Normalize topic name for comparison."""
-        return name.lower().strip()
+        """Normalize topic name for comparison.
+
+        Delegates to :func:`normalize_topic_name` so the case/punctuation/
+        whitespace rules stay identical between the runtime dedup path and
+        the retroactive ``mtss topics consolidate --strategy name`` pass.
+        """
+        return normalize_topic_name(name)
 
     async def get_or_create_topic(
         self, name: str, description: Optional[str] = None
@@ -358,12 +390,12 @@ class TopicMatcher:
 
         # Find similar topics
         similar = await self.db.find_similar_topics(
-            embedding, threshold=self.SIMILARITY_THRESHOLD, limit=3
+            embedding, threshold=self.similarity_threshold, limit=3
         )
 
         if similar:
             top_match = similar[0]
-            if top_match["similarity"] >= self.SIMILARITY_THRESHOLD:
+            if top_match["similarity"] >= self.similarity_threshold:
                 # Auto-merge (same or close enough)
                 self._name_cache[normalized] = top_match["id"]
                 return top_match["id"]
@@ -432,12 +464,12 @@ class TopicMatcher:
                 continue
 
             similar = await self.db.find_similar_topics(
-                embedding, threshold=self.SIMILARITY_THRESHOLD, limit=3
+                embedding, threshold=self.similarity_threshold, limit=3
             )
 
             if similar:
                 top_match = similar[0]
-                if top_match["similarity"] >= self.SIMILARITY_THRESHOLD:
+                if top_match["similarity"] >= self.similarity_threshold:
                     self._name_cache[normalized] = top_match["id"]
                     results[i] = top_match["id"]
                     continue
@@ -475,7 +507,7 @@ class TopicMatcher:
             return existing
 
         # Try embedding similarity
-        effective_threshold = threshold if threshold is not None else self.QUERY_SIMILARITY_THRESHOLD
+        effective_threshold = threshold if threshold is not None else self.query_similarity_threshold
         embedding = await self.embeddings.generate_embedding(name)
         similar = await self.db.find_similar_topics(
             embedding, threshold=effective_threshold, limit=1

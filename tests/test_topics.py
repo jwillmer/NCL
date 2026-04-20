@@ -440,3 +440,29 @@ class TestTopicMatcher:
         assert result[0] == cached_id
         assert result[1] == db_topic.id
         assert result[2] == new_topic.id
+
+
+class TestTopicMatcherSettingsThresholds:
+    """Ensure TopicMatcher picks up per-instance thresholds from Settings.
+
+    Regression guard: the class-level constants
+    (``SIMILARITY_THRESHOLD`` / ``QUERY_SIMILARITY_THRESHOLD``) used to be the
+    only source of truth. The switch to Settings-driven thresholds means
+    env-tuned deployments must win over the class defaults per instance.
+    """
+
+    def test_topic_matcher_reads_thresholds_from_settings(self, monkeypatch):
+        from mtss.config import get_settings
+
+        monkeypatch.setenv("TOPIC_DEDUP_THRESHOLD", "0.65")
+        monkeypatch.setenv("TOPIC_QUERY_MATCH_THRESHOLD", "0.50")
+        get_settings.cache_clear()
+        try:
+            mock_db = AsyncMock()
+            mock_embeddings = AsyncMock()
+            matcher = TopicMatcher(mock_db, mock_embeddings)
+            assert matcher.similarity_threshold == 0.65
+            assert matcher.query_similarity_threshold == 0.50
+        finally:
+            # Don't leak tuned settings into later tests.
+            get_settings.cache_clear()
