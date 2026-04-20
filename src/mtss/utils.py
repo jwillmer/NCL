@@ -96,6 +96,11 @@ def compute_chunk_id(doc_id: str, char_start: int, char_end: int) -> str:
 # Negative char_start sentinels keep these IDs disjoint from real-position IDs.
 SUMMARY_CHUNK_POS: tuple[int, int] = (-1, 0)
 METADATA_CHUNK_POS: tuple[int, int] = (-2, 0)
+# Image chunks don't have a markdown offset; their stable id is
+# (IMAGE_CHUNK_POS_BASE, chunk_index) so vision re-describing the same image
+# with different wording still hashes to the same chunk_id (unique-per-index,
+# content-independent). See helpers.enrich_chunks_with_document_metadata.
+IMAGE_CHUNK_POS_BASE: int = -3
 
 
 def strip_archive_prefix(uri: str) -> str:

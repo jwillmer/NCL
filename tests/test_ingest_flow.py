@@ -334,6 +334,38 @@ class TestDataModelIntegrity:
         # Different content, same index → different id (collision fixed).
         assert a1.chunk_id != b.chunk_id
 
+    def test_image_chunk_id_is_content_independent(self, sample_document):
+        """Image chunks must get the same chunk_id on re-ingest, even when
+        vision re-describes the same image with slightly different wording.
+        Prior fallback hashed content into the id, so retries leaked dupes
+        past UNIQUE(chunk_id) — this was the root cause of the 9 duplicate
+        image chunks surfaced by validate #27 single_chunk_modes (2026-04-20).
+        """
+        from mtss.ingest.helpers import enrich_chunks_with_document_metadata
+        from mtss.models.chunk import Chunk
+
+        def make_image_chunk(description: str):
+            return Chunk(
+                document_id=sample_document.id,
+                content=description,
+                chunk_index=0,
+                char_start=None,
+                char_end=None,
+                section_path=[],
+                metadata={"type": "image_description", "source_file": "img.jpg"},
+            )
+
+        first = make_image_chunk("The image shows an industrial metal panel with an oval cutout.")
+        second = make_image_chunk("A close-up photo of an oval/rounded-rectangle opening in a gray panel.")
+
+        enrich_chunks_with_document_metadata([first], sample_document)
+        enrich_chunks_with_document_metadata([second], sample_document)
+
+        assert first.chunk_id == second.chunk_id, (
+            "Image chunks with the same doc_id + chunk_index must hash to "
+            "the same chunk_id regardless of vision wording"
+        )
+
     def test_email_metadata_preservation(self, sample_document):
         """Test that email metadata is preserved through processing."""
         assert sample_document.email_metadata is not None

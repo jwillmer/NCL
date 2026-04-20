@@ -202,13 +202,18 @@ async def test_empty_parse_attachment_stamps_embedding_mode(
 ):
     """Document attachments whose parser returns empty content (e.g.
     image-only PDFs that local PyMuPDF can't read, .url shortcut files)
-    must still receive embedding_mode = METADATA_ONLY.
+    must still receive embedding_mode = METADATA_ONLY *and* emit one
+    filename-stub chunk so the single_chunk_modes invariant holds.
 
-    Regression: production DB had 16 such COMPLETED-with-0-chunks rows
-    landing with embedding_mode = NULL. The empty-parse branch logged
-    ``no_body_chunks`` and marked the doc COMPLETED but skipped the
-    embedding decider (gated on ``if parsed_content:``), so the mode
-    was never stamped — same shape as the image-branch bug.
+    Regression history:
+    * Mode-NULL bug: 16 such rows landed with embedding_mode = NULL — the
+      empty-parse branch logged ``no_body_chunks`` and marked the doc
+      COMPLETED but skipped the embedding decider (gated on
+      ``if parsed_content:``), so the mode was never stamped.
+    * 0-chunk bug (2026-04-20): mode was stamped, but the stub chunk was
+      never built — 30 v=6 docs landed with embedding_mode = metadata_only
+      and chunk_count = 0 (validate #27). Fixed by calling
+      ``build_chunks_metadata_only`` on the empty-parse branch.
     """
     pdf_path = tmp_path / "scanned.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\nfake")
@@ -264,7 +269,9 @@ async def test_empty_parse_attachment_stamps_embedding_mode(
         unsupported_logger=unsupported_logger,
     )
 
-    assert chunks == []
+    assert len(chunks) == 1
+    assert chunks[0].embedding_mode == EmbeddingMode.METADATA_ONLY
+    assert (chunks[0].metadata or {}).get("type") == "metadata_stub"
     assert sample_attachment_document.status == ProcessingStatus.COMPLETED
     assert sample_attachment_document.embedding_mode == EmbeddingMode.METADATA_ONLY
 

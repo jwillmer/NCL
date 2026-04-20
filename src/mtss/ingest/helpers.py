@@ -14,7 +14,7 @@ from zlib import crc32
 from rich.console import Console
 from rich.table import Table
 
-from ..utils import compute_chunk_id
+from ..utils import IMAGE_CHUNK_POS_BASE, compute_chunk_id
 
 if TYPE_CHECKING:
     from ..models.chunk import Chunk
@@ -85,6 +85,15 @@ def enrich_chunks_with_document_metadata(
             if chunk.char_start is not None and chunk.char_end is not None:
                 chunk.chunk_id = compute_chunk_id(
                     doc.doc_id, chunk.char_start, chunk.char_end
+                )
+            elif (chunk.metadata or {}).get("type") == "image_description":
+                # Image chunks have no markdown offset — vision describes the
+                # same image with slightly different wording on each call, so
+                # a content-derived id leaked duplicates past UNIQUE(chunk_id)
+                # on retries. Key on (doc_id, IMAGE_CHUNK_POS_BASE, chunk_index)
+                # so re-runs collide and dedup via INSERT OR REPLACE.
+                chunk.chunk_id = compute_chunk_id(
+                    doc.doc_id, IMAGE_CHUNK_POS_BASE, chunk.chunk_index
                 )
             else:
                 # Positions unknown (e.g. chunker _find_chunk_position rejected

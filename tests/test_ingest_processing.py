@@ -1200,7 +1200,20 @@ class TestEmptyAttachmentEventEmission:
             unsupported_logger=unsupported_logger,
         )
 
-        assert chunks == []
+        # Empty-parse path stamps METADATA_ONLY on the doc AND emits exactly
+        # one filename-stub chunk (single_chunk_modes invariant — validate #27).
+        # Prior bug: the decider never ran so no chunk was built at all, so
+        # 30 v=6 docs landed as metadata_only with 0 chunks. Regression: 2026-04-20.
+        from mtss.models.document import EmbeddingMode
+        assert len(chunks) == 1
+        stub = chunks[0]
+        assert stub.embedding_mode == EmbeddingMode.METADATA_ONLY
+        assert (stub.metadata or {}).get("type") == "metadata_stub"
+        # Stub content mirrors the doc's file_name (what
+        # build_chunks_metadata_only embeds) — not the raw attachment filename.
+        assert sample_attachment_document.file_name in stub.content
+        assert sample_attachment_document.embedding_mode == EmbeddingMode.METADATA_ONLY
+
         components.db.log_ingest_event.assert_called_once()
         kwargs = components.db.log_ingest_event.call_args.kwargs
         assert kwargs["event_type"] == "no_body_chunks"
@@ -1297,7 +1310,7 @@ class TestEmptyAttachmentEventEmission:
         unsupported_logger = MagicMock()
         unsupported_logger.log_unsupported_file = AsyncMock()
 
-        await process_zip_attachment(
+        chunks = await process_zip_attachment(
             attachment=attachment,
             email_doc=sample_document,
             source_eml_path="test.eml",
@@ -1305,6 +1318,16 @@ class TestEmptyAttachmentEventEmission:
             components=components,
             unsupported_logger=unsupported_logger,
         )
+
+        # ZIP-member empty-parse mirrors the non-ZIP fix: stamp METADATA_ONLY
+        # on the extracted doc AND emit exactly one filename-stub chunk.
+        from mtss.models.document import EmbeddingMode
+        assert len(chunks) == 1
+        stub = chunks[0]
+        assert stub.embedding_mode == EmbeddingMode.METADATA_ONLY
+        assert (stub.metadata or {}).get("type") == "metadata_stub"
+        assert sample_attachment_document.file_name in stub.content
+        assert sample_attachment_document.embedding_mode == EmbeddingMode.METADATA_ONLY
 
         components.db.log_ingest_event.assert_called_once()
         kwargs = components.db.log_ingest_event.call_args.kwargs

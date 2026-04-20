@@ -681,7 +681,7 @@ async def _process_non_zip_attachment(
                         source_eml_path=source_eml_path,
                     )
 
-            attach_chunks = []
+            attach_chunks: list["Chunk"] = []
             if parsed_content:
                 attach_chunks = await _decide_and_build_chunks(
                     document=attach_doc,
@@ -696,6 +696,16 @@ async def _process_non_zip_attachment(
                     trail_key=trail_key,
                     peek_pages=result.peek_pages if result.oversized_pdf else None,
                     total_pages=result.total_pages if result.oversized_pdf else None,
+                )
+            elif attach_doc.embedding_mode == EmbeddingMode.METADATA_ONLY:
+                # Empty parse path stamped METADATA_ONLY above but skipped the
+                # decider, so build_chunks_metadata_only never ran. Emit the
+                # filename stub here so the doc lands with exactly 1 chunk
+                # (the invariant checked by validate #27 single_chunk_modes).
+                from ..parsers.chunker import build_chunks_metadata_only
+                attach_chunks = build_chunks_metadata_only(
+                    document=attach_doc,
+                    source_file=str(file_path),
                 )
 
             chunks.extend(attach_chunks)
@@ -1029,6 +1039,19 @@ async def _process_zip_member(
                 trail_key=trail_key,
                 peek_pages=result.peek_pages if result.oversized_pdf else None,
                 total_pages=result.total_pages if result.oversized_pdf else None,
+            )
+        elif (
+            not result.is_image
+            and not parsed_content
+            and attach_doc.embedding_mode == EmbeddingMode.METADATA_ONLY
+        ):
+            # Empty-parse branch above stamped METADATA_ONLY but skipped the
+            # decider — emit the filename stub so the ZIP-member doc lands
+            # with exactly 1 chunk (mirrors non-ZIP fix, same invariant).
+            from ..parsers.chunker import build_chunks_metadata_only
+            attach_chunks = build_chunks_metadata_only(
+                document=attach_doc,
+                source_file=str(extracted_path),
             )
 
         enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
