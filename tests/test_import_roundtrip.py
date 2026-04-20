@@ -271,9 +271,19 @@ class TestImportIdempotency:
         mock_db.get_pool = AsyncMock(return_value=mock_pool)
         mock_db.insert_topic = AsyncMock()
 
-        # Write JSONL file
-        topic_data = {"id": str(uuid4()), "name": "existing", "display_name": "Existing"}
-        (tmp_path / "topics.jsonl").write_text(json.dumps(topic_data) + "\n")
+        # Seed ingest.db with the existing topic.
+        from mtss.storage.sqlite_client import SqliteStorageClient
+
+        client = SqliteStorageClient(output_dir=tmp_path)
+        try:
+            now = "2026-04-20T00:00:00"
+            client._conn.execute(
+                "INSERT INTO topics(id, name, display_name, chunk_count, document_count, "
+                "created_at, updated_at) VALUES (?, ?, ?, 0, 0, ?, ?)",
+                (str(uuid4()), "existing", "Existing", now, now),
+            )
+        finally:
+            client._conn.close()
 
         totals = {"topics": 0}
         changes = {"failed": 0, "topics_removed": 0}
@@ -306,21 +316,24 @@ class TestImportIdempotency:
         mock_db.get_pool = AsyncMock(return_value=mock_pool)
         mock_db.persist_ingest_result = AsyncMock()
 
+        from mtss.storage.sqlite_client import SqliteStorageClient
+
         doc_id = str(uuid4())
-        doc = {
-            "id": doc_id,
-            "doc_id": "existing-doc",
-            "document_type": "email",
-            "file_path": "/test.eml",
-            "file_name": "test.eml",
-            "depth": 0,
-            "root_id": None,
-            "parent_id": None,
-            "ingest_version": 1,
-            "status": "completed",
-        }
-        (tmp_path / "documents.jsonl").write_text(json.dumps(doc) + "\n")
-        (tmp_path / "chunks.jsonl").write_text("")
+        client = SqliteStorageClient(output_dir=tmp_path)
+        try:
+            now = "2026-04-20T00:00:00"
+            client._conn.execute(
+                "INSERT INTO documents("
+                "id, doc_id, source_id, document_type, status, file_path, file_name, "
+                "depth, content_version, ingest_version, root_id, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    doc_id, "existing-doc", "test.eml", "email", "completed",
+                    "/test.eml", "test.eml", 0, 1, 1, doc_id, now, now,
+                ),
+            )
+        finally:
+            client._conn.close()
 
         totals = {"documents": 0, "chunks": 0}
         changes = {"new_documents": 0, "new_chunks": 0, "failed": 0}

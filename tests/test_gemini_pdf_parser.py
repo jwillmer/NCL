@@ -135,6 +135,32 @@ class TestGeminiPDFParserParse:
             assert m.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_successful_parse_increments_service_counter(
+        self, _fake_pdf, comprehensive_mock_settings
+    ):
+        """Gemini PDF parses must register in the service counter so the run
+        summary reflects paid Gemini calls (previously uncounted)."""
+        from mtss.cli._common import _service_counter
+        from mtss.parsers.gemini_pdf_parser import GeminiPDFParser
+
+        comprehensive_mock_settings.openrouter_api_key = "sk-or-test"
+        comprehensive_mock_settings.gemini_pdf_page_batch_size = 25
+        comprehensive_mock_settings.gemini_pdf_hard_page_ceiling = 200
+
+        before = _service_counter.counts.get("gemini_pdf", 0)
+        with patch(
+            "mtss.parsers.gemini_pdf_parser.get_settings",
+            return_value=comprehensive_mock_settings,
+        ), patch(
+            "mtss.parsers.gemini_pdf_parser.litellm.acompletion",
+            new_callable=AsyncMock,
+            return_value=_make_completion("# Extracted\n\nHello."),
+        ):
+            await GeminiPDFParser().parse(_fake_pdf)
+        after = _service_counter.counts.get("gemini_pdf", 0)
+        assert after == before + 1
+
+    @pytest.mark.asyncio
     async def test_empty_response_raises_empty_content_error(
         self, _fake_pdf, comprehensive_mock_settings
     ):

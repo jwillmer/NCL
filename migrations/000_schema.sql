@@ -1,4 +1,4 @@
--- MTSS RAG Pipeline - Complete Database Schema (merged from migrations 001–007)
+-- MTSS RAG Pipeline - Complete Database Schema (merged from migrations 001–008)
 -- Run this in Supabase SQL Editor to create a clean database from scratch.
 -- WARNING: This drops ALL existing tables and recreates them.
 
@@ -137,6 +137,9 @@ CREATE TABLE documents (
     error_message TEXT,
     processed_at TIMESTAMPTZ,
 
+    -- Embedding mode: 'full', 'summary', 'metadata_only' (see embedding_decider.py)
+    embedding_mode TEXT,
+
     -- Timestamps
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -198,6 +201,9 @@ CREATE TABLE chunks (
 
     -- Vector embedding (1536 dimensions)
     embedding extensions.vector(1536),
+
+    -- Embedding mode inherited from parent document
+    embedding_mode TEXT,
 
     -- Metadata for filtering
     metadata JSONB NOT NULL DEFAULT '{}',

@@ -84,12 +84,11 @@ def register(app: typer.Typer):
 
 
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
-    """Read all records from a JSONL file."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return [json.loads(line) for line in f if line.strip()]
-    except FileNotFoundError:
-        return []
+    """Read ingest rows from ``ingest.db``. ``path`` is parsed for its parent
+    dir and table name — the JSONL file itself is no longer consulted."""
+    from .validate_cmd import _load_jsonl as _validate_load
+
+    return _validate_load(path)
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +111,9 @@ async def _import_data(
     settings = get_settings()
     resolved_output = (output_dir or settings.eml_source_dir.parent / "output").resolve()
 
-    docs_path = resolved_output / "documents.jsonl"
-    if not docs_path.exists():
-        console.print(f"[red]No documents.jsonl found in {resolved_output}[/red]")
+    db_path = resolved_output / "ingest.db"
+    if not db_path.exists():
+        console.print(f"[red]ingest.db not found in {resolved_output}[/red]")
         console.print("[dim]Run 'MTSS ingest' first to generate local output.[/dim]")
         raise typer.Exit(1)
 
@@ -391,11 +390,9 @@ async def _import_documents(db, output_dir, totals, changes, dry_run, verbose):
 async def _remove_db_orphans(db, output_dir: Path, changes, dry_run, verbose):
     """Remove documents and chunks from Supabase that no longer exist locally."""
     local_doc_ids = set()
-    for line in open(output_dir / "documents.jsonl", encoding="utf-8"):
-        if line.strip():
-            d = json.loads(line)
-            if d.get("doc_id"):
-                local_doc_ids.add(d["doc_id"])
+    for d in _read_jsonl(output_dir / "documents.jsonl"):
+        if d.get("doc_id"):
+            local_doc_ids.add(d["doc_id"])
 
     pool = await db.get_pool()
     async with pool.acquire() as conn:

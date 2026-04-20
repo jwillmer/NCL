@@ -19,7 +19,8 @@
 
 .PARAMETER Reset
     Wipe `data/test_ingest/output/` before ingesting (forces a from-scratch
-    run; otherwise progress resumes via processing_log.jsonl).
+    run; otherwise progress resumes via the processing_log table in
+    `ingest.db`).
 
 .PARAMETER Limit
     Cap the number of EMLs processed this run (forwarded to `mtss ingest -n`).
@@ -110,55 +111,92 @@ if (-not $NoValidate) {
 Write-Host ""
 Write-Host "=== Summary ===" -ForegroundColor Cyan
 
-function Read-JsonLines([string]$Path) {
-    if (-not (Test-Path $Path)) { return @() }
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($line in Get-Content -LiteralPath $Path -Encoding utf8) {
-        $t = $line.Trim()
-        if ($t.Length -eq 0) { continue }
-        try { $rows.Add(($t | ConvertFrom-Json)) } catch { }
-    }
-    return ,$rows
+# Pull the summary via Python so we use one query engine (sqlite3 stdlib)
+# and don't ship a second SQL dialect inside PowerShell. The heredoc-style
+# script prints a single JSON blob that we parse back into PS variables.
+$DbPath = Join-Path $OutputDir 'ingest.db'
+if (-not (Test-Path $DbPath)) {
+    Write-Host ("ingest.db not found at {0} — skipping summary." -f $DbPath) -ForegroundColor Yellow
+    exit ([Math]::Max($ingestExit, $validateExit))
 }
 
-$procLog  = Read-JsonLines (Join-Path $OutputDir 'processing_log.jsonl')
-$docs     = Read-JsonLines (Join-Path $OutputDir 'documents.jsonl')
-$chunks   = Read-JsonLines (Join-Path $OutputDir 'chunks.jsonl')
-$topics   = Read-JsonLines (Join-Path $OutputDir 'topics.jsonl')
-$events   = Read-JsonLines (Join-Path $OutputDir 'ingest_events.jsonl')
+$summaryPy = @'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.row_factory = sqlite3.Row
 
-# Latest-status-per-file (processing_log.jsonl appends)
-$latestByFile = @{}
-foreach ($p in $procLog) { $latestByFile[$p.file_path] = $p }
-$completed = @($latestByFile.Values | Where-Object { $_.status -eq 'COMPLETED' }).Count
-$failed    = @($latestByFile.Values | Where-Object { $_.status -eq 'FAILED' }).Count
-$other     = $latestByFile.Count - $completed - $failed
+def scalar(q):
+    row = db.execute(q).fetchone()
+    return row[0] if row else 0
 
-Write-Host ("Files (processing_log): {0} completed / {1} failed / {2} other" -f $completed, $failed, $other)
-Write-Host ("Documents: {0}" -f $docs.Count)
-Write-Host ("Chunks:    {0}" -f $chunks.Count)
-Write-Host ("Topics:    {0}" -f $topics.Count)
-Write-Host ("Events:    {0}" -f $events.Count)
+status_counts = {
+    r["status"]: r["n"] for r in db.execute(
+        "SELECT status, COUNT(*) AS n FROM processing_log GROUP BY status"
+    )
+}
+failed_rows = [
+    {"file_path": r["file_path"], "error": r["error"]}
+    for r in db.execute(
+        "SELECT file_path, error FROM processing_log WHERE status = 'FAILED'"
+    )
+]
+mode_rows = {
+    (r["embedding_mode"] or "(unset)"): r["n"]
+    for r in db.execute(
+        "SELECT COALESCE(embedding_mode, '') AS embedding_mode, COUNT(*) AS n "
+        "FROM documents GROUP BY COALESCE(embedding_mode, '')"
+    )
+}
+print(json.dumps({
+    "completed":     status_counts.get("COMPLETED", 0),
+    "failed":        status_counts.get("FAILED", 0),
+    "other":         sum(v for k, v in status_counts.items() if k not in ("COMPLETED", "FAILED")),
+    "documents":     scalar("SELECT COUNT(*) FROM documents"),
+    "chunks":        scalar("SELECT COUNT(*) FROM chunks"),
+    "topics":        scalar("SELECT COUNT(*) FROM topics"),
+    "events":        scalar("SELECT COUNT(*) FROM ingest_events"),
+    "modes":         mode_rows,
+    "failures":      failed_rows,
+}))
+'@
 
-if ($docs.Count -gt 0) {
-    $modeBuckets = @{}
-    foreach ($d in $docs) {
-        $m = if ($d.embedding_mode) { $d.embedding_mode } else { '(unset)' }
-        if ($modeBuckets.ContainsKey($m)) { $modeBuckets[$m]++ } else { $modeBuckets[$m] = 1 }
-    }
+$tmpPy = Join-Path $env:TEMP ("mtss_test_ingest_summary_{0}.py" -f [guid]::NewGuid())
+Set-Content -LiteralPath $tmpPy -Value $summaryPy -Encoding utf8
+try {
+    $summaryJson = & uv run python $tmpPy $DbPath
+} finally {
+    Remove-Item -LiteralPath $tmpPy -ErrorAction SilentlyContinue
+}
+
+if ($LASTEXITCODE -ne 0 -or -not $summaryJson) {
+    Write-Host "Failed to read summary from ingest.db" -ForegroundColor Yellow
+    exit ([Math]::Max($ingestExit, $validateExit))
+}
+
+$summary = $summaryJson | ConvertFrom-Json
+
+Write-Host ("Files (processing_log): {0} completed / {1} failed / {2} other" -f `
+    $summary.completed, $summary.failed, $summary.other)
+Write-Host ("Documents: {0}" -f $summary.documents)
+Write-Host ("Chunks:    {0}" -f $summary.chunks)
+Write-Host ("Topics:    {0}" -f $summary.topics)
+Write-Host ("Events:    {0}" -f $summary.events)
+
+if ($summary.modes.PSObject.Properties.Name.Count -gt 0) {
     Write-Host ""
     Write-Host "Embedding-mode distribution (documents):"
-    foreach ($k in ($modeBuckets.Keys | Sort-Object)) {
-        Write-Host ("  {0,-15} {1}" -f $k, $modeBuckets[$k])
+    foreach ($prop in ($summary.modes.PSObject.Properties | Sort-Object Name)) {
+        $label = if ([string]::IsNullOrEmpty($prop.Name)) { '(unset)' } else { $prop.Name }
+        Write-Host ("  {0,-15} {1}" -f $label, $prop.Value)
     }
 }
 
-if ($failed -gt 0) {
+if ($summary.failed -gt 0) {
     Write-Host ""
     Write-Host "Failed files:" -ForegroundColor Red
-    foreach ($p in ($latestByFile.Values | Where-Object { $_.status -eq 'FAILED' })) {
-        $err = if ($p.error) { $p.error } else { '(no error message)' }
-        Write-Host ("  {0}  ->  {1}" -f $p.file_path, $err)
+    foreach ($f in $summary.failures) {
+        $err = if ($f.error) { $f.error } else { '(no error message)' }
+        Write-Host ("  {0}  ->  {1}" -f $f.file_path, $err)
     }
 }
 

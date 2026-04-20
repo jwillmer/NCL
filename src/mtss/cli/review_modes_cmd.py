@@ -34,19 +34,43 @@ _TRIAGE_REASONS = {"triage_prose", "triage_dense", "triage_noise", "triage_faile
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    if not path.exists():
-        return rows
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    """Load rows from ``ingest.db``. ``path`` is parsed for its parent
+    directory and table name; the JSONL file itself is no longer consulted."""
+    from ..storage.sqlite_client import SqliteStorageClient
+
+    output_dir = path.parent
+    table = path.stem
+    db_path = output_dir / "ingest.db"
+    if not db_path.exists():
+        raise FileNotFoundError(f"ingest.db not found in {output_dir}")
+
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        if table == "documents":
+            return list(_docs_from_db(client))
+        if table == "ingest_events":
+            return [dict(r) for r in client._conn.execute("SELECT * FROM ingest_events ORDER BY rowid")]
+        return []
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
+
+
+def _docs_from_db(client) -> Iterable[Dict[str, Any]]:
+    for row in client.iter_documents():
+        meta = row.get("metadata_json")
+        if meta:
             try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return rows
+                parsed = json.loads(meta)
+                if isinstance(parsed, dict):
+                    for k, v in parsed.items():
+                        row.setdefault(k, v)
+            except (TypeError, ValueError):
+                pass
+        row.pop("metadata_json", None)
+        yield row
 
 
 def _latest_decision_by_doc(events: Iterable[Dict[str, Any]]) -> Dict[str, str]:
@@ -109,7 +133,7 @@ def register(app: "typer.Typer") -> None:
     def review_modes(
         output_dir: Path = typer.Option(
             Path("data/output"), "--output-dir", "-o",
-            help="Output directory containing documents.jsonl + ingest_events.jsonl",
+            help="Output directory containing ingest.db",
         ),
         limit: int = typer.Option(
             50, "--limit", help="Max rows per tier (default 50)",
@@ -134,8 +158,8 @@ def register(app: "typer.Typer") -> None:
         """
         docs_path = output_dir / "documents.jsonl"
         events_path = output_dir / "ingest_events.jsonl"
-        if not docs_path.exists():
-            console.print(f"[red]documents.jsonl not found in {output_dir}[/red]")
+        if not (output_dir / "ingest.db").exists():
+            console.print(f"[red]ingest.db not found in {output_dir}[/red]")
             raise typer.Exit(1)
 
         docs = _load_jsonl(docs_path)

@@ -8,7 +8,7 @@ import logging
 import re as _re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import typer
 from rich.table import Table
@@ -198,16 +198,84 @@ def build_folder_to_email_map(docs: List[Dict[str, Any]]) -> Dict[str, str]:
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
-    """Load a JSONL file, returning empty list if missing."""
-    if not path.exists():
+    """Load rows from the SQLite ``ingest.db``. Path is parsed for its parent
+    directory (output dir) and stem (table name) — the JSONL file itself is
+    never read; it no longer exists post-cutover.
+    """
+    from ..storage.sqlite_client import SqliteStorageClient
+
+    output_dir = path.parent
+    table = path.stem  # "documents" / "chunks" / …
+    db_path = output_dir / "ingest.db"
+    if not db_path.exists():
+        raise FileNotFoundError(f"ingest.db not found in {output_dir}")
+
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        if table == "documents":
+            return list(_adapt_documents(client))
+        if table == "chunks":
+            return list(_adapt_chunks(client))
+        if table == "topics":
+            return list(_adapt_topics(client))
+        if table == "ingest_events":
+            return list(_adapt_events(client))
+        if table == "processing_log":
+            return list(_adapt_processing_log(client))
+        if table == "run_history":
+            return list(_adapt_run_history(client))
         return []
-    rows = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
+
+
+def _adapt_documents(client) -> "Iterable[Dict[str, Any]]":
+    for row in client.iter_documents():
+        meta = row.get("metadata_json")
+        if meta:
+            try:
+                meta_obj = json.loads(meta)
+                if isinstance(meta_obj, dict):
+                    for k, v in meta_obj.items():
+                        row.setdefault(k, v)
+            except (TypeError, ValueError):
+                pass
+        row.pop("metadata_json", None)
+        yield row
+
+
+def _adapt_chunks(client) -> "Iterable[Dict[str, Any]]":
+    for row in client.iter_chunks():
+        # iter_chunks already decodes embedding, metadata, section_path, topic_ids.
+        row.pop("metadata_json", None)
+        row.pop("section_path_json", None)
+        row.pop("embedding_dim", None)
+        yield row
+
+
+def _adapt_topics(client) -> "Iterable[Dict[str, Any]]":
+    for row in client.iter_topics():
+        row.pop("keywords_json", None)
+        row.pop("embedding_dim", None)
+        yield row
+
+
+def _adapt_events(client) -> "Iterable[Dict[str, Any]]":
+    for row in client.iter_events():
+        yield row
+
+
+def _adapt_processing_log(client) -> "Iterable[Dict[str, Any]]":
+    for row in client._conn.execute("SELECT * FROM processing_log"):
+        yield dict(row)
+
+
+def _adapt_run_history(client) -> "Iterable[Dict[str, Any]]":
+    for row in client._conn.execute("SELECT * FROM run_history"):
+        yield dict(row)
 
 
 def _resolve_output_dir(output_dir: Optional[Path]) -> Path:
@@ -486,7 +554,7 @@ def _check_failed_documents(
 
     if unexplained:
         warnings.append(
-            f"{len(unexplained)} document(s) have status='failed' in documents.jsonl "
+            f"{len(unexplained)} document(s) have status='failed' in the documents table "
             f"(no matching extraction_failed event)"
         )
         if verbose:
@@ -672,7 +740,7 @@ def _check_duplicate_ids(
     doc_id_counts = Counter(d.get("doc_id") for d in docs if d.get("doc_id"))
     dup_doc_ids = {did: cnt for did, cnt in doc_id_counts.items() if cnt > 1}
     if dup_doc_ids:
-        issues.append(f"{len(dup_doc_ids)} duplicate doc_ids in documents.jsonl")
+        issues.append(f"{len(dup_doc_ids)} duplicate doc_ids in documents table")
         if verbose:
             for did, cnt in list(dup_doc_ids.items())[:5]:
                 issues.append(f"  {did[:16]}: {cnt}x")
@@ -680,7 +748,7 @@ def _check_duplicate_ids(
     chunk_id_counts = Counter(c.get("chunk_id") for c in chunks if c.get("chunk_id"))
     dup_chunk_ids = {cid: cnt for cid, cnt in chunk_id_counts.items() if cnt > 1}
     if dup_chunk_ids:
-        issues.append(f"{len(dup_chunk_ids)} duplicate chunk_ids in chunks.jsonl")
+        issues.append(f"{len(dup_chunk_ids)} duplicate chunk_ids in chunks table")
     return issues, warnings
 
 
@@ -1234,14 +1302,14 @@ async def _run_import_validation(output_dir: Optional[Path], verbose: bool):
 
     resolved = _resolve_output_dir(output_dir)
 
-    docs_path = resolved / "documents.jsonl"
-    if not docs_path.exists():
-        console.print(f"[red]No documents.jsonl in {resolved}[/red]")
+    db_path = resolved / "ingest.db"
+    if not db_path.exists():
+        console.print(f"[red]No ingest.db in {resolved}[/red]")
         console.print("[dim]Run 'mtss ingest' first.[/dim]")
         raise typer.Exit(1)
 
-    # Load local data
-    local_docs = _load_jsonl(docs_path)
+    # Load local data from the SQLite store.
+    local_docs = _load_jsonl(resolved / "documents.jsonl")
     local_chunks = _load_jsonl(resolved / "chunks.jsonl")
     local_topics = _load_jsonl(resolved / "topics.jsonl")
 

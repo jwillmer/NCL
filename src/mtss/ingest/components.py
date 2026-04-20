@@ -125,11 +125,11 @@ def create_local_ingest_components(
     vessels: list | None = None,
     enable_topics: bool = True,
 ) -> IngestComponents:
-    """Create all ingest components for local-only mode (JSONL output).
+    """Create all ingest components for local-only mode (SQLite output).
 
     Args:
-        db: Initialized LocalStorageClient instance.
-        output_dir: Directory for JSONL and archive output.
+        db: Initialized SqliteStorageClient instance.
+        output_dir: Directory holding ``ingest.db`` and the ``archive/`` tree.
         source_dir: Root directory for email ingestion.
         vessels: Optional list of vessels for VesselMatcher.
         enable_topics: Whether to enable topic extraction (default True).
@@ -137,7 +137,7 @@ def create_local_ingest_components(
     Returns:
         IngestComponents dataclass with all initialized components.
     """
-    from ..storage.local_client import LocalBucketStorage
+    from ..storage.local_bucket_storage import LocalBucketStorage
 
     archive_storage = LocalBucketStorage(output_dir / "archive")
 

@@ -175,6 +175,10 @@ class DocumentPreprocessor:
         "application/zip",
         "application/x-zip-compressed",
         "application/x-zip",
+        # 7z archives are extracted via the same ingest path (py7zr handled
+        # inside AttachmentProcessor.extract_zip).
+        "application/x-7z-compressed",
+        "application/x-compressed",
     }
 
     def __init__(self):
@@ -222,7 +226,7 @@ class DocumentPreprocessor:
         if ext in self.OFFICE_ZIP_EXTENSIONS:
             return False
 
-        if ext == ".zip":
+        if ext in (".zip", ".7z"):
             return True
 
         actual_type = self.get_content_type(file_path, content_type)

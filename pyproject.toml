@@ -35,6 +35,10 @@ dependencies = [
     "openpyxl>=3.1.0",
     "pymupdf4llm>=0.0.17",
     "python-docx>=1.0.0",
+    # Outlook .msg attachments (pure-Python OLE parser)
+    "extract-msg>=0.48.0",
+    # 7z archive extraction
+    "py7zr>=0.21.0",
     # PDF page counting (for estimate command)
     "pypdf>=4.0.0",
     # Legacy Office metadata reading (for estimate command)

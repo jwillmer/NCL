@@ -9,7 +9,7 @@ import pytest
 
 from mtss.ingest.archive_generator import ArchiveGenerator
 from mtss.ingest.processing_trail import ProcessingTrail
-from mtss.storage.local_client import LocalBucketStorage
+from mtss.storage.local_bucket_storage import LocalBucketStorage
 from mtss.utils import compute_folder_id
 
 

@@ -557,7 +557,7 @@ MTSS reset-failures data/reports/ingest_20260105_170109.json --eml-only
 
 ### `MTSS mark-failed`
 
-Flag specific EML files as `FAILED` in `processing_log.jsonl` so they are picked up by `MTSS ingest --retry-failed`. The retry runs with `force_reparse`, so existing documents and chunks for those emails are cleaned up before re-processing.
+Flag specific EML files as `FAILED` in the `processing_log` table (inside `ingest.db`) so they are picked up by `MTSS ingest --retry-failed`. The retry runs with `force_reparse`, so existing documents and chunks for those emails are cleaned up first (FK CASCADE wipes chunks when the parent document row is deleted).
 
 ```bash
 MTSS mark-failed FILE_PATHS... [OPTIONS]
@@ -576,7 +576,7 @@ Options:
 - A pipeline bug was fixed and you want the affected mails re-ingested
 
 **Path resolution:**
-- Exact match against entries in `processing_log.jsonl`
+- Exact match against entries in the `processing_log` table
 - Falls back to basename match (e.g. `foo.eml` matches `data/emails/foo.eml`)
 - Missing entries are reported but don't abort the run
 
@@ -648,7 +648,7 @@ Options:
   --limit INT                  Process at most N docs (staged rollout)
   --force                      Re-process even when mode already matches
   -v, --verbose                Verbose per-doc output
-  --output-dir PATH            Directory holding documents.jsonl + chunks.jsonl
+  --output-dir PATH            Directory holding ingest.db (and the archive/ tree)
 ```
 
 **Embedding modes** (decided per-document by `embedding_decider.py`):

@@ -621,44 +621,6 @@ def sample_image_document(sample_document_id):
     )
 
 
-# ==================== Local Storage Test Fixtures ====================
-
-
-@pytest.fixture
-def local_ingest_output(tmp_path):
-    """Create local storage for capturing ingest output.
-
-    This fixture provides a way to inspect what ingest would write
-    to Supabase without actually connecting to the database.
-
-    Example usage:
-        def test_ingest(local_ingest_output):
-            # Run ingest with local_ingest_output.db as the db client
-            # Check output:
-            docs = local_ingest_output.read_documents_jsonl()
-            chunks = local_ingest_output.read_chunks_jsonl()
-    """
-    from tests.local_storage import LocalIngestOutput
-
-    return LocalIngestOutput.create(tmp_path)
-
-
-@pytest.fixture
-def local_db_client(tmp_path):
-    """Create a local database client for testing."""
-    from tests.local_storage import LocalStorageClient
-
-    return LocalStorageClient(tmp_path / "database")
-
-
-@pytest.fixture
-def local_bucket_storage(tmp_path):
-    """Create a local bucket storage for testing."""
-    from tests.local_storage import LocalBucketStorage
-
-    return LocalBucketStorage(tmp_path / "bucket")
-
-
 # ==================== API Test Fixtures ====================
 
 

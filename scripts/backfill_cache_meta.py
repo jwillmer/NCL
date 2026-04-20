@@ -11,13 +11,14 @@ Existing archives written before the sidecar shipped have no ``.meta.json``.
 The read path tolerates that (legacy caches are still honoured), but we lose
 the parser-change detection unless we backfill. This script walks the archive
 and writes a sidecar for every cached ``.md`` by inferring the parser from
-``documents.jsonl`` — no re-parse, no LLM calls, zero API cost.
+the ``documents`` table in ``ingest.db`` — no re-parse, no LLM calls, zero
+API cost.
 
 Inference rules
 ---------------
 For each ``archive/<folder_id>/attachments/<safe_filename>.md``:
 
-1. Locate the matching document in ``documents.jsonl`` by
+1. Locate the matching document in the ``documents`` table by
    ``parent_id -> folder_id`` and ``file_name == <original_filename>``.
 2. Read the document's ``processing_trail.steps[*].parse.parser`` / ``.model``
    stamp (the trail is the source of truth for which parser produced the
@@ -71,18 +72,22 @@ class SidecarPlan:
     source: str  # How parser was inferred (trail | attachment_meta | unknown)
 
 
-def _iter_documents(documents_jsonl: Path) -> Iterator[dict]:
-    if not documents_jsonl.exists():
+def _iter_documents(output_dir: Path) -> Iterator[dict]:
+    """Yield documents from ``ingest.db``."""
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    db_path = output_dir / "ingest.db"
+    if not db_path.exists():
+        logger.error("ingest.db not found in %s", output_dir)
         return
-    with open(documents_jsonl, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError as exc:
-                logger.warning("Skipping malformed documents.jsonl line: %s", exc)
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        yield from client.iter_documents()
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
 
 
 def _read_metadata_json(folder: Path) -> Optional[dict]:
@@ -121,24 +126,32 @@ def _parser_from_trail(metadata: dict, attachment_filename: str) -> tuple[Option
 
 def _plan_sidecars(output_dir: Path) -> list[SidecarPlan]:
     archive_dir = output_dir / "archive"
-    documents_jsonl = output_dir / "documents.jsonl"
     if not archive_dir.exists():
         logger.error("No archive/ directory under %s", output_dir)
         return []
 
-    # Build lookup: (folder_id, safe_filename) -> original filename
-    # by walking documents.jsonl. We need the folder_id to match the on-disk
-    # archive/<folder>/attachments/<file>.md and the original filename to
-    # look up the trail entry.
+    # First pass: build UUID → doc_id index so attachments (whose parent_id
+    # references the email's UUID in SQLite) can resolve back to the email's
+    # stable doc_id. ``compute_folder_id`` must be called on the doc_id, not
+    # the UUID, or the resulting folder won't match what ingest wrote.
+    all_docs = list(_iter_documents(output_dir))
+    doc_id_by_uuid: dict[str, str] = {}
+    for doc in all_docs:
+        uid = doc.get("id")
+        did = doc.get("doc_id")
+        if uid and did:
+            doc_id_by_uuid[str(uid)] = did
+
+    # Build lookup: folder_id → [documents]. Attachments inherit the parent
+    # email's folder.
     by_folder: dict[str, list[dict]] = {}
-    for doc in _iter_documents(documents_jsonl):
+    for doc in all_docs:
         doc_id = doc.get("doc_id")
         parent_id = doc.get("parent_id")
         file_name = doc.get("file_name")
         if not file_name:
             continue
-        # Attachment docs live under the parent email's folder.
-        folder_doc_id = parent_id if parent_id else doc_id
+        folder_doc_id = doc_id_by_uuid.get(str(parent_id)) if parent_id else doc_id
         if not folder_doc_id:
             continue
         folder_id = compute_folder_id(folder_doc_id)
@@ -175,7 +188,7 @@ def _plan_sidecars(output_dir: Path) -> list[SidecarPlan]:
             original_filename = name_by_safe.get(stem)
             if not original_filename:
                 logger.debug(
-                    "No documents.jsonl entry for %s (folder %s); skipping",
+                    "No documents-table entry for %s (folder %s); skipping",
                     md_path.name,
                     folder_id,
                 )

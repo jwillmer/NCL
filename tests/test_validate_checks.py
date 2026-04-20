@@ -369,7 +369,7 @@ def test_check_failed_documents_flags_failed():
         [failed_doc, _make_doc()], events=[], verbose=False
     )
     assert warnings == [
-        "1 document(s) have status='failed' in documents.jsonl "
+        "1 document(s) have status='failed' in the documents table "
         "(no matching extraction_failed event)"
     ]
 

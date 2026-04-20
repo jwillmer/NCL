@@ -163,13 +163,13 @@ def register(app: typer.Typer):
     def mark_failed(
         file_paths: list[Path] = typer.Argument(
             ...,
-            help="EML file paths to mark as FAILED in processing_log.jsonl",
+            help="EML file paths to mark as FAILED in the processing_log table",
         ),
         output_dir: Optional[Path] = typer.Option(
             None,
             "--output-dir",
             "-o",
-            help="Output directory containing processing_log.jsonl (default: data/output)",
+            help="Output directory containing ingest.db (default: data/output)",
         ),
         reason: str = typer.Option(
             "manual_mark_failed",
@@ -246,25 +246,26 @@ def _clean_archive_md(output_dir: Optional[Path], dry_run: bool) -> None:
 
 
 async def _mark_failed(file_paths: list[Path], output_dir: Optional[Path], reason: str):
-    """Set the given files to status=FAILED in processing_log.jsonl."""
-    from ..storage.local_progress_tracker import LocalProgressTracker
+    """Set the given files to status=FAILED in the processing_log table."""
+    from ..storage.sqlite_progress_tracker import SqliteProgressTracker
 
     resolved_output = output_dir or Path("data/output")
-    if not (resolved_output / "processing_log.jsonl").exists():
-        console.print(f"[red]No processing_log.jsonl found in {resolved_output}[/red]")
+    if not (resolved_output / "ingest.db").exists():
+        console.print(f"[red]No ingest.db found in {resolved_output}[/red]")
         raise typer.Exit(1)
 
-    tracker = LocalProgressTracker(resolved_output)
+    tracker = SqliteProgressTracker(resolved_output)
+    entries = {e["file_path"]: e for e in tracker.iter_entries()}
 
     matched: list[str] = []
     missing: list[str] = []
     for fp in file_paths:
         fp_str = str(fp)
-        entry = tracker._entries.get(fp_str)
+        entry = entries.get(fp_str)
         if entry is None:
-            for key in tracker._entries:
+            for key in entries:
                 if Path(key).name == fp.name or Path(key).resolve() == fp.resolve():
-                    entry = tracker._entries[key]
+                    entry = entries[key]
                     fp_str = key
                     break
         if entry is None:
@@ -274,6 +275,7 @@ async def _mark_failed(file_paths: list[Path], output_dir: Optional[Path], reaso
         matched.append(fp_str)
 
     tracker.compact()
+    tracker.close()
 
     table = Table(title="mark-failed summary")
     table.add_column("Status", style="bold")

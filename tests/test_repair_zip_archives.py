@@ -33,10 +33,85 @@ def _load_repair_module():
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    """Seed SQLite ingest.db with the given rows.
+
+    Route by filename stem: ``documents.jsonl`` → documents table,
+    ``chunks.jsonl`` → chunks table. Keeps the legacy helper name so the
+    existing tests don't churn — the JSONL files themselves are gone.
+    """
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    output_dir = path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        conn = client._conn
+        now = "2026-04-20T00:00:00"
+        if path.stem == "documents":
+            with conn:
+                conn.execute("BEGIN")
+                # Re-seed idempotently so tests that rewrite the same path work.
+                conn.execute("DELETE FROM chunks")
+                conn.execute("DELETE FROM documents")
+                for r in rows:
+                    conn.execute(
+                        "INSERT INTO documents("
+                        "id, doc_id, source_id, document_type, status, "
+                        "file_hash, file_name, file_path, parent_id, root_id, "
+                        "depth, content_version, ingest_version, archive_path, "
+                        "title, source_title, mime_type, content_type, size_bytes, "
+                        "embedding_mode, archive_browse_uri, archive_download_uri, "
+                        "metadata_json, processed_at, created_at, updated_at"
+                        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            r["id"],
+                            r.get("doc_id") or r["id"][:16],
+                            r.get("source_id") or r.get("file_name") or r["id"][:16],
+                            r.get("document_type") or "attachment_other",
+                            r.get("status") or "pending",
+                            r.get("file_hash"), r.get("file_name"), r.get("file_path"),
+                            r.get("parent_id"), r.get("root_id") or r["id"],
+                            r.get("depth", 0), r.get("content_version", 1),
+                            r.get("ingest_version", 1), r.get("archive_path"),
+                            r.get("title"), r.get("source_title"),
+                            r.get("mime_type"), r.get("content_type"),
+                            r.get("size_bytes"), r.get("embedding_mode"),
+                            r.get("archive_browse_uri"), r.get("archive_download_uri"),
+                            None, r.get("processed_at"),
+                            r.get("created_at") or now, r.get("updated_at") or now,
+                        ),
+                    )
+        elif path.stem == "chunks":
+            with conn:
+                conn.execute("BEGIN")
+                for r in rows:
+                    conn.execute(
+                        "INSERT INTO chunks("
+                        "id, chunk_id, document_id, content, chunk_index, created_at"
+                        ") VALUES (?,?,?,?,?,?)",
+                        (
+                            r["id"], r.get("chunk_id") or r["id"],
+                            r["document_id"], r.get("content") or "",
+                            r.get("chunk_index", 0), now,
+                        ),
+                    )
+    finally:
+        conn.close()
+
+
+def _docs_from_db(output_dir: Path) -> list[dict]:
+    """Read all documents from ingest.db as plain dicts (matches old JSONL shape
+    the repair tests inspect — archive_browse_uri / archive_download_uri etc.)."""
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        return list(client.iter_documents())
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
 
 
 @pytest.fixture
@@ -157,13 +232,17 @@ class TestRepairZipArchivesDetection:
         """A doc that already has archive URIs must not be re-flagged."""
         mod = _load_repair_module()
         out = sample_output_dir["output_dir"]
-        docs_path = out / "documents.jsonl"
-        docs = [json.loads(l) for l in docs_path.read_text(encoding="utf-8").splitlines() if l.strip()]
-        for d in docs:
-            if d["id"] == sample_output_dir["member_uuid"]:
-                d["archive_browse_uri"] = "/archive/x/y.md"
-                d["archive_download_uri"] = "/archive/x/y"
-        _write_jsonl(docs_path, docs)
+        from mtss.storage.sqlite_client import SqliteStorageClient
+
+        client = SqliteStorageClient(output_dir=out)
+        try:
+            client._conn.execute(
+                "UPDATE documents SET archive_browse_uri = ?, archive_download_uri = ? "
+                "WHERE id = ?",
+                ("/archive/x/y.md", "/archive/x/y", sample_output_dir["member_uuid"]),
+            )
+        finally:
+            client._conn.close()
 
         candidates, _ = mod.build_candidates(out, verbose=False)
         assert candidates == []
@@ -172,12 +251,16 @@ class TestRepairZipArchivesDetection:
         """Image attachments never had .md previews — not this migration's job."""
         mod = _load_repair_module()
         out = sample_output_dir["output_dir"]
-        docs_path = out / "documents.jsonl"
-        docs = [json.loads(l) for l in docs_path.read_text(encoding="utf-8").splitlines() if l.strip()]
-        for d in docs:
-            if d["id"] == sample_output_dir["member_uuid"]:
-                d["document_type"] = "attachment_image"
-        _write_jsonl(docs_path, docs)
+        from mtss.storage.sqlite_client import SqliteStorageClient
+
+        client = SqliteStorageClient(output_dir=out)
+        try:
+            client._conn.execute(
+                "UPDATE documents SET document_type = 'attachment_image' WHERE id = ?",
+                (sample_output_dir["member_uuid"],),
+            )
+        finally:
+            client._conn.close()
 
         candidates, _ = mod.build_candidates(out, verbose=False)
         assert candidates == []
@@ -199,8 +282,8 @@ class TestRepairZipArchivesExecution:
         assert not member_path.exists()
         assert not md_path.exists()
 
-        # documents.jsonl must not have been touched
-        docs = [json.loads(l) for l in (out / "documents.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+        # documents row must not have been touched
+        docs = _docs_from_db(out)
         member = next(d for d in docs if d["id"] == sample_output_dir["member_uuid"])
         assert member["archive_browse_uri"] is None
         assert member["archive_download_uri"] is None
@@ -227,13 +310,13 @@ class TestRepairZipArchivesExecution:
         assert "Second section with more detail." in md_text
         assert f"[Download Original]({folder_id}/attachments/report.docx)" in md_text
 
-        # 3. documents.jsonl row updated with the new URIs
-        docs = [json.loads(l) for l in (out / "documents.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+        # 3. documents row updated with the new URIs
+        docs = _docs_from_db(out)
         member = next(d for d in docs if d["id"] == sample_output_dir["member_uuid"])
         assert member["archive_browse_uri"] == f"/archive/{folder_id}/attachments/report.docx.md"
         assert member["archive_download_uri"] == f"/archive/{folder_id}/attachments/report.docx"
 
-        # 4. Other docs in the file were not mangled (email + zip rows preserved)
+        # 4. Other docs were not mangled (email + zip rows preserved)
         assert any(d["document_type"] == "email" and d["archive_browse_uri"] for d in docs)
         zip_row = next(d for d in docs if d["file_name"] == "container.zip")
         assert zip_row["archive_download_uri"] == f"/archive/{folder_id}/attachments/container.zip"
@@ -262,7 +345,7 @@ class TestRepairZipArchivesExecution:
         rc = mod.repair(out, dry_run=False, limit=0, verbose=False)
         assert rc == 0
 
-        docs = [json.loads(l) for l in (out / "documents.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+        docs = _docs_from_db(out)
         member = next(d for d in docs if d["id"] == sample_output_dir["member_uuid"])
         assert member["archive_browse_uri"] is None
         assert member["archive_download_uri"] is None

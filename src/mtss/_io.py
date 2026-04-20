@@ -17,12 +17,15 @@ anywhere in the package without cycles.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 async def read_bytes_async(path: Path) -> bytes:
@@ -36,14 +39,27 @@ async def read_bytes_async(path: Path) -> bytes:
     return await asyncio.to_thread(path.read_bytes)
 
 
+# Max attempts for the final os.replace step of atomic_write_text. Windows
+# briefly locks the target file during antivirus scans / Explorer preview /
+# file-watcher reads on multi-hundred-MB JSONLs (observed on chunks.jsonl
+# >1 GiB), which surfaces as PermissionError(WinError 5). A single retry
+# wave with exponential backoff clears that in practice — if the lock
+# persists past the full budget we still raise, keeping the original
+# "original file untouched on failure" guarantee.
+_REPLACE_MAX_ATTEMPTS = 6
+_REPLACE_BACKOFF_BASE = 0.25
+
+
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Write ``content`` to ``path`` atomically.
 
     Writes to ``{path}.tmp`` in the same directory, flushes and fsyncs the
     file descriptor, then atomically replaces the target via ``os.replace``.
-    On any exception before the replace, the tmp file is removed so it does
-    not accumulate. The original target at ``path`` is untouched until the
-    replace succeeds.
+    The replace is retried on transient ``PermissionError`` (Windows file
+    lock contention) with exponential backoff. On any exception before the
+    replace — or if every replace attempt fails — the tmp file is removed
+    so it does not accumulate. The original target at ``path`` is untouched
+    until the replace succeeds.
     """
     tmp_path = path.with_name(path.name + ".tmp")
     try:
@@ -51,7 +67,7 @@ def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> N
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        _replace_with_retry(tmp_path, path)
     except BaseException:
         try:
             if tmp_path.exists():
@@ -60,6 +76,37 @@ def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> N
             # Best-effort cleanup; re-raise the original error below.
             pass
         raise
+
+
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """``os.replace`` with retry on transient ``PermissionError``.
+
+    Split out so tests can exercise the retry loop without needing a real
+    Windows lock. Non-``PermissionError`` exceptions propagate immediately —
+    we only want to mask Windows' transient lock contention, not real
+    bugs like a missing source file.
+    """
+    last_exc: PermissionError | None = None
+    for attempt in range(_REPLACE_MAX_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            if attempt < _REPLACE_MAX_ATTEMPTS - 1:
+                delay = _REPLACE_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    "atomic_write_text: os.replace locked on %s (attempt %d/%d): %s "
+                    "— retrying in %.2fs",
+                    dst,
+                    attempt + 1,
+                    _REPLACE_MAX_ATTEMPTS,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 def fsync_append_line(path: Path, line: str, *, encoding: str = "utf-8") -> None:

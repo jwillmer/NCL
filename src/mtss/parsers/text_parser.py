@@ -11,15 +11,23 @@ logger = logging.getLogger(__name__)
 
 
 class TextParser(BaseParser):
-    """Parser for plain text files.
+    """Parser for plain-text formats.
 
-    Handles .txt files and text/plain MIME type.
-    Attempts multiple encodings for robust text extraction.
+    Covers .txt / text/plain plus formats that are structurally just text —
+    XML and INI config files — so the embedding pipeline can index them
+    instead of logging ``unsupported_format`` and dropping the content.
+    Attempts multiple encodings for robust decoding.
     """
 
     name = "text"
-    supported_mimetypes = {"text/plain"}
-    supported_extensions = {".txt"}
+    supported_mimetypes = {
+        "text/plain",
+        "text/xml",
+        "application/xml",
+        # Windows mis-registers .ini as this Wine-extension MIME; treat as text.
+        "application/x-wine-extension-ini",
+    }
+    supported_extensions = {".txt", ".xml", ".ini"}
 
     @property
     def is_available(self) -> bool:

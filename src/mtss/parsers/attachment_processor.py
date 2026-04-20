@@ -87,6 +87,13 @@ class AttachmentProcessor:
         "application/x-zip": "ZIP",
     }
 
+    # 7z file MIME types — extraction is delegated to py7zr so the ingest
+    # pipeline can treat these archives with the same semantics as ZIPs.
+    SEVEN_Z_FORMATS: Dict[str, str] = {
+        "application/x-7z-compressed": "7Z",
+        "application/x-compressed": "7Z",
+    }
+
     # Office formats that are technically ZIP files but should NOT be treated as ZIPs
     OFFICE_ZIP_FORMATS: set = {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -437,17 +444,19 @@ class AttachmentProcessor:
         return [chunk]
 
     def is_zip_file(self, file_path: str, content_type: Optional[str] = None) -> bool:
-        """Check if file is a ZIP archive (excluding Office formats).
+        """Check if file is an archive that the ingest should extract.
 
-        DOCX, XLSX, PPTX and other Office formats are technically ZIP files
-        but should be processed by LlamaParse, not extracted as ZIPs.
+        Covers ZIP and 7z. DOCX, XLSX, PPTX and other Office formats are
+        technically ZIP files but should be processed by a document parser,
+        not extracted. Name kept for backwards compatibility with call sites;
+        the return value now means "treat as archive."
 
         Args:
             file_path: Path to the file.
             content_type: MIME type of the file (optional).
 
         Returns:
-            True if file is a ZIP archive that should be extracted.
+            True if file is a ZIP or 7z archive that should be extracted.
         """
         # Exclude Office formats that are technically ZIPs
         if content_type and content_type in self.OFFICE_ZIP_FORMATS:
@@ -459,12 +468,14 @@ class AttachmentProcessor:
             if lower_path.endswith(ext):
                 return False
 
-        # Now check if it's actually a ZIP
-        if content_type and content_type in self.ZIP_FORMATS:
+        # Now check if it's actually a ZIP / 7z
+        if content_type and (
+            content_type in self.ZIP_FORMATS or content_type in self.SEVEN_Z_FORMATS
+        ):
             return True
 
         # Check by extension
-        if lower_path.endswith(".zip"):
+        if lower_path.endswith(".zip") or lower_path.endswith(".7z"):
             return True
 
         # Check MIME type from file extension
@@ -473,10 +484,19 @@ class AttachmentProcessor:
             # Exclude Office formats detected by MIME type
             if mime_type in self.OFFICE_ZIP_FORMATS:
                 return False
-            if mime_type in self.ZIP_FORMATS:
+            if mime_type in self.ZIP_FORMATS or mime_type in self.SEVEN_Z_FORMATS:
                 return True
 
         return False
+
+    def _is_7z_path(self, file_path: Path, content_type: Optional[str] = None) -> bool:
+        """Return True when the given path should be extracted with py7zr."""
+        if content_type and content_type in self.SEVEN_Z_FORMATS:
+            return True
+        if file_path.suffix.lower() == ".7z":
+            return True
+        mime, _ = mimetypes.guess_type(str(file_path))
+        return bool(mime and mime in self.SEVEN_Z_FORMATS)
 
     def extract_zip(
         self,
@@ -487,18 +507,20 @@ class AttachmentProcessor:
         _file_count: int = 0,
         _total_size: int = 0,
     ) -> List[Tuple[Path, str]]:
-        """Extract files from a ZIP archive with resource limits.
+        """Extract files from a ZIP or 7z archive with resource limits.
 
-        Safely extracts ZIP contents, skipping dangerous paths and unsupported files.
-        Returns list of extracted file paths with their MIME types.
+        Safely extracts archive contents, skipping dangerous paths and unsupported
+        files. Returns list of extracted file paths with their MIME types. The
+        method name is kept for backwards compatibility; it dispatches to the
+        7z implementation when the input is a ``.7z`` archive.
 
         Args:
-            zip_path: Path to the ZIP file.
+            zip_path: Path to the archive.
             extract_dir: Directory to extract to. If None, extracts to same directory
-                        as ZIP file with _extracted suffix.
+                        as the archive with _extracted suffix.
             lenient: If True, log extraction errors and continue. If False (default),
                     raise ZipMemberExtractionError on any member failure.
-            _depth: Internal parameter for tracking nested ZIP depth.
+            _depth: Internal parameter for tracking nested archive depth.
             _file_count: Internal parameter for tracking total extracted files.
             _total_size: Internal parameter for tracking total extracted size.
 
@@ -506,11 +528,21 @@ class AttachmentProcessor:
             List of tuples (file_path, content_type) for supported extracted files.
 
         Raises:
-            FileNotFoundError: If ZIP file doesn't exist.
-            ValueError: If ZIP file is invalid or cannot be opened.
+            FileNotFoundError: If archive doesn't exist.
+            ValueError: If archive is invalid or cannot be opened.
             ZipExtractionError: If extraction limits are exceeded.
             ZipMemberExtractionError: If a member fails to extract (when lenient=False).
         """
+        if self._is_7z_path(zip_path):
+            return self._extract_7z(
+                zip_path,
+                extract_dir=extract_dir,
+                lenient=lenient,
+                _depth=_depth,
+                _file_count=_file_count,
+                _total_size=_total_size,
+            )
+
         settings = get_settings()
 
         # Check depth limit
@@ -628,6 +660,139 @@ class AttachmentProcessor:
                         # Raise in strict mode to prevent data loss
                         logger.error(error_msg)
                         raise ZipMemberExtractionError(member, str(e))
+
+        return extracted_files
+
+    def _extract_7z(
+        self,
+        archive_path: Path,
+        extract_dir: Optional[Path],
+        lenient: bool,
+        _depth: int,
+        _file_count: int,
+        _total_size: int,
+    ) -> List[Tuple[Path, str]]:
+        """Extract a 7z archive, mirroring the ZIP path's safety checks.
+
+        Uses py7zr — a pure-Python implementation — so the dependency is
+        install-once rather than requiring a native 7-Zip binary. Applies the
+        same resource ceilings (depth, member count, total bytes) and
+        dangerous-path rejection as ``extract_zip``. Returns the (path,
+        content_type) tuples the ingest loop expects.
+        """
+        try:
+            import py7zr
+        except ImportError as exc:
+            raise ValueError(
+                "py7zr is not installed; cannot extract 7z archives. "
+                "Install with: pip install py7zr"
+            ) from exc
+
+        settings = get_settings()
+
+        if _depth > settings.zip_max_depth:
+            raise ZipExtractionError(
+                f"Archive nesting depth {_depth} exceeds limit of {settings.zip_max_depth}"
+            )
+
+        if not archive_path.exists():
+            raise FileNotFoundError(f"7z file not found: {archive_path}")
+
+        if extract_dir is None:
+            extract_dir = archive_path.parent / f"{archive_path.stem}_extracted"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        extracted_files: List[Tuple[Path, str]] = []
+        max_total_bytes = settings.zip_max_total_size_mb * 1024 * 1024
+
+        try:
+            archive = py7zr.SevenZipFile(str(archive_path), mode="r")
+        except py7zr.exceptions.Bad7zFile as e:
+            raise ValueError(f"Not a valid 7z file: {archive_path}: {e}") from e
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"Failed to open 7z file {archive_path}: {e}") from e
+
+        with archive:
+            members = archive.list()
+
+            safe_targets: list[str] = []
+            for info in members:
+                if _file_count >= settings.zip_max_files:
+                    raise ZipExtractionError(
+                        f"7z extraction file count {_file_count} exceeds limit "
+                        f"of {settings.zip_max_files}"
+                    )
+                if info.is_directory:
+                    continue
+                name = info.filename
+                if self._is_dangerous_zip_path(name):
+                    continue
+                basename = Path(name).name
+                if basename.startswith(".") or basename.startswith("__MACOSX"):
+                    continue
+
+                uncompressed = int(getattr(info, "uncompressed", 0) or 0)
+                compressed = int(getattr(info, "compressed", 0) or 0)
+                if compressed > 0 and uncompressed / compressed > 100:
+                    logger.warning(
+                        f"Skipping {name}: suspicious 7z compression ratio "
+                        f"{uncompressed / compressed:.0f}:1"
+                    )
+                    continue
+
+                if _total_size + uncompressed > max_total_bytes:
+                    raise ZipExtractionError(
+                        f"7z extraction would exceed size limit of "
+                        f"{settings.zip_max_total_size_mb}MB"
+                    )
+
+                safe_targets.append(name)
+                _file_count += 1
+                _total_size += uncompressed
+
+            if not safe_targets:
+                return extracted_files
+
+            try:
+                archive.extract(path=str(extract_dir), targets=safe_targets)
+            except Exception as e:  # noqa: BLE001
+                error_msg = f"Failed to extract 7z archive {archive_path.name}: {e}"
+                if lenient:
+                    logger.warning(error_msg)
+                    return extracted_files
+                logger.error(error_msg)
+                raise ZipMemberExtractionError(archive_path.name, str(e)) from e
+
+        for name in safe_targets:
+            safe_rel = self._sanitize_zip_member_path(name)
+            target_path = extract_dir / safe_rel
+            if not target_path.exists():
+                # py7zr normalises path separators; if the sanitised path
+                # didn't match, fall back to looking under the raw name.
+                raw_path = extract_dir / name.replace("\\", "/")
+                if raw_path.exists():
+                    target_path = raw_path
+                else:
+                    logger.warning(
+                        "7z member %s extracted but not found on disk", name
+                    )
+                    continue
+
+            mime_type, _ = mimetypes.guess_type(str(target_path))
+            content_type = mime_type or "application/octet-stream"
+
+            if self.is_zip_file(str(target_path), content_type):
+                nested = self.extract_zip(
+                    target_path,
+                    lenient=lenient,
+                    _depth=_depth + 1,
+                    _file_count=_file_count,
+                    _total_size=_total_size,
+                )
+                extracted_files.extend(nested)
+                _file_count += len(nested)
+            elif self.is_supported(str(target_path), content_type) or self.is_image_format(content_type):
+                extracted_files.append((target_path, content_type))
 
         return extracted_files
 

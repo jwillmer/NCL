@@ -9,7 +9,7 @@ RAG pipeline for processing EML email files with attachments, preserving documen
 - **Image Understanding:** AI-powered image classification and descriptions via LiteLLM Vision, with local heuristic pre-filtering
 - **Tiered Document Parsing:** Local parsers for simple PDFs (PyMuPDF4LLM), DOCX (python-docx), XLSX (openpyxl), CSV, and HTML; Gemini 2.5 Flash via OpenRouter for complex PDFs and modern non-local formats; LlamaParse only for legacy binary `.doc`/`.xls`/`.ppt`
 - **Per-Document Embedding Modes:** Each attachment is classified at ingest time as `full` (chunk + embed), `summary` (one synthesized chunk for noisy/numeric dumps), or `metadata_only` (filename-only stub for empty/noise docs). Decision is rule-based with an LLM triage call for the medium-confidence band
-- **Local-First Ingest:** Ingest always writes locally (JSONL + archives); `MTSS import` pushes to Supabase
+- **Local-First Ingest:** Ingest always writes locally to a single SQLite file (`ingest.db`) + a browsable archive tree; `MTSS import` pushes to Supabase
 - **Contextual Chunking:** LLM-generated document summaries prepended to chunks (35-67% retrieval improvement)
 - **Vector Storage:** Supabase with pgvector for similarity search
 - **Two-Stage Retrieval:** Vector search + cross-encoder reranking (20-35% accuracy improvement)
@@ -151,7 +151,7 @@ uv run MTSS import --skip-archives --verbose
 uv run MTSS import --dry-run  # preview without changes
 ```
 
-**Local-first architecture:** Ingest always writes to local JSONL files and archives. No Supabase credentials are needed for ingest. Use `MTSS import` to push local data to Supabase when ready. Import is idempotent — safe to re-run.
+**Local-first architecture:** Ingest always writes to `data/output/ingest.db` (SQLite) and the `archive/` tree. No Supabase credentials are needed for ingest. Use `MTSS import` to push local data to Supabase when ready. Import is idempotent — safe to re-run.
 
 ### Data Integrity
 
@@ -248,7 +248,7 @@ Idempotent — docs already at the decided mode are skipped unless `--force`. Re
 
 ### Mark-Failed Command
 
-Flag specific EML files as `FAILED` in `processing_log.jsonl` without touching the rest of the output. Paired with `ingest --retry-failed`, this forces a targeted re-ingest of just those emails (existing documents + chunks are cleaned up first via `force_reparse`).
+Flag specific EML files as `FAILED` in the `processing_log` table without touching the rest of the output. Paired with `ingest --retry-failed`, this forces a targeted re-ingest of just those emails (existing documents + chunks are cleaned up first via `force_reparse`, which is structurally safe because FK CASCADE wipes chunks when the parent doc is deleted).
 
 Use when `mtss validate` surfaces issues tied to a small set of emails and you want to re-process them without wiping the whole run.
 
@@ -700,24 +700,25 @@ Test fixtures are located in `tests/fixtures/` including a sample email with PDF
 
 ### Local Storage Output (Development)
 
-For debugging ingest behavior without Supabase, tests can use local storage mocks:
+Ingest writes every row to a single SQLite file at `data/output/ingest.db`. WAL mode + foreign-key CASCADE keep the store consistent even when ingest crashes mid-run — there is no half-written JSONL state to recover.
+
+To inspect output in a test or REPL:
 
 ```python
-# In your test
-def test_ingest_output(local_ingest_output):
-    # Use local_ingest_output.db instead of SupabaseClient
-    # Use local_ingest_output.bucket instead of ArchiveStorage
+from mtss.storage.sqlite_client import SqliteStorageClient
 
-    # After running ingest, inspect output:
-    docs = local_ingest_output.read_documents_jsonl()
-    chunks = local_ingest_output.read_chunks_jsonl()
-    events = local_ingest_output.read_events_jsonl()
+client = SqliteStorageClient(output_dir=Path("data/output"))
+docs = list(client.iter_documents())
+chunks = list(client.iter_chunks())
+topics = list(client.iter_topics())
+events = list(client.iter_events())
 ```
 
 Output files:
-- `tmp/database/documents.jsonl` - Document records
-- `tmp/database/chunks.jsonl` - Chunk records
-- `tmp/bucket/{doc_id}/` - Archive files
+- `data/output/ingest.db` — SQLite store (documents, chunks, topics, chunk_topics, ingest_events, processing_log, run_history, manifest)
+- `data/output/archive/<folder_id>/` — markdown snapshots + original attachments
+
+Migrating an older JSONL install: `uv run python scripts/migrate_to_sqlite.py --apply` (dry-run by default; skips orphan chunks that predate the new FK constraint and logs the count).
 
 ## License
 

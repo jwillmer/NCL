@@ -14,7 +14,7 @@ What
 ----
 For each target document (default: text content >= 20k chars), the analyzer:
 
-1. Loads the doc's concatenated chunk content from ``chunks.jsonl``.
+1. Loads the doc's concatenated chunk content from the ``chunks`` table.
 2. Computes structural heuristics — numeric density, unique-word ratio,
    line regularity, sentence density. These catch the obvious extremes:
    sensor logs (numeric + repetitive), tabular dumps (tight short lines),
@@ -22,11 +22,12 @@ For each target document (default: text content >= 20k chars), the analyzer:
 3. If heuristics are inconclusive, samples three excerpts (head / middle /
    tail) and asks a small LLM to classify: keep / summary_only / skip.
 4. Emits ``rag_utility_report.jsonl`` with the classification, the reason,
-   and the raw metrics for audit.
+   and the raw metrics for audit. The ``.jsonl`` suffix here is this
+   script's own report format — it is not ingest state.
 
 The report is purely informational — this script NEVER modifies
-``documents.jsonl`` or ``chunks.jsonl``. A separate apply step (future)
-will flip a ``rag_utility`` field once the operator reviews the report.
+``ingest.db``. A separate apply step (future) will flip a ``rag_utility``
+field once the operator reviews the report.
 
 Classification scale
 --------------------
@@ -269,21 +270,23 @@ class ReportRow:
 
 def load_chunks_by_doc(output_dir: Path) -> dict[str, list[str]]:
     """Return document_id -> list of chunk contents, ordered."""
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
     content_by_doc: dict[str, list[tuple[int, str]]] = {}
-    with (output_dir / "chunks.jsonl").open("r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                c = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            did = c.get("document_id")
-            if not did:
-                continue
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        for row in client._conn.execute(
+            "SELECT document_id, chunk_index, content FROM chunks"
+        ):
+            did = row["document_id"]
             content_by_doc.setdefault(did, []).append(
-                (c.get("chunk_index") or 0, c.get("content") or "")
+                (row["chunk_index"] or 0, row["content"] or "")
             )
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
     return {
         did: [content for _, content in sorted(pairs, key=lambda p: p[0])]
         for did, pairs in content_by_doc.items()
@@ -301,13 +304,13 @@ def select_targets(
         the source of bulk-content noise)
       - failed / filtered docs
     """
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
     chunks_by_doc = load_chunks_by_doc(output_dir)
     results: list[tuple[dict, str]] = []
-    with (output_dir / "documents.jsonl").open("r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            d = json.loads(line)
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        for d in client.iter_documents():
             if d.get("status") != "completed":
                 continue
             doc_type = d.get("document_type") or ""
@@ -325,6 +328,11 @@ def select_targets(
             if words < min_word_count:
                 continue
             results.append((d, content))
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
     return results
 
 

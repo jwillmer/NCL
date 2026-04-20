@@ -5,10 +5,10 @@ Background
 Before the fix in `process_zip_attachment`, extracted ZIP members never had
 their "original" file uploaded into the email's archive folder. The
 `update_attachment_markdown` call then short-circuited on a `file_exists`
-guard and no `.md` preview was written. Net effect: docs exist in
-documents.jsonl with chunks, but `archive_browse_uri` / `archive_download_uri`
-are None and the archive folder has neither the member file nor its
-`.md` preview.
+guard and no `.md` preview was written. Net effect: docs exist in the
+``documents`` table with chunks, but `archive_browse_uri` /
+`archive_download_uri` are None and the archive folder has neither the
+member file nor its `.md` preview.
 
 This script repairs existing output without a full re-ingest:
 
@@ -16,7 +16,7 @@ For each ZIP-extracted doc missing archive URIs:
   1. Locate the parent ZIP attachment on disk (the ZIP was uploaded).
   2. Extract just the needed member from the ZIP (by basename match).
   3. Write the extracted member into `<archive>/<folder>/attachments/<safe_name>`.
-  4. Reconstruct parsed_content from the doc's chunks in chunks.jsonl.
+  4. Reconstruct parsed_content from the doc's rows in the ``chunks`` table.
   5. Generate and write the `.md` preview using the same format as live ingest.
   6. Update the doc's `archive_browse_uri` and `archive_download_uri` in-place.
 
@@ -34,9 +34,7 @@ Exit codes: 0 = success (including dry-run), 1 = unrecoverable error.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import os
 import sys
 import tempfile
 import zipfile
@@ -68,33 +66,6 @@ class RepairCandidate:
 
 
 # ---------------------------------------------------------------------------
-# I/O helpers
-# ---------------------------------------------------------------------------
-
-
-def _read_jsonl(path: Path) -> List[Dict]:
-    if not path.exists():
-        return []
-    out: List[Dict] = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
-
-
-def _write_jsonl_atomic(path: Path, rows: List[Dict]) -> None:
-    """Write rows to `path` via tmp-file rename. Preserves order."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False))
-            f.write("\n")
-    os.replace(tmp, path)
-
-
-# ---------------------------------------------------------------------------
 # Candidate detection
 # ---------------------------------------------------------------------------
 
@@ -122,7 +93,7 @@ def _find_source_zip_on_disk(
     Context: in the current pipeline, process_zip_attachment never creates
     a document row for the ZIP itself — only for its extracted members
     (with parent_id = email). So the ZIP isn't a sibling doc we can find
-    via documents.jsonl. We instead enumerate the email's archive folder
+    via the documents table. We instead enumerate the email's archive folder
     directly for `.zip` files and match by namelist.
 
     Strategy:
@@ -241,9 +212,28 @@ def build_candidates(
     output_dir: Path, verbose: bool
 ) -> tuple[List[RepairCandidate], List[Dict]]:
     """Scan output and return repairable candidates plus the full docs list."""
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
     archive_dir = output_dir / "archive"
-    docs = _read_jsonl(output_dir / "documents.jsonl")
-    chunks = _read_jsonl(output_dir / "chunks.jsonl")
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        docs = list(client.iter_documents())
+        chunks = [
+            {
+                "document_id": row["document_id"],
+                "content": row["content"],
+                "chunk_index": row["chunk_index"],
+            }
+            for row in client._conn.execute(
+                "SELECT document_id, content, chunk_index FROM chunks "
+                "ORDER BY document_id, chunk_index"
+            )
+        ]
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
 
     docs_by_id: Dict[str, Dict] = {d["id"]: d for d in docs if "id" in d}
 
@@ -429,8 +419,33 @@ def repair(
             )
 
     if not dry_run and repaired:
-        # Rewrite documents.jsonl atomically; docs list already mutated in place.
-        _write_jsonl_atomic(output_dir / "documents.jsonl", docs)
+        # Persist archive_browse_uri / archive_download_uri updates back to
+        # the documents table. Each mutation is a single UPDATE — FK CASCADE
+        # protects chunks, and SQLite's WAL mode keeps the writes crash-safe.
+        from mtss.storage.sqlite_client import SqliteStorageClient
+
+        client = SqliteStorageClient(output_dir=output_dir)
+        try:
+            with client._conn:
+                client._conn.execute("BEGIN")
+                for d in docs:
+                    if not d.get("archive_browse_uri"):
+                        continue
+                    client._conn.execute(
+                        "UPDATE documents SET archive_browse_uri = ?, "
+                        "archive_download_uri = ?, updated_at = datetime('now') "
+                        "WHERE id = ?",
+                        (
+                            d.get("archive_browse_uri"),
+                            d.get("archive_download_uri"),
+                            d["id"],
+                        ),
+                    )
+        finally:
+            try:
+                client._conn.close()
+            except Exception:
+                pass
 
     logger.info(
         "Summary: repaired=%d dry_run=%s zip_missing=%d member_missing=%d failed=%d",
@@ -450,7 +465,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--output-dir",
         type=Path,
         default=Path("data/output"),
-        help="Directory containing documents.jsonl / chunks.jsonl / archive/",
+        help="Directory containing ingest.db + archive/",
     )
     parser.add_argument(
         "--dry-run",

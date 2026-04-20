@@ -238,6 +238,43 @@ class TestSelectTargets:
     """Excludes emails, image attachments, and docs below the size threshold.
     Must read chunk content through the same doc_id key the ingest writer uses."""
 
+    @staticmethod
+    def _seed_db(output, docs, chunks):
+        """Write docs + chunks into a fresh ingest.db. Keeps tests tight: we
+        only set the columns that ``select_targets`` looks at (id, status,
+        document_type, file_name) plus the chunk join keys."""
+        from mtss.storage.sqlite_client import SqliteStorageClient
+
+        client = SqliteStorageClient(output_dir=output)
+        try:
+            conn = client._conn
+            with conn:
+                conn.execute("BEGIN")
+                now = "2026-04-20T00:00:00"
+                for d in docs:
+                    conn.execute(
+                        "INSERT INTO documents("
+                        "id, doc_id, source_id, document_type, status, "
+                        "file_name, root_id, created_at, updated_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            d["id"], d["id"][:16], d.get("file_name") or d["id"][:16],
+                            d.get("document_type"), d.get("status") or "pending",
+                            d.get("file_name"), d["id"], now, now,
+                        ),
+                    )
+                for c in chunks:
+                    cid = str(uuid4())
+                    conn.execute(
+                        "INSERT INTO chunks("
+                        "id, chunk_id, document_id, content, chunk_index, created_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?)",
+                        (cid, cid, c["document_id"], c["content"],
+                         c.get("chunk_index", 0), now),
+                    )
+        finally:
+            conn.close()
+
     def test_excludes_emails_images_and_small_docs(self, mod, tmp_path):
         output = tmp_path / "output"
         output.mkdir()
@@ -249,30 +286,12 @@ class TestSelectTargets:
         big_docx_id = str(uuid4())
 
         docs = [
-            {
-                "id": email_id, "status": "completed", "document_type": "email",
-                "file_name": "a.eml",
-            },
-            {
-                "id": image_id, "status": "completed", "document_type": "attachment_image",
-                "file_name": "b.jpg",
-            },
-            {
-                "id": small_id, "status": "completed", "document_type": "attachment_pdf",
-                "file_name": "small.pdf",
-            },
-            {
-                "id": big_pdf_id, "status": "completed", "document_type": "attachment_pdf",
-                "file_name": "big.pdf",
-            },
-            {
-                "id": big_docx_id, "status": "completed", "document_type": "attachment_docx",
-                "file_name": "big.docx",
-            },
+            {"id": email_id, "status": "completed", "document_type": "email", "file_name": "a.eml"},
+            {"id": image_id, "status": "completed", "document_type": "attachment_image", "file_name": "b.jpg"},
+            {"id": small_id, "status": "completed", "document_type": "attachment_pdf", "file_name": "small.pdf"},
+            {"id": big_pdf_id, "status": "completed", "document_type": "attachment_pdf", "file_name": "big.pdf"},
+            {"id": big_docx_id, "status": "completed", "document_type": "attachment_docx", "file_name": "big.docx"},
         ]
-        with (output / "documents.jsonl").open("w", encoding="utf-8") as f:
-            for d in docs:
-                f.write(json.dumps(d) + "\n")
 
         big_content = "This is realistic prose. " * 2000  # ~50k chars
         chunks = [
@@ -282,9 +301,7 @@ class TestSelectTargets:
             {"document_id": big_pdf_id, "chunk_index": 0, "content": big_content},
             {"document_id": big_docx_id, "chunk_index": 0, "content": big_content},
         ]
-        with (output / "chunks.jsonl").open("w", encoding="utf-8") as f:
-            for c in chunks:
-                f.write(json.dumps(c) + "\n")
+        self._seed_db(output, docs, chunks)
 
         targets = mod.select_targets(output, min_chars=20000)
         target_ids = {d["id"] for d, _ in targets}
@@ -295,18 +312,15 @@ class TestSelectTargets:
         output.mkdir()
 
         pdf_id = str(uuid4())
-        with (output / "documents.jsonl").open("w", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "id": pdf_id, "status": "completed",
-                "document_type": "attachment_pdf", "file_name": "r.pdf",
-            }) + "\n")
-
+        docs = [{"id": pdf_id, "status": "completed", "document_type": "attachment_pdf", "file_name": "r.pdf"}]
         # Write out-of-order — select_targets must reassemble in chunk_index order.
         chunk_a = "First chunk content. " * 1000
         chunk_b = "Second chunk content. " * 1000
-        with (output / "chunks.jsonl").open("w", encoding="utf-8") as f:
-            f.write(json.dumps({"document_id": pdf_id, "chunk_index": 1, "content": chunk_b}) + "\n")
-            f.write(json.dumps({"document_id": pdf_id, "chunk_index": 0, "content": chunk_a}) + "\n")
+        chunks = [
+            {"document_id": pdf_id, "chunk_index": 1, "content": chunk_b},
+            {"document_id": pdf_id, "chunk_index": 0, "content": chunk_a},
+        ]
+        self._seed_db(output, docs, chunks)
 
         targets = mod.select_targets(output, min_chars=1000)
         assert len(targets) == 1

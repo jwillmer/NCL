@@ -192,8 +192,8 @@ async def _ingest(
     from ..ingest.version_manager import VersionManager
     from ..models.vessel import load_vessels_from_csv
     from ..storage.failure_report import IngestReportWriter
-    from ..storage.local_client import LocalStorageClient
-    from ..storage.local_progress_tracker import LocalProgressTracker
+    from ..storage.sqlite_client import SqliteStorageClient
+    from ..storage.sqlite_progress_tracker import SqliteProgressTracker
 
     settings = get_settings()
     source_dir = source_dir or settings.eml_source_dir
@@ -207,8 +207,8 @@ async def _ingest(
     console.print(f"[green]Output: {resolved_output}[/green]")
 
     console.print("[dim]Loading prior data...[/dim]", end="\r")
-    db = LocalStorageClient(output_dir=resolved_output)
-    tracker = LocalProgressTracker(output_dir=resolved_output)
+    db = SqliteStorageClient(output_dir=resolved_output)
+    tracker = SqliteProgressTracker(output_dir=resolved_output)
     unsupported_logger = db
     version_manager = VersionManager(db)
     vessels = load_vessels_from_csv()

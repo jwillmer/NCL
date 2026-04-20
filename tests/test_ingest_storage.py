@@ -430,118 +430,16 @@ class TestIngestHelpers:
         assert len(set(chunk_ids)) == len(chunk_ids)  # All unique
 
 
-class TestLocalClientFlushChunkDedup:
-    """Tests that LocalStorageClient.flush() dedupes chunks by chunk_id within a run."""
-
-    @pytest.fixture
-    def local_client(self, tmp_path):
-        from mtss.storage.local_client import LocalStorageClient
-
-        return LocalStorageClient(tmp_path / "output")
-
-    @pytest.mark.asyncio
-    async def test_flush_dedupes_same_run_chunks_by_chunk_id(self, local_client):
-        """Two current-run chunks with different UUIDs but same chunk_id should dedupe."""
-        import json as _json
-        from uuid import uuid4
-
-        from mtss.models.chunk import Chunk
-        from mtss.models.document import Document, DocumentType, ProcessingStatus
-
-        doc = Document(
-            id=uuid4(),
-            document_type=DocumentType.EMAIL,
-            file_path="/test.eml",
-            file_name="test.eml",
-            depth=0,
-            status=ProcessingStatus.COMPLETED,
-        )
-        await local_client.insert_document(doc)
-
-        shared_chunk_id = "shared_chunk_1"
-        chunk_a = Chunk(
-            id=uuid4(),
-            document_id=doc.id,
-            chunk_id=shared_chunk_id,
-            content="First write",
-            chunk_index=0,
-            metadata={"type": "email_body"},
-        )
-        chunk_b = Chunk(
-            id=uuid4(),
-            document_id=doc.id,
-            chunk_id=shared_chunk_id,
-            content="Second write",
-            chunk_index=0,
-            metadata={"type": "email_body"},
-        )
-        await local_client.insert_chunks([chunk_a])
-        await local_client.insert_chunks([chunk_b])
-
-        local_client.flush()
-
-        chunks_path = local_client.output_dir / "chunks.jsonl"
-        lines = [ln for ln in chunks_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        matching = [_json.loads(ln) for ln in lines if _json.loads(ln).get("chunk_id") == shared_chunk_id]
-        assert len(matching) == 1
-
-    @pytest.mark.asyncio
-    async def test_flush_keeps_unique_chunks(self, local_client):
-        """Two chunks with different chunk_ids should both survive flush."""
-        import json as _json
-        from uuid import uuid4
-
-        from mtss.models.chunk import Chunk
-        from mtss.models.document import Document, DocumentType, ProcessingStatus
-
-        doc = Document(
-            id=uuid4(),
-            document_type=DocumentType.EMAIL,
-            file_path="/test.eml",
-            file_name="test.eml",
-            depth=0,
-            status=ProcessingStatus.COMPLETED,
-        )
-        await local_client.insert_document(doc)
-
-        chunk_a = Chunk(
-            id=uuid4(),
-            document_id=doc.id,
-            chunk_id="unique_a",
-            content="A",
-            chunk_index=0,
-            metadata={"type": "email_body"},
-        )
-        chunk_b = Chunk(
-            id=uuid4(),
-            document_id=doc.id,
-            chunk_id="unique_b",
-            content="B",
-            chunk_index=1,
-            metadata={"type": "email_body"},
-        )
-        await local_client.insert_chunks([chunk_a, chunk_b])
-
-        local_client.flush()
-
-        chunks_path = local_client.output_dir / "chunks.jsonl"
-        lines = [ln for ln in chunks_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        chunk_ids = {_json.loads(ln).get("chunk_id") for ln in lines}
-        assert "unique_a" in chunk_ids
-        assert "unique_b" in chunk_ids
-
-
 class TestMarkFailedCommand:
     """Tests for `MTSS mark-failed` maintenance command."""
 
     @pytest.fixture
     def seeded_output(self, tmp_path):
-        """Output dir with a processing_log.jsonl holding 3 entries."""
-        import json as _json
+        """Output dir with an ingest.db whose processing_log holds 3 entries."""
+        from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
 
         output = tmp_path / "output"
         output.mkdir()
-        log = output / "processing_log.jsonl"
         entries = [
             {
                 "file_path": str(tmp_path / "emails" / "a.eml"),
@@ -571,9 +469,20 @@ class TestMarkFailedCommand:
                 "attempts": 1,
             },
         ]
-        with open(log, "w", encoding="utf-8") as f:
-            for e in entries:
-                f.write(_json.dumps(e) + "\n")
+        tracker = SqliteProgressTracker(output)
+        for e in entries:
+            tracker._conn.execute(
+                """
+                INSERT INTO processing_log(file_path, file_hash, status, started_at,
+                                           completed_at, attempts)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    e["file_path"], e["file_hash"], e["status"],
+                    e["started_at"], e["completed_at"], e["attempts"],
+                ),
+            )
+        tracker.close()
         return output, entries
 
     @pytest.mark.asyncio
@@ -581,7 +490,7 @@ class TestMarkFailedCommand:
         from pathlib import Path as _Path
 
         from mtss.cli.maintenance_cmd import _mark_failed
-        from mtss.storage.local_progress_tracker import LocalProgressTracker
+        from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
 
         output, entries = seeded_output
         await _mark_failed(
@@ -590,24 +499,28 @@ class TestMarkFailedCommand:
             "bad_context",
         )
 
-        reloaded = LocalProgressTracker(output)
-        assert reloaded._entries[entries[0]["file_path"]]["status"] == "FAILED"
-        assert reloaded._entries[entries[0]["file_path"]]["error"] == "bad_context"
-        assert reloaded._entries[entries[1]["file_path"]]["status"] == "COMPLETED"
-        assert reloaded._entries[entries[2]["file_path"]]["status"] == "FAILED"
+        reloaded = SqliteProgressTracker(output)
+        by_path = {e["file_path"]: e for e in reloaded.iter_entries()}
+        reloaded.close()
+        assert by_path[entries[0]["file_path"]]["status"] == "FAILED"
+        assert by_path[entries[0]["file_path"]]["error"] == "bad_context"
+        assert by_path[entries[1]["file_path"]]["status"] == "COMPLETED"
+        assert by_path[entries[2]["file_path"]]["status"] == "FAILED"
 
     @pytest.mark.asyncio
     async def test_resolves_file_by_basename(self, seeded_output):
         from pathlib import Path as _Path
 
         from mtss.cli.maintenance_cmd import _mark_failed
-        from mtss.storage.local_progress_tracker import LocalProgressTracker
+        from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
 
         output, entries = seeded_output
         await _mark_failed([_Path("b.eml")], output, "manual")
 
-        reloaded = LocalProgressTracker(output)
-        assert reloaded._entries[entries[1]["file_path"]]["status"] == "FAILED"
+        reloaded = SqliteProgressTracker(output)
+        by_path = {e["file_path"]: e for e in reloaded.iter_entries()}
+        reloaded.close()
+        assert by_path[entries[1]["file_path"]]["status"] == "FAILED"
 
     @pytest.mark.asyncio
     async def test_get_failed_files_returns_all_failed_regardless_of_attempts(self, tmp_path):
@@ -620,41 +533,30 @@ class TestMarkFailedCommand:
         attempts counter stays on the entry for visibility, but does not
         gate retry eligibility.
         """
-        import json as _json
-        from pathlib import Path as _Path
-
-        from mtss.storage.local_progress_tracker import LocalProgressTracker
+        from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
 
         output = tmp_path / "output"
         output.mkdir()
         entries = [
-            # Fresh failure — previously visible anyway.
-            {
-                "file_path": str(tmp_path / "emails" / "fresh.eml"),
-                "file_hash": "f1", "status": "FAILED", "error": "x", "attempts": 1,
-            },
-            # Stuck at the old cap — previously invisible to retry.
-            {
-                "file_path": str(tmp_path / "emails" / "stuck.eml"),
-                "file_hash": "f2", "status": "FAILED", "error": "Timed out", "attempts": 3,
-            },
-            # Way past the old cap.
-            {
-                "file_path": str(tmp_path / "emails" / "very_stuck.eml"),
-                "file_hash": "f3", "status": "FAILED", "error": "x", "attempts": 99,
-            },
+            # Fresh failure.
+            (str(tmp_path / "emails" / "fresh.eml"), "f1", "FAILED", "x", 1),
+            # Stuck at the old cap — previously invisible to retry when attempts-gate
+            # still applied. Must surface regardless of attempts today.
+            (str(tmp_path / "emails" / "stuck.eml"), "f2", "FAILED", "Timed out", 3),
+            (str(tmp_path / "emails" / "very_stuck.eml"), "f3", "FAILED", "x", 99),
             # COMPLETED — must NOT appear.
-            {
-                "file_path": str(tmp_path / "emails" / "ok.eml"),
-                "file_hash": "f4", "status": "COMPLETED", "attempts": 1,
-            },
+            (str(tmp_path / "emails" / "ok.eml"), "f4", "COMPLETED", None, 1),
         ]
-        with open(output / "processing_log.jsonl", "w", encoding="utf-8") as f:
-            for e in entries:
-                f.write(_json.dumps(e) + "\n")
-
-        tracker = LocalProgressTracker(output)
+        tracker = SqliteProgressTracker(output)
+        for fp, fh, status, err, attempts in entries:
+            tracker._conn.execute(
+                "INSERT INTO processing_log("
+                "file_path, file_hash, status, error, attempts"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (fp, fh, status, err, attempts),
+            )
         result = sorted(p.name for p in await tracker.get_failed_files())
+        tracker.close()
         assert result == ["fresh.eml", "stuck.eml", "very_stuck.eml"]
 
     @pytest.mark.asyncio
@@ -662,13 +564,17 @@ class TestMarkFailedCommand:
         from pathlib import Path as _Path
 
         from mtss.cli.maintenance_cmd import _mark_failed
+        from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
 
         output, entries = seeded_output
         await _mark_failed([_Path(entries[0]["file_path"])], output, "x")
 
-        with open(output / "processing_log.jsonl", encoding="utf-8") as f:
-            lines = [ln for ln in f if ln.strip()]
-        assert len(lines) == 3  # One per file, no duplicates from append
+        # processing_log has PK(file_path) so duplicates are structurally
+        # impossible — three seeded entries, still three rows after mark-failed.
+        tracker = SqliteProgressTracker(output)
+        rows = tracker.iter_entries()
+        tracker.close()
+        assert len(rows) == 3
 
     @pytest.mark.asyncio
     async def test_missing_log_file_exits(self, tmp_path):
@@ -681,41 +587,29 @@ class TestMarkFailedCommand:
         with pytest.raises(_typer.Exit):
             await _mark_failed([_Path("x.eml")], tmp_path / "nope", "reason")
 
-    def test_compact_is_atomic_on_crash(self, tmp_path, monkeypatch):
-        """A crash during compact() must leave the original log intact — the
-        prior ``open(path, "w")`` truncated before rewriting, wiping all
-        progress on any interrupted run.
+    def test_compact_is_noop_safe(self, tmp_path):
+        """``SqliteProgressTracker.compact()`` is just a WAL checkpoint — a
+        failing checkpoint must not corrupt the existing rows. With WAL the
+        canonical file is never truncated in place, so the class of
+        rewrite-during-crash bug the old JSONL ``compact`` had is structurally
+        gone. This test locks that contract in: the row survives compact().
         """
-        import json as _json
-
-        from mtss.storage.local_progress_tracker import LocalProgressTracker
+        from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
 
         output = tmp_path / "output"
         output.mkdir()
-        log = output / "processing_log.jsonl"
-        log.write_text(
-            _json.dumps({"file_path": "/a.eml", "file_hash": "a", "status": "COMPLETED"})
-            + "\n",
-            encoding="utf-8",
+
+        tracker = SqliteProgressTracker(output)
+        tracker._conn.execute(
+            "INSERT INTO processing_log(file_path, file_hash, status) "
+            "VALUES ('/a.eml', 'a', 'COMPLETED')"
         )
+        tracker.compact()
+        rows = tracker.iter_entries()
+        tracker.close()
 
-        tracker = LocalProgressTracker(output)
-
-        # Simulate crash during atomic_write_text — os.replace raises.
-        def boom(*args, **kwargs):
-            raise OSError("disk pulled mid-rewrite")
-
-        monkeypatch.setattr(
-            "mtss.storage.local_progress_tracker.atomic_write_text", boom
-        )
-
-        with pytest.raises(OSError):
-            tracker.compact()
-
-        # Original log must be intact; no truncation occurred.
-        remaining = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        assert len(remaining) == 1
-        assert _json.loads(remaining[0])["file_path"] == "/a.eml"
+        assert len(rows) == 1
+        assert rows[0]["file_path"] == "/a.eml"
 
 
 class TestCleanArchiveMdCommand:
@@ -790,30 +684,28 @@ class TestCleanArchiveMdCommand:
 
 class TestDeleteDocumentForReprocessClearsIndexes:
     """Regression: prior-loaded docs must be evicted from the in-memory
-    dedup indexes when reprocessed, otherwise insert_document early-returns
+    dedup cache when reprocessed, otherwise insert_document early-returns
     on re-insert and the replacement email row is never written.
 
     Real-world symptom: retry-failed run for an email marked the email
     COMPLETED in processing_log but the email's row was missing from
-    documents.jsonl, leaving its attachment children orphaned with
-    root_id pointing to a non-existent UUID.
+    ``documents``, leaving its attachment children orphaned with
+    root_id pointing to a non-existent UUID. FK CASCADE makes this a
+    structural impossibility now, but the cache-eviction on
+    ``delete_document_for_reprocess`` is still the belt-and-braces check.
     """
 
     @pytest.mark.asyncio
     async def test_reprocess_after_restart_writes_new_email_row(self, tmp_path):
-        """Simulate: prior run wrote an email, fresh process loads prior data,
-        reprocesses the same email via delete + insert. The new row must appear
-        in documents.jsonl, not be silently dropped by the doc_id index."""
-        import json as _json
         from uuid import uuid4
 
         from mtss.models.document import Document, DocumentType, ProcessingStatus
-        from mtss.storage.local_client import LocalStorageClient
+        from mtss.storage.sqlite_client import SqliteStorageClient
 
         output_dir = tmp_path / "output"
 
-        # --- Prior run: write an email doc, flush ---
-        client_a = LocalStorageClient(output_dir)
+        # --- Prior run: write an email doc, close ---
+        client_a = SqliteStorageClient(output_dir=output_dir)
         old_id = uuid4()
         old_email = Document(
             id=old_id,
@@ -827,23 +719,20 @@ class TestDeleteDocumentForReprocessClearsIndexes:
             status=ProcessingStatus.COMPLETED,
         )
         await client_a.insert_document(old_email)
-        client_a.flush()
+        client_a._conn.close()
 
         # --- Fresh process: load prior data, then reprocess same email ---
-        client_b = LocalStorageClient(output_dir)
-        assert "deadbeefcafebabe" in client_b._documents_by_doc_id, \
-            "precondition: prior doc must be indexed by doc_id"
-
-        # Force-reparse cleanup path: lookup by doc_id -> call delete by UUID
+        client_b = SqliteStorageClient(output_dir=output_dir)
+        # __post_init__ rehydrates caches from the DB
         existing = await client_b.get_document_by_doc_id("deadbeefcafebabe")
-        assert existing is not None
+        assert existing is not None, "precondition: prior doc must be discoverable by doc_id"
+
         client_b.delete_document_for_reprocess(existing.id)
+        # After cleanup, cache must not resurrect the stale doc
+        assert await client_b.get_document_by_doc_id("deadbeefcafebabe") is None, \
+            "delete_document_for_reprocess must evict prior doc from doc_id cache"
 
-        # After cleanup, index must not resurrect the stale doc
-        assert "deadbeefcafebabe" not in client_b._documents_by_doc_id, \
-            "delete_document_for_reprocess must evict prior doc from doc_id index"
-
-        # Now insert the NEW email (same doc_id, different uuid)
+        # Insert NEW email (same doc_id, different uuid)
         new_id = uuid4()
         new_email = Document(
             id=new_id,
@@ -857,15 +746,13 @@ class TestDeleteDocumentForReprocessClearsIndexes:
             status=ProcessingStatus.COMPLETED,
         )
         stored = await client_b.insert_document(new_email)
-        # insert_document must store the NEW doc, not return the stale one
         assert stored.id == new_id, \
             "insert_document returned stale prior doc instead of writing the new one"
 
-        client_b.flush()
-
-        docs_path = output_dir / "documents.jsonl"
-        lines = [_json.loads(ln) for ln in docs_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        emails = [d for d in lines if d.get("doc_id") == "deadbeefcafebabe"]
-        assert len(emails) == 1
-        assert emails[0]["id"] == str(new_id), \
-            "documents.jsonl contains stale email row after reprocess; new row missing"
+        # documents table should hold exactly one row with this doc_id and the new UUID
+        rows = list(client_b._conn.execute(
+            "SELECT id FROM documents WHERE doc_id = ?", ("deadbeefcafebabe",)
+        ))
+        client_b._conn.close()
+        assert len(rows) == 1
+        assert rows[0]["id"] == str(new_id)

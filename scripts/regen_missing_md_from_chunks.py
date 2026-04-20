@@ -1,4 +1,4 @@
-"""One-off: rebuild missing attachment .md files from chunks.jsonl.
+"""One-off: rebuild missing attachment .md files from the chunks table.
 
 Targets documents whose ``archive_browse_uri`` points to a .md that is no
 longer on disk. For image attachments the chunk ``content`` field already
@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -64,23 +63,21 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    docs_path: Path = args.output_dir / "documents.jsonl"
-    chunks_path: Path = args.output_dir / "chunks.jsonl"
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    db_path: Path = args.output_dir / "ingest.db"
     archive_root: Path = args.output_dir / "archive"
 
-    if not docs_path.exists() or not chunks_path.exists():
-        print(f"missing documents.jsonl or chunks.jsonl under {args.output_dir}")
+    if not db_path.exists():
+        print(f"missing ingest.db under {args.output_dir}")
         return 1
 
     allowed_types = set(args.types)
 
-    broken: list[dict] = []
-    with docs_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    client = SqliteStorageClient(output_dir=args.output_dir)
+    try:
+        broken: list[dict] = []
+        for d in client.iter_documents():
             if d.get("document_type") not in allowed_types:
                 continue
             bu = d.get("archive_browse_uri")
@@ -91,20 +88,24 @@ def main() -> int:
                 continue
             broken.append(d)
 
-    if not broken:
-        print("no broken .md URIs in scope — nothing to do.")
-        return 0
+        if not broken:
+            print("no broken .md URIs in scope — nothing to do.")
+            return 0
 
-    broken_ids = {d["id"] for d in broken}
-    chunks_by_doc: dict[str, list[dict]] = defaultdict(list)
-    with chunks_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                c = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if c.get("document_id") in broken_ids:
-                chunks_by_doc[c["document_id"]].append(c)
+        broken_ids = {d["id"] for d in broken}
+        chunks_by_doc: dict[str, list[dict]] = defaultdict(list)
+        placeholders = ",".join(["?"] * len(broken_ids))
+        for row in client._conn.execute(
+            f"SELECT document_id, content, char_start, char_end FROM chunks "
+            f"WHERE document_id IN ({placeholders})",
+            tuple(broken_ids),
+        ):
+            chunks_by_doc[row["document_id"]].append(dict(row))
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
 
     written = 0
     skipped = 0
@@ -131,8 +132,10 @@ def main() -> int:
 
         md = _render_md(
             filename=d.get("file_name") or dest.stem,
-            content_type=d.get("attachment_content_type") or "application/octet-stream",
-            size_bytes=int(d.get("attachment_size_bytes") or 0),
+            content_type=(
+                d.get("content_type") or d.get("attachment_content_type") or "application/octet-stream"
+            ),
+            size_bytes=int(d.get("size_bytes") or d.get("attachment_size_bytes") or 0),
             download_rel=download_rel,
             content=content,
         )

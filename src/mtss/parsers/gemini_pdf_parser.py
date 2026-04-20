@@ -163,6 +163,8 @@ class GeminiPDFParser(BaseParser):
             raise EmptyContentError(
                 f"Gemini parser produced no content for {file_path}"
             )
+        from ..cli._common import _service_counter
+        _service_counter.add("gemini_pdf")
         logger.info(
             "Gemini PDF parser extracted %d chars from %s (%d pages, %d batches)",
             len(markdown),

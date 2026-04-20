@@ -129,7 +129,21 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(.venv/Scripts/pip.exe show *)",
       "WebFetch(domain:aiengineerguide.com)",
-      "Read(//c/Users/mail/AppData/Local/Temp/claude/C--Projects-GitHub-NCL/171126ce-b080-490a-8c4a-57b6a98a543d/tasks/**)"
+      "Read(//c/Users/mail/AppData/Local/Temp/claude/C--Projects-GitHub-NCL/171126ce-b080-490a-8c4a-57b6a98a543d/tasks/**)",
+      "Bash(awk '{print $1}')",
+      "Bash(mkdir -p data/test_ingest/solo_emails)",
+      "Bash(cp \"data/test_ingest/emails/100345024_gkzuqkvq.oow.eml\" data/test_ingest/solo_emails/)",
+      "Bash(cygpath -w /tmp/simplify_diff.patch)",
+      "Bash(xargs -a data/retry_recoverable.txt -d '\\\\n' -r -n 100 uv run mtss mark-failed --reason extraction_failed_pre_hardening)",
+      "Bash(awk '{print $5}' data/mode_audit_101_300.txt)",
+      "Bash(awk '$3 != $4' data/mode_audit_101_300.txt)",
+      "Bash(awk 'NF < 10' data/mode_audit_101_300.txt)",
+      "Bash(awk '{print $1}' data/mode_audit_101_300.txt)",
+      "Bash(tee data/wave_b_retry2.log)",
+      "Bash(python3 -c \"import sys; sys.path.insert\\(0, 'src'\\); from mtss.parsers import ParserRegistry; print\\('Registered parsers:', list\\(ParserRegistry.list_parsers\\(\\).keys\\(\\)\\)\\)\")",
+      "Bash(awk '/async def _parse_range_adaptive/,/^    async def|^    def|^class / {print NR\": \"$0}' src/mtss/parsers/gemini_pdf_parser.py)",
+      "Bash(cp /tmp/pdf_metas.txt ./_pdf_metas.txt)",
+      "Bash(rm ./_pdf_metas.txt)"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\MTSS\\web\\src\\app\\chat\\[threadId]"

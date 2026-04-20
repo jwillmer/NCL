@@ -94,133 +94,6 @@ class TestSanitizeStorageKey:
 
 
 # ---------------------------------------------------------------------------
-# Migration script
-# ---------------------------------------------------------------------------
-
-
-class TestMigration:
-    """Test the archive key migration script."""
-
-    def _run_migration(self, output_dir: Path, dry_run: bool = False):
-        """Import and run the migration."""
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "migrate", Path(__file__).parent.parent / "scripts" / "migrate_archive_keys.py"
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        mod.migrate(output_dir, dry_run=dry_run)
-
-    @pytest.mark.unit
-    def test_renames_encoded_files(self, tmp_path):
-        """Migration should rename files with %20 to underscores."""
-        archive = tmp_path / "archive" / "abc123" / "attachments"
-        archive.mkdir(parents=True)
-        (archive / "file%20name.pdf").write_bytes(b"content")
-        (archive / "file%20name.pdf.md").write_text("markdown")
-
-        # Minimal documents.jsonl
-        doc = {
-            "id": "test",
-            "doc_id": "abc123xxxx",
-            "archive_download_uri": "/archive/abc123/attachments/file%20name.pdf",
-            "archive_browse_uri": "/archive/abc123/attachments/file%20name.pdf.md",
-        }
-        (tmp_path / "documents.jsonl").write_text(json.dumps(doc) + "\n")
-
-        self._run_migration(tmp_path, dry_run=False)
-
-        # Files renamed
-        assert (archive / "file_name.pdf").exists()
-        assert (archive / "file_name.pdf.md").exists()
-        assert not (archive / "file%20name.pdf").exists()
-
-        # URIs updated
-        updated = json.loads((tmp_path / "documents.jsonl").read_text().strip())
-        assert updated["archive_download_uri"] == "/archive/abc123/attachments/file_name.pdf"
-        assert updated["archive_browse_uri"] == "/archive/abc123/attachments/file_name.pdf.md"
-
-    @pytest.mark.unit
-    def test_dry_run_makes_no_changes(self, tmp_path):
-        """Dry run should not modify any files."""
-        archive = tmp_path / "archive" / "abc123"
-        archive.mkdir(parents=True)
-        (archive / "file%20name.pdf").write_bytes(b"content")
-
-        doc = {"id": "test", "archive_download_uri": "/archive/abc123/file%20name.pdf"}
-        (tmp_path / "documents.jsonl").write_text(json.dumps(doc) + "\n")
-
-        self._run_migration(tmp_path, dry_run=True)
-
-        # File not renamed
-        assert (archive / "file%20name.pdf").exists()
-        assert not (archive / "file_name.pdf").exists()
-
-    @pytest.mark.unit
-    def test_handles_ampersand_and_hash(self, tmp_path):
-        """Migration handles %26 (&) and %23 (#) in filenames."""
-        archive = tmp_path / "archive" / "abc123" / "attachments"
-        archive.mkdir(parents=True)
-        (archive / "H%26T%202025.pdf").write_bytes(b"content")
-
-        doc = {
-            "id": "test",
-            "archive_download_uri": "/archive/abc123/attachments/H%26T%202025.pdf",
-        }
-        (tmp_path / "documents.jsonl").write_text(json.dumps(doc) + "\n")
-
-        self._run_migration(tmp_path, dry_run=False)
-
-        assert (archive / "H_T_2025.pdf").exists()
-        updated = json.loads((tmp_path / "documents.jsonl").read_text().strip())
-        assert updated["archive_download_uri"] == "/archive/abc123/attachments/H_T_2025.pdf"
-
-    @pytest.mark.unit
-    def test_leaves_clean_files_unchanged(self, tmp_path):
-        """Files without encoding should not be touched."""
-        archive = tmp_path / "archive" / "abc123"
-        archive.mkdir(parents=True)
-        (archive / "email.eml").write_bytes(b"content")
-        (archive / "email.eml.md").write_text("markdown")
-
-        doc = {
-            "id": "test",
-            "archive_browse_uri": "/archive/abc123/email.eml.md",
-        }
-        (tmp_path / "documents.jsonl").write_text(json.dumps(doc) + "\n")
-
-        self._run_migration(tmp_path, dry_run=False)
-
-        assert (archive / "email.eml").exists()
-        assert (archive / "email.eml.md").exists()
-        updated = json.loads((tmp_path / "documents.jsonl").read_text().strip())
-        assert updated["archive_browse_uri"] == "/archive/abc123/email.eml.md"
-
-    @pytest.mark.unit
-    def test_preserves_unrelated_fields(self, tmp_path):
-        """Migration should not alter non-URI fields in documents."""
-        archive = tmp_path / "archive"
-        archive.mkdir()
-
-        doc = {
-            "id": "test-id",
-            "doc_id": "abc123",
-            "document_type": "email",
-            "file_name": "test.eml",
-            "status": "completed",
-            "archive_browse_uri": None,
-        }
-        (tmp_path / "documents.jsonl").write_text(json.dumps(doc) + "\n")
-
-        self._run_migration(tmp_path, dry_run=False)
-
-        updated = json.loads((tmp_path / "documents.jsonl").read_text().strip())
-        assert updated["id"] == "test-id"
-        assert updated["document_type"] == "email"
-        assert updated["status"] == "completed"
-
-
-# ---------------------------------------------------------------------------
 # End-to-end: sanitize -> archive -> import consistency
 # ---------------------------------------------------------------------------
 
@@ -725,3 +598,59 @@ class TestLlamaParseImageStripping:
     def test_strips_page_ref_when_alt_contains_nested_brackets(self):
         md = "![Figure [1] overview](page_3_image_2.png)"
         assert self._strip(md) == "Figure [1] overview"
+
+    # ---- Gemini PDF parser output (image_N.png / image_N.jpg) ----
+
+    @pytest.mark.unit
+    def test_strips_gemini_image_ref_png(self):
+        # Real example observed in 0380b9e4.../SGMA2405164_...pdf.md
+        md = "![figure 1](image_0.png)"
+        assert self._strip(md) == "figure 1"
+
+    @pytest.mark.unit
+    def test_strips_gemini_image_ref_jpg(self):
+        md = "![photo](image_5.jpg)"
+        assert self._strip(md) == "photo"
+
+    @pytest.mark.unit
+    def test_strips_gemini_image_ref_jpeg(self):
+        md = "![photo](image_2.jpeg)"
+        assert self._strip(md) == "photo"
+
+    @pytest.mark.unit
+    def test_strips_gemini_image_ref_empty_alt(self):
+        md = "![](image_0.png)"
+        assert self._strip(md) == ""
+
+    @pytest.mark.unit
+    def test_strips_gemini_image_ref_high_index(self):
+        md = "![figure 17](image_17.png)"
+        assert self._strip(md) == "figure 17"
+
+    @pytest.mark.unit
+    def test_gemini_preserves_real_png_filename(self):
+        # Real image file in archive must stay — pattern is specific to
+        # `image_<digits>.<ext>` so unrelated PNGs/JPGs pass through.
+        assert self._strip("![chart](chart.png)") == "![chart](chart.png)"
+
+    @pytest.mark.unit
+    def test_gemini_preserves_attachment_path(self):
+        md = "![photo](attachments/real.png)"
+        assert self._strip(md) == md
+
+    @pytest.mark.unit
+    def test_gemini_preserves_link_form(self):
+        # Link-form (no leading `!`) must stay — Gemini only emits the image
+        # form, and stripping link form could break citation-style refs that
+        # coincidentally use the same target shape.
+        md = "[image_0.png](image_0.png)"
+        assert self._strip(md) == md
+
+    @pytest.mark.unit
+    def test_strips_consecutive_gemini_refs(self):
+        md = "![a](image_0.png)\n![b](image_1.png)\n![c](image_2.png)"
+        result = self._strip(md)
+        assert "image_0.png" not in result
+        assert "image_1.png" not in result
+        assert "image_2.png" not in result
+        assert "a" in result and "b" in result and "c" in result

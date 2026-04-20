@@ -51,26 +51,31 @@ def seeded_archive(tmp_path):
         json.dumps(metadata), encoding="utf-8"
     )
 
-    # documents.jsonl: one email doc + one attachment doc.
-    docs = [
-        {
-            "id": "11111111-1111-1111-1111-111111111111",
-            "doc_id": _EMAIL_DOC_ID,
-            "document_type": "email",
-            "file_name": "source.eml",
-        },
-        {
-            "id": "22222222-2222-2222-2222-222222222222",
-            "doc_id": "attdoc1234567890",
-            "parent_id": _EMAIL_DOC_ID,
-            "document_type": "attachment_pdf",
-            "file_name": "report.pdf",
-        },
-    ]
-    (output / "documents.jsonl").write_text(
-        "\n".join(json.dumps(d) for d in docs) + "\n",
-        encoding="utf-8",
-    )
+    # Seed ingest.db with one email doc + one attachment doc.
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    client = SqliteStorageClient(output_dir=output)
+    try:
+        conn = client._conn
+        now = "2026-04-20T00:00:00"
+        docs = [
+            ("11111111-1111-1111-1111-111111111111", _EMAIL_DOC_ID, "email", "source.eml", None),
+            ("22222222-2222-2222-2222-222222222222", "attdoc1234567890", "attachment_pdf",
+             "report.pdf", _EMAIL_DOC_ID),
+        ]
+        for uid, doc_id, dtype, fname, parent_id in docs:
+            conn.execute(
+                "INSERT INTO documents("
+                "id, doc_id, source_id, document_type, status, file_name, "
+                "parent_id, root_id, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (uid, doc_id, fname, dtype, "completed", fname,
+                 ("11111111-1111-1111-1111-111111111111" if parent_id else None),
+                 "11111111-1111-1111-1111-111111111111",
+                 now, now),
+            )
+    finally:
+        conn.close()
 
     return output, attachments / "report.pdf.md", attachments / "report.pdf.meta.json"
 

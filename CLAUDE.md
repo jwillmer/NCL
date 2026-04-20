@@ -4,17 +4,13 @@ This file gives future Claude sessions quick orientation for the MTSS codebase. 
 
 ## What MTSS does
 
-Email RAG pipeline. Ingests `.eml` files (+ attachments: PDF, Office docs, images, ZIPs) into local JSONL output (`data/output/`), optionally pushes to Supabase. Tiered parser chain: local parsers → Gemini 2.5 Flash via OpenRouter for complex PDFs and modern non-local formats → LlamaParse only for legacy binary `.doc`/`.xls`/`.ppt`. Vision API for images, LiteLLM for embeddings/context/topics.
+Email RAG pipeline. Ingests `.eml` files (+ attachments: PDF, Office docs, images, ZIPs) into a local SQLite store (`data/output/ingest.db`), optionally pushes to Supabase. Tiered parser chain: local parsers → Gemini 2.5 Flash via OpenRouter for complex PDFs and modern non-local formats → LlamaParse only for legacy binary `.doc`/`.xls`/`.ppt`. Vision API for images, LiteLLM for embeddings/context/topics.
 
 ## Output layout (`data/output/`)
 
-- `documents.jsonl` — one row per email + per attachment
-- `chunks.jsonl` — all text chunks with embeddings
-- `topics.jsonl` — extracted topics with chunk_count/document_count
-- `ingest_events.jsonl` — skip reasons, extraction failures, non-content classifications
-- `processing_log.jsonl` — per-file progress (PROCESSING / COMPLETED / FAILED)
-- `archive/<folder_id>/` — human-readable markdown snapshots + original attachments. `folder_id` is a 32-char hash from `compute_folder_id(doc_id)` in `src/mtss/utils.py` (distinct keyspace from `doc_id` so orphan-cleanup/URI tooling can't conflate them). Legacy archives used the 16-char `doc_id[:16]`; migrate in-place with `scripts/migrate_folder_prefix.py` (dry-run by default, `--apply` to execute).
-- `manifest.json` + `run_history.jsonl` — run metadata
+- `ingest.db` — single SQLite file (WAL, `PRAGMA foreign_keys=ON`, `busy_timeout=30000`). Tables: `documents`, `chunks`, `topics`, `chunk_topics` (M:N join + single source of truth for chunk↔topic links), `ingest_events`, `processing_log`, `run_history`, `manifest`. ACID transactions + `UNIQUE(chunk_id)` + FK CASCADE structurally prevent the orphan-chunk / dupe-chunk classes that the pre-SQLite JSONL flushes leaked under Windows file locks.
+- `archive/<folder_id>/` — human-readable markdown snapshots + original attachments. `folder_id` is a 32-char hash from `compute_folder_id(doc_id)` in `src/mtss/utils.py` (distinct keyspace from `doc_id` so orphan-cleanup/URI tooling can't conflate them).
+- Legacy JSONLs (`documents.jsonl` / `chunks.jsonl` / `topics.jsonl` / `ingest_events.jsonl` / `processing_log.jsonl` / `run_history.jsonl` / `manifest.json`) are no longer written; if present they're residue from a pre-SQLite install. Migrate with `uv run python scripts/migrate_to_sqlite.py --apply` (dry-run by default).
 
 ## Ingest-side CLI (`src/mtss/cli/ingest_cmd.py`)
 
@@ -35,7 +31,7 @@ Targeted repair commands — preferred over full reingest (API costs).
 
 | Command | What it does | API cost |
 |---|---|---|
-| `mtss mark-failed <file.eml>...` | Set entries in `processing_log.jsonl` to `FAILED`. Paired with `mtss ingest --retry-failed` to re-process just those emails (triggers `force_reparse` → cleans existing docs/chunks first). Matches by exact path or basename. | None (the retry does). |
+| `mtss mark-failed <file.eml>...` | Set entries in the `processing_log` table to `FAILED`. Paired with `mtss ingest --retry-failed` to re-process just those emails (triggers `force_reparse` → cleans existing docs/chunks via FK CASCADE first). Matches by exact path or basename. | None (the retry does). |
 | `mtss clean-archive-md` | Walk every `archive/**/*.md`, reapply `strip_llamaparse_image_refs()`. Idempotent. `--dry-run` available. Use after bumping the stripping regex to retroactively clean older archives. | Zero. |
 | `mtss ingest-update` | Validate + auto-repair (orphaned docs, missing archives, missing context). | LLM only where needed. |
 | `mtss reprocess` | Re-ingest docs below a target ingest version. | Full re-parse. |
@@ -82,8 +78,8 @@ Email bodies skip the decider — they're always `full`. All thresholds are Pyda
 
 - `_process_non_zip_attachment` and `_process_zip_member` (both in `src/mtss/ingest/attachment_handler.py`) route through shared helpers (`_decide_and_build_chunks` for context + chunking, `_write_attachment_archive_md` for the .md write + URI stamps, `_apply_vessel_metadata_to_chunks` for vessel fields). Don't inline these steps in a new branch — the helpers exist specifically to prevent the ZIP path from drifting (a recurring historical bug).
 - LLM-backed ingest components (`EmbeddingGenerator`, `ContextGenerator`, `ImageProcessor`, `TopicExtractor`, every `BaseParser` subclass) expose `.model_name: str | None` for `ProcessingTrail` stamp sites. Use `component.model_name` when stamping the trail — don't reach for `.model` / `.llm_model` / `settings.get_model(...)` directly.
-- `LocalClient.flush()` (`src/mtss/storage/local_client.py`) dedupes chunks by `chunk_id` for both prior-run AND current-run writes. Relies on the deterministic chunk_id (`doc_id + char_start + char_end`) from `compute_chunk_id`.
-- `LocalProgressTracker.get_pending_files` uses file hash (not path) to decide pending vs completed — same email re-sent gets re-ingested only if its content hash changes.
+- `SqliteStorageClient` (`src/mtss/storage/sqlite_client.py`) is the canonical ingest writer. Every insert is a single transactional SQL write — no prior-vs-current in-memory split, no JSONL flush merge, no atomic-rewrite of a monolithic file. `insert_chunks` uses `INSERT OR REPLACE ON chunk_id`; dedup is enforced by `UNIQUE(chunk_id)` rather than a flush-time filter.
+- `SqliteProgressTracker.get_pending_files` uses file hash (not path) to decide pending vs completed — same email re-sent gets re-ingested only if its content hash changes.
 
 ## Tests
 
@@ -92,7 +88,7 @@ Email bodies skip the decider — they're always `full`. All thresholds are Pyda
 - Attachment/fallback tests in `tests/test_attachment_processor.py` (`TestGeminiFallback`, `TestComplexPdfRoutesToGemini`, `TestLegacyOfficeRoutesToLlamaParse`, `TestLocalParserEmptyContentError`).
 - Embedding-mode tests in `tests/test_embedding_decider.py` (decision-tree branches + LLM triage), `tests/test_chunk_strategies.py`, `tests/test_reembed_cmd.py`.
 - Gemini parser tests in `tests/test_gemini_pdf_parser.py` (availability, single-call, paginated, adaptive halving, base64 payload structure).
-- Storage + maintenance command tests in `tests/test_ingest_storage.py` (`TestLocalClientFlushChunkDedup`, `TestMarkFailedCommand`, `TestCleanArchiveMdCommand`).
+- Storage + maintenance command tests in `tests/test_ingest_storage.py` (`TestMarkFailedCommand`, `TestCleanArchiveMdCommand`) and `tests/test_sqlite_client.py` (schema/constraint coverage).
 - Ingest flow tests in `tests/test_ingest_processing.py` (`TestZipAttachmentContextGeneration`, `TestThreadDigest`, `TestEmbeddingModeStamping`).
 
 ## Workflow: fixing a data-integrity issue surfaced by validate

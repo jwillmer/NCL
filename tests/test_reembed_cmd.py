@@ -56,15 +56,62 @@ def _make_doc_row(
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
+    """Seed the SQLite ingest.db with the given doc rows and stamp each
+    archive file on disk. Keeps the old function name so existing tests don't
+    churn — but the JSONL is gone; the re-embed command reads from SQLite now.
+    """
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    output_dir = path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        conn = client._conn
+        # Clear any prior seeds from earlier calls within the same test.
+        conn.execute("DELETE FROM chunks")
+        conn.execute("DELETE FROM documents")
         for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            row = {
+                "id":              r["id"],
+                "doc_id":          r.get("doc_id"),
+                "source_id":       r.get("source_id"),
+                "document_type":   r.get("document_type"),
+                "status":          r.get("status") or "pending",
+                "error_message":   r.get("error_message"),
+                "file_hash":       r.get("file_hash"),
+                "file_name":       r.get("file_name"),
+                "file_path":       r.get("file_path"),
+                "parent_id":       r.get("parent_id"),
+                "root_id":         r.get("root_id") or r["id"],
+                "depth":           r.get("depth", 0),
+                "content_version": r.get("content_version", 1),
+                "ingest_version":  r.get("ingest_version", 1),
+                "archive_path":    r.get("archive_path"),
+                "title":           r.get("source_title"),
+                "source_title":    r.get("source_title"),
+                "mime_type":       None,
+                "content_type":    None,
+                "size_bytes":      None,
+                "embedding_mode":  r.get("embedding_mode"),
+                "archive_browse_uri":   r.get("archive_browse_uri"),
+                "archive_download_uri": r.get("archive_download_uri"),
+                "metadata_json":   None,
+                "processed_at":    r.get("processed_at"),
+                "created_at":      r.get("created_at"),
+                "updated_at":      r.get("updated_at"),
+            }
+            cols = list(row.keys())
+            placeholders = ",".join(["?"] * len(cols))
+            conn.execute(
+                f"INSERT INTO documents ({','.join(cols)}) VALUES ({placeholders})",
+                [row[c] for c in cols],
+            )
+    finally:
+        conn.close()
 
     # Re-embed reads each doc's markdown from output_dir/archive/<archive_uri>.
     # Write the prose fixture there for every doc so the live path exercises the
     # disk reader rather than being stubbed out.
-    output_dir = path.parent
     archive_root = output_dir / "archive"
     for r in rows:
         uri = r.get("archive_browse_uri")
@@ -74,6 +121,35 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
         dest = archive_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(PROSE_MD, encoding="utf-8")
+
+
+def _chunks_for_doc(output_dir: Path, doc_id: str) -> list[dict]:
+    """Read back chunk rows for one doc_id from ingest.db (tests use this)."""
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        rows = list(client._conn.execute(
+            "SELECT c.* FROM chunks c JOIN documents d ON d.id = c.document_id "
+            "WHERE d.doc_id = ? ORDER BY c.chunk_index",
+            (doc_id,),
+        ))
+        return [dict(r) for r in rows]
+    finally:
+        client._conn.close()
+
+
+def _doc_embedding_mode(output_dir: Path, doc_id: str) -> str | None:
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        row = client._conn.execute(
+            "SELECT embedding_mode FROM documents WHERE doc_id = ?", (doc_id,)
+        ).fetchone()
+        return row["embedding_mode"] if row else None
+    finally:
+        client._conn.close()
 
 
 @pytest.fixture
@@ -133,7 +209,7 @@ class TestDryRun:
         )
         assert stats.docs_considered == 1
         assert stats.docs_committed == 0
-        assert not (output_dir / "chunks.jsonl").exists()
+        assert _chunks_for_doc(output_dir, "doc_a") == []
 
     @pytest.mark.asyncio
     async def test_dry_run_populates_mode_distribution(
@@ -254,11 +330,9 @@ class TestPersistence:
         _write_jsonl(output_dir / "documents.jsonl", docs)
 
         await reembed_run(output_dir=output_dir, doc_id="doc_a")
-        assert (output_dir / "chunks.jsonl").exists()
-        lines = (output_dir / "chunks.jsonl").read_text().strip().splitlines()
-        assert len(lines) >= 1
-        first = json.loads(lines[0])
-        assert first["embedding_mode"] in {"full", "summary", "metadata_only"}
+        chunks = _chunks_for_doc(output_dir, "doc_a")
+        assert len(chunks) >= 1
+        assert chunks[0]["embedding_mode"] in {"full", "summary", "metadata_only"}
 
     @pytest.mark.asyncio
     async def test_updates_documents_embedding_mode(
@@ -270,10 +344,7 @@ class TestPersistence:
         _write_jsonl(output_dir / "documents.jsonl", docs)
 
         await reembed_run(output_dir=output_dir, doc_id="doc_a")
-        reloaded = json.loads(
-            (output_dir / "documents.jsonl").read_text().strip().splitlines()[0]
-        )
-        assert reloaded["embedding_mode"] is not None
+        assert _doc_embedding_mode(output_dir, "doc_a") is not None
 
     @pytest.mark.asyncio
     async def test_full_mode_chunk_ids_deterministic(
@@ -285,15 +356,13 @@ class TestPersistence:
         _write_jsonl(output_dir / "documents.jsonl", docs)
 
         await reembed_run(output_dir=output_dir, doc_id="doc_a", mode="full")
-        first_lines = (output_dir / "chunks.jsonl").read_text().splitlines()
-        first_ids = [json.loads(ln)["chunk_id"] for ln in first_lines if ln.strip()]
+        first_ids = [c["chunk_id"] for c in _chunks_for_doc(output_dir, "doc_a")]
 
         # Reset docs (keep them with embedding_mode=None so not idempotent).
         _write_jsonl(output_dir / "documents.jsonl", docs)
 
         await reembed_run(output_dir=output_dir, doc_id="doc_a", mode="full")
-        second_lines = (output_dir / "chunks.jsonl").read_text().splitlines()
-        second_ids = [json.loads(ln)["chunk_id"] for ln in second_lines if ln.strip()]
+        second_ids = [c["chunk_id"] for c in _chunks_for_doc(output_dir, "doc_a")]
 
         assert first_ids == second_ids
 

@@ -21,7 +21,7 @@ from ..ingest.helpers import (
     noop_verbose,
     sanitize_error_message,
 )
-from ..models.document import ProcessingStatus
+from ..models.document import EmbeddingMode, ProcessingStatus
 from ..utils import compute_folder_id
 
 from .processing_trail import (
@@ -514,6 +514,11 @@ async def _process_non_zip_attachment(
 
     try:
         parsed_content: str | None = None
+        # Archive-write stamps these into the sidecar meta.json. Declared up
+        # front so the image branches below (which don't run a registry
+        # parser) still satisfy the archive write at the end of the try.
+        _parser_name_for_archive: str | None = None
+        _parser_model_for_archive: str | None = None
 
         if result.is_image and result.image_description:
             # Image was already classified and described during preprocessing
@@ -522,12 +527,18 @@ async def _process_non_zip_attachment(
             )
             chunks.append(chunk)
             parsed_content = result.image_description
+            image_model = (
+                components.attachment_processor.image_processor.model_name
+            )
             if trail is not None:
-                trail.stamp_attachment(
-                    trail_key,
-                    STEP_VISION,
-                    model=components.attachment_processor.image_processor.model_name,
-                )
+                trail.stamp_attachment(trail_key, STEP_VISION, model=image_model)
+            _parser_name_for_archive = "image_processor"
+            _parser_model_for_archive = image_model
+            # Images bypass the embedding decider (single vision-derived chunk),
+            # so stamp the mode here. METADATA_ONLY mirrors the decider's output
+            # for short non-prose content and keeps downstream filters
+            # (re-embed, validate) from skipping the row on `IS NULL`.
+            attach_doc.embedding_mode = EmbeddingMode.METADATA_ONLY
             vprint("  -> 1 chunk created (image described)", file_ctx)
             attach_doc.status = ProcessingStatus.COMPLETED
         elif result.is_image:
@@ -536,26 +547,21 @@ async def _process_non_zip_attachment(
                 file_path, attach_doc.id
             )
             chunks.extend(attach_chunks)
+            image_model = (
+                components.attachment_processor.image_processor.model_name
+            )
             if attach_chunks:
                 parsed_content = attach_chunks[0].content
                 if trail is not None:
-                    trail.stamp_attachment(
-                        trail_key,
-                        STEP_VISION,
-                        model=components.attachment_processor.image_processor.model_name,
-                    )
+                    trail.stamp_attachment(trail_key, STEP_VISION, model=image_model)
+                _parser_name_for_archive = "image_processor"
+                _parser_model_for_archive = image_model
+            attach_doc.embedding_mode = EmbeddingMode.METADATA_ONLY
             vprint(f"  -> {len(attach_chunks)} chunks created (image described)", file_ctx)
             attach_doc.status = ProcessingStatus.COMPLETED
         else:
             # Document - check for cached parsed content before calling LlamaParse
             cached_content: str | None = None
-            # Tracked across branches so the archive .md write can stamp the
-            # parser into the sidecar meta.json — cache reads use it to skip
-            # stale output from a prior parser generation. Only set when we
-            # freshly parse; cache hits leave it None so the existing sidecar
-            # is preserved unchanged.
-            _parser_name_for_archive: str | None = None
-            _parser_model_for_archive: str | None = None
             # Parser that the router chose up front — validates cached content
             # against current routing. If the cached meta.json says a different
             # parser, the cache is stale and we re-parse.
@@ -715,10 +721,11 @@ async def _process_non_zip_attachment(
         if issue_tracker:
             await issue_tracker.track_async(file_ctx, attachment.filename, str(e))
         attach_doc.status = ProcessingStatus.FAILED
-        attach_doc.error_message = sanitize_error_message(str(e))
+        detail = sanitize_error_message(str(e))
+        attach_doc.error_message = detail
         await unsupported_logger.log_unsupported_file(
             file_path=file_path,
-            reason="extraction_failed",
+            reason=f"extraction_failed: {detail}" if detail else "extraction_failed",
             source_eml_path=source_eml_path,
             parent_document_id=email_doc.id,
         )
@@ -843,12 +850,25 @@ async def process_zip_attachment(
 
 
 def _count_zip_members(zip_path: Path) -> int:
-    """Best-effort count of top-level ZIP members for progress pre-sizing.
+    """Best-effort count of top-level archive members for progress pre-sizing.
 
-    Nested ZIPs are not recursed — the outer ZIP's top-level entries are
-    close enough for a progress bar. Returns 0 on any read error (callers
-    treat a 0-member ZIP as a single tick).
+    Handles both ZIP and 7z. Nested archives are not recursed — the outer
+    archive's top-level entries are close enough for a progress bar.
+    Returns 0 on any read error (callers treat a 0-member archive as a
+    single tick).
     """
+    if zip_path.suffix.lower() == ".7z":
+        try:
+            import py7zr
+        except ImportError:
+            return 0
+        try:
+            with py7zr.SevenZipFile(str(zip_path), mode="r") as archive:
+                return sum(1 for m in archive.list() if not m.is_directory)
+        except Exception as e:
+            logger.warning("7z member count failed for %s: %s", zip_path, e)
+            return 0
+
     import zipfile
 
     try:
@@ -941,6 +961,9 @@ async def _process_zip_member(
                 _zip_model_for_archive = (
                     components.attachment_processor.image_processor.model_name
                 )
+            # Mirror the non-ZIP image path: stamp embedding_mode so the row
+            # never lands in SQLite with embedding_mode = NULL.
+            attach_doc.embedding_mode = EmbeddingMode.METADATA_ONLY
         elif result.oversized_pdf and result.preview_markdown:
             # Oversized PDF inside a ZIP: same treatment as at the top level —
             # skip the full parser and feed the local peek to the decider.
@@ -1056,10 +1079,11 @@ async def _process_zip_member(
         if issue_tracker:
             await issue_tracker.track_async(file_ctx, f"{attachment.filename}/{extracted_path.name}", str(e))
         attach_doc.status = ProcessingStatus.FAILED
-        attach_doc.error_message = sanitize_error_message(str(e))
+        detail = sanitize_error_message(str(e))
+        attach_doc.error_message = detail
         await unsupported_logger.log_unsupported_file(
             file_path=extracted_path,
-            reason="extraction_failed",
+            reason=f"extraction_failed: {detail}" if detail else "extraction_failed",
             source_eml_path=source_eml_path,
             source_zip_path=attachment.saved_path,
             parent_document_id=email_doc.id,

@@ -23,48 +23,37 @@ def write_run_summary(
     stats: dict,
     service_counter=None,
 ):
-    """Write run summary to run_history.jsonl and print to console."""
+    """Write run summary to the ``run_history`` table and print to console."""
     from rich.table import Table
 
     elapsed = time.monotonic() - run_start
     now = datetime.now(timezone.utc).isoformat()
 
     total_docs: dict[str, int] = {}
-    docs_path = output_dir / "documents.jsonl"
-    if docs_path.exists():
-        with open(docs_path, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    d = json.loads(line)
-                    dt = d.get("document_type", "unknown")
-                    total_docs[dt] = total_docs.get(dt, 0) + 1
-                except json.JSONDecodeError:
-                    pass
-
-    # Count chunks and topics (total in output dir)
     chunk_count = topic_count = 0
-    for name, var_name in [("chunks.jsonl", "chunk"), ("topics.jsonl", "topic")]:
-        path = output_dir / name
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                count = sum(1 for _ in f)
-            if var_name == "chunk":
-                chunk_count = count
-            else:
-                topic_count = count
-
-    # Count events by reason
     events_by_reason: dict[str, int] = {}
-    events_path = output_dir / "ingest_events.jsonl"
-    if events_path.exists():
-        with open(events_path, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    e = json.loads(line)
-                    reason = e.get("reason", "unknown")
-                    events_by_reason[reason] = events_by_reason.get(reason, 0) + 1
-                except json.JSONDecodeError:
-                    pass
+
+    from ..storage.sqlite_client import SqliteStorageClient
+
+    db_path = output_dir / "ingest.db"
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        for row in client._conn.execute(
+            "SELECT document_type, COUNT(*) AS n FROM documents GROUP BY document_type"
+        ):
+            total_docs[row["document_type"] or "unknown"] = row["n"]
+        chunk_count = client._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
+        topic_count = client._conn.execute("SELECT COUNT(*) AS n FROM topics").fetchone()["n"]
+        for row in client._conn.execute(
+            "SELECT COALESCE(reason, 'unknown') AS reason, COUNT(*) AS n "
+            "FROM ingest_events GROUP BY reason"
+        ):
+            events_by_reason[row["reason"]] = row["n"]
+    finally:
+        try:
+            client._conn.close()
+        except Exception:
+            pass
 
     doc_count = sum(total_docs.values())
     vision_images = total_docs.get("attachment_image", 0)
@@ -91,10 +80,30 @@ def write_run_summary(
     if service_data:
         summary["services"].update(service_data)
 
-    # Append to run_history.jsonl
-    history_path = output_dir / "run_history.jsonl"
-    with open(history_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(summary) + "\n")
+    # Persist run summary to the SQLite run_history table.
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO run_history("
+            "timestamp, elapsed_seconds, files_attempted, files_processed, "
+            "files_failed, cumulative_json, services_json, errors_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                now,
+                summary["elapsed_seconds"],
+                summary["files_attempted"],
+                summary["files_processed"],
+                summary["files_failed"],
+                json.dumps(summary["cumulative"]),
+                json.dumps(summary["services"]),
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     # Print concise summary table
     table = Table(title="Run Summary")
@@ -122,6 +131,7 @@ def write_run_summary(
         # Display order: local first, then paid services
         display_order = [
             ("local_parse", "Parsed locally (free)"),
+            ("gemini_pdf", "Gemini PDF parse"),
             ("llamaparse", "LlamaParse"),
             ("embedding", "Embeddings"),
             ("vision", "Vision API"),
@@ -151,7 +161,7 @@ def write_run_summary(
         table.add_row("Skipped (non-content)", "", str(skipped))
 
     console.print(table)
-    console.print(f"[dim]Run history: {history_path}[/dim]")
+    console.print(f"[dim]Run history: {db_path} (run_history table)[/dim]")
 
 
 def show_estimate(

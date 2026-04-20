@@ -1,9 +1,10 @@
 """mtss re-embed command — re-run the embedding pipeline against archived markdown.
 
-Reads existing ``documents.jsonl`` + archived attachment markdown, re-classifies
+Reads documents + archived attachment markdown from ``ingest.db``, re-classifies
 each document via the embedding decider (or a forced --mode), rebuilds chunks
-per the chosen mode, re-embeds, and rewrites ``chunks.jsonl`` for the affected
-documents. No re-parse — operates only on what's already in the local archive.
+per the chosen mode, re-embeds, and rewrites the ``chunks`` table for the
+affected documents. No re-parse — operates only on what's already in the local
+archive.
 """
 
 from __future__ import annotations
@@ -62,22 +63,32 @@ async def reembed_run(
     from ..parsers.chunker import ContextGenerator, DocumentChunker, build_chunks_for_mode
     from ..parsers.llamaparse_parser import strip_llamaparse_image_refs
     from ..processing.embeddings import EmbeddingGenerator
+    from ..storage.sqlite_client import SqliteStorageClient
 
-    docs_path = output_dir / "documents.jsonl"
-    chunks_path = output_dir / "chunks.jsonl"
+    db_path = output_dir / "ingest.db"
     archive_root = output_dir / "archive"
-    if not docs_path.exists():
-        raise FileNotFoundError(f"documents.jsonl not found in {output_dir}")
+    if not db_path.exists():
+        raise FileNotFoundError(f"ingest.db not found in {output_dir}")
 
     stats = ReembedStats()
+    db = SqliteStorageClient(output_dir=output_dir)
 
+    # Flatten docs into raw dicts matching the legacy JSONL shape so the
+    # processing loop below is unchanged — iter_documents already surfaces
+    # metadata fields under the top-level key set.
     docs_raw: List[Dict[str, Any]] = []
-    with docs_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            docs_raw.append(json.loads(line))
+    for row in db.iter_documents():
+        meta = row.get("metadata_json")
+        if meta:
+            try:
+                parsed = json.loads(meta)
+                if isinstance(parsed, dict):
+                    for k, v in parsed.items():
+                        row.setdefault(k, v)
+            except (TypeError, ValueError):
+                pass
+        row.pop("metadata_json", None)
+        docs_raw.append(row)
 
     if doc_id:
         docs_raw = [d for d in docs_raw if d.get("doc_id") == doc_id or d.get("id") == doc_id]
@@ -207,64 +218,55 @@ async def reembed_run(
     await asyncio.gather(*(_process_one(row) for row in candidates))
 
     if dry_run or not doc_ids_to_replace:
+        try:
+            await db.close()
+        except Exception:  # noqa: BLE001
+            pass
         return stats
 
-    _rewrite_chunks_jsonl(chunks_path, doc_ids_to_replace, new_chunks_serialized)
-    _rewrite_documents_jsonl(docs_path, updated_docs_by_id)
-
+    await _apply_reembed_writes(db, doc_ids_to_replace, new_chunks_serialized, updated_docs_by_id)
+    try:
+        await db.close()
+    except Exception:  # noqa: BLE001
+        pass
     return stats
 
 
-def _rewrite_chunks_jsonl(
-    chunks_path: Path, doc_ids_to_drop: set[str], new_lines: List[str]
+async def _apply_reembed_writes(
+    db,
+    doc_ids_to_replace: set[str],
+    new_chunks_serialized: List[str],
+    updated_docs_by_id: Dict[str, Dict[str, Any]],
 ) -> None:
-    """Drop chunks belonging to re-embedded docs; append new ones. Atomic replace."""
-    kept: List[str] = []
-    if chunks_path.exists():
-        with chunks_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    row = json.loads(stripped)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("document_id") in doc_ids_to_drop:
-                    continue
-                kept.append(stripped)
+    """Apply re-embed results to SQLite atomically.
 
-    tmp_path = chunks_path.with_suffix(chunks_path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        for line in kept:
-            f.write(line + "\n")
-        for line in new_lines:
-            f.write(line + "\n")
-    tmp_path.replace(chunks_path)
+    1. DELETE chunks WHERE document_id IN (…) — FK CASCADE clears chunk_topics.
+    2. INSERT new chunks via ``insert_chunks`` (roundtrips through the normal
+       ``Chunk`` model so metadata stamping and topic sync match the ingest path).
+    3. UPDATE documents SET embedding_mode = ? for each re-embedded doc.
+    """
+    from ..models.serializers import dict_to_chunk
 
+    new_chunks = [dict_to_chunk(json.loads(line)) for line in new_chunks_serialized]
 
-def _rewrite_documents_jsonl(
-    docs_path: Path, updated_by_id: Dict[str, Dict[str, Any]]
-) -> None:
-    """Rewrite documents.jsonl applying embedding_mode updates. Atomic replace."""
-    rows: List[Dict[str, Any]] = []
-    with docs_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            rows.append(json.loads(stripped))
-
-    for row in rows:
-        rid = str(row.get("id"))
-        if rid in updated_by_id:
-            row["embedding_mode"] = updated_by_id[rid].get("embedding_mode")
-
-    tmp_path = docs_path.with_suffix(docs_path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    tmp_path.replace(docs_path)
+    conn = db._conn
+    with conn:
+        conn.execute("BEGIN")
+        if doc_ids_to_replace:
+            placeholders = ",".join(["?"] * len(doc_ids_to_replace))
+            conn.execute(
+                f"DELETE FROM chunks WHERE document_id IN ({placeholders})",
+                tuple(doc_ids_to_replace),
+            )
+        for did, row in updated_docs_by_id.items():
+            conn.execute(
+                "UPDATE documents SET embedding_mode = ?, updated_at = datetime('now') WHERE id = ?",
+                (row.get("embedding_mode"), did),
+            )
+    # Insert rebuilt chunks after the DELETE commits so any chunk_id collisions
+    # resolve cleanly via INSERT OR REPLACE inside insert_chunks.
+    if new_chunks:
+        await db.insert_chunks(new_chunks)
 
 
 def register(app: "typer.Typer") -> None:
@@ -304,7 +306,7 @@ def register(app: "typer.Typer") -> None:
         output_dir: Path = typer.Option(
             Path("./data/output"),
             "--output-dir",
-            help="Directory holding documents.jsonl + chunks.jsonl",
+            help="Directory holding ingest.db (and the archive/ tree)",
         ),
     ) -> None:
         """Re-embed archived documents against the embedding decider."""

@@ -18,19 +18,21 @@ logger = logging.getLogger(__name__)
 
 
 def strip_llamaparse_image_refs(text: str) -> str:
-    """Strip LlamaParse image refs, preserving alt-text.
+    """Strip parser-emitted image refs, preserving alt-text.
 
-    Defense-in-depth: new ingests pass `inline_images_in_markdown=False`,
-    so refs should not appear in fresh output. This function is still applied
-    after every parse to catch layout placeholders that bypass that flag, and
-    is the engine behind `mtss clean-archive-md` for retroactively cleaning
-    archives produced before the flag was set.
+    Name kept for backwards-compat; now covers both LlamaParse and Gemini
+    PDF output. Defense-in-depth: new ingests suppress image refs in parser
+    settings, so refs should not appear in fresh output. This function is
+    still applied after every parse to catch layout placeholders that bypass
+    those flags, and is the engine behind `mtss clean-archive-md` for
+    retroactively cleaning archives produced before the flags were tightened.
 
     Covers both image (`![alt](...)`) and link (`[alt](...)`) forms. Known
     target patterns:
-      - page_N_image_N / page_N_chart_N / page_N_seal_N / page_N_table_N
+      - page_N_image_N / page_N_chart_N / page_N_seal_N / page_N_table_N  (LlamaParse)
       - page_N_layout_ocr_* (newer LlamaParse output; bounding-box suffix)
-      - layout_id_not_provided / layout_* placeholders
+      - layout_id_not_provided / layout_* placeholders                    (LlamaParse)
+      - image_N / image_N.png / image_N.jpg / image_N.jpeg                (Gemini PDF)
       - the literal string "image"
       - bare short tokens without path/extension (e.g. `doge`, `pfzo nefh`)
 
@@ -63,6 +65,15 @@ def strip_llamaparse_image_refs(text: str) -> str:
     # Literal "image" placeholder.
     text = re.sub(
         rf"!?\[({_ALT})\]\(image\)",
+        r"\1",
+        text,
+    )
+    # Gemini PDF parser emits `![alt](image_N.png)` / `.jpg` refs where N is
+    # a zero-based page counter. We don't extract the image bytes, so these
+    # always dangle. Image-form only; the specific `image_<digits>.<ext>`
+    # shape keeps real filenames like `chart.png` intact.
+    text = re.sub(
+        rf"!\[({_ALT})\]\(image_\d+\.(?:png|jpe?g)\)",
         r"\1",
         text,
     )
