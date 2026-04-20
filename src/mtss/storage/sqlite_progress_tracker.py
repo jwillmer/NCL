@@ -41,26 +41,12 @@ class SqliteProgressTracker:
         self._conn.execute("PRAGMA busy_timeout=30000")
         # Ensure table exists even if tracker is instantiated before the
         # ingest client (e.g. ``mtss reset-stale`` on a fresh install).
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS processing_log (
-                file_path TEXT PRIMARY KEY,
-                file_hash TEXT NOT NULL,
-                status TEXT NOT NULL,
-                started_at TEXT,
-                completed_at TEXT,
-                duration_seconds REAL,
-                attempts INTEGER DEFAULT 0,
-                error TEXT
-            )
-            """
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_processing_log_status ON processing_log(status)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_processing_log_hash ON processing_log(file_hash)"
-        )
+        # Schema is owned by ``sqlite_client.PROCESSING_LOG_SCHEMA_SQL`` so
+        # both classes produce identical columns + indexes — drift previously
+        # caused the tracker version to omit ``ingest_version``, silently
+        # discarding any writes routed through it.
+        from .sqlite_client import PROCESSING_LOG_SCHEMA_SQL
+        self._conn.executescript(PROCESSING_LOG_SCHEMA_SQL)
 
     def close(self) -> None:
         try:

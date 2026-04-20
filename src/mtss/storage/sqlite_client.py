@@ -52,6 +52,27 @@ logger = logging.getLogger(__name__)
 # Versioned so future migrations can check what they are upgrading.
 SCHEMA_VERSION = 1
 
+# ``processing_log`` is also created by ``SqliteProgressTracker`` (which can
+# be instantiated before this client on a fresh install — e.g. ``mtss
+# reset-stale``). Both paths must produce identical schemas, so the table
+# definition lives here as a single source of truth and the tracker imports
+# it. Adding a column means editing one constant, not two CREATE statements.
+PROCESSING_LOG_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS processing_log (
+    file_path        TEXT PRIMARY KEY,
+    file_hash        TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    started_at       TEXT,
+    completed_at     TEXT,
+    duration_seconds REAL,
+    attempts         INTEGER DEFAULT 0,
+    error            TEXT,
+    ingest_version   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_processing_log_status    ON processing_log(status);
+CREATE INDEX IF NOT EXISTS idx_processing_log_file_hash ON processing_log(file_hash);
+"""
+
 _SCHEMA_SQL = """
 -- ── Core entities ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS documents (
@@ -162,19 +183,9 @@ CREATE INDEX IF NOT EXISTS idx_events_event_type ON ingest_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_parent     ON ingest_events(parent_document_id);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON ingest_events(timestamp);
 
-CREATE TABLE IF NOT EXISTS processing_log (
-    file_path        TEXT PRIMARY KEY,
-    file_hash        TEXT NOT NULL,
-    status           TEXT NOT NULL,
-    started_at       TEXT,
-    completed_at     TEXT,
-    duration_seconds REAL,
-    attempts         INTEGER DEFAULT 0,
-    error            TEXT,
-    ingest_version   INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_processing_log_status    ON processing_log(status);
-CREATE INDEX IF NOT EXISTS idx_processing_log_file_hash ON processing_log(file_hash);
+-- processing_log schema lives in PROCESSING_LOG_SCHEMA_SQL above so the
+-- tracker can re-use the same CREATE; injected here verbatim.
+{processing_log_schema}
 
 CREATE TABLE IF NOT EXISTS run_history (
     rowid            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,7 +222,7 @@ CREATE TABLE IF NOT EXISTS archive_updates (
     archive_download_uri TEXT,
     timestamp            TEXT NOT NULL
 );
-"""
+""".format(processing_log_schema=PROCESSING_LOG_SCHEMA_SQL.strip())
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
