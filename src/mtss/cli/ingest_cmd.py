@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -173,6 +173,145 @@ def register(app: typer.Typer):
             result, page_cost, gemini_page_cost, vision_cost,
             text_cost, embedding_cost, verbose,
         )
+
+    @app.command()
+    def progress(
+        source_dir: Optional[Path] = typer.Option(
+            None, "--source", "-s", help="Source EML directory (for queued count)"
+        ),
+        output_dir: Optional[Path] = typer.Option(
+            None, "--output-dir", "-o", help="Output dir containing ingest.db"
+        ),
+        gap_minutes: int = typer.Option(
+            10, "--gap-minutes",
+            help="Max idle gap between files to still count as the same run",
+        ),
+    ):
+        """Approximate running progress of the active (or most recent) ingest.
+
+        Read-only against ingest.db. Uses processing_log's started_at cluster
+        to bound 'this run'; extrapolates remaining time from completed avg.
+        """
+        _show_progress(source_dir, output_dir, gap_minutes)
+
+
+def _show_progress(
+    source_dir: Optional[Path],
+    output_dir: Optional[Path],
+    gap_minutes: int,
+) -> None:
+    import sqlite3
+    from rich.table import Table
+    from ..config import get_settings
+
+    settings = get_settings()
+    source = (source_dir or settings.eml_source_dir).resolve()
+    out = (output_dir or (source.parent / "output")).resolve()
+    db_path = out / "ingest.db"
+
+    if not db_path.exists():
+        console.print(f"[red]No ingest.db at {db_path}[/red]")
+        raise typer.Exit(1)
+
+    uri = f"file:{db_path.as_posix()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT file_path, status, started_at, completed_at, duration_seconds "
+            "FROM processing_log WHERE started_at IS NOT NULL "
+            "ORDER BY started_at DESC"
+        ).fetchall()
+        completed_all_time = conn.execute(
+            "SELECT COUNT(*) AS n FROM processing_log WHERE status = 'COMPLETED'"
+        ).fetchone()["n"]
+    finally:
+        conn.close()
+
+    if not rows:
+        console.print("[yellow]No ingest activity recorded yet.[/yellow]")
+        return
+
+    # Cluster: walk DESC, break at first gap > gap_minutes
+    gap = timedelta(minutes=gap_minutes)
+    cluster: list = []
+    prev: Optional[datetime] = None
+    for row in rows:
+        try:
+            ts = datetime.fromisoformat(row["started_at"])
+        except (TypeError, ValueError):
+            continue
+        if prev is not None and (prev - ts) > gap:
+            break
+        cluster.append((row, ts))
+        prev = ts
+
+    if not cluster:
+        console.print("[yellow]No parsable timestamps in processing_log.[/yellow]")
+        return
+
+    run_start_ts = min(ts for _, ts in cluster)
+    now = datetime.now(timezone.utc)
+    elapsed = (now - run_start_ts).total_seconds()
+
+    completed = sum(1 for r, _ in cluster if r["status"] == "COMPLETED")
+    failed = sum(1 for r, _ in cluster if r["status"] == "FAILED")
+    processing = sum(1 for r, _ in cluster if r["status"] == "PROCESSING")
+
+    # Queued from disk scan (rough — same definition as get_pending_files but by count only)
+    total_eml = 0
+    if source.exists():
+        total_eml = sum(1 for _ in source.rglob("*.eml"))
+    queued = max(0, total_eml - completed_all_time - processing)
+
+    avg_wall = elapsed / completed if completed else 0.0
+    eta_s = queued * avg_wall if avg_wall else 0.0
+
+    def fmt(sec: float) -> str:
+        if sec <= 0:
+            return "\u2014"
+        sec = int(sec)
+        h, rem = divmod(sec, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h}h {m}m" if h else f"{m}m {s}s"
+
+    table = Table(title="Ingest Progress (approximate)")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right", style="green")
+
+    pct = (100.0 * completed_all_time / total_eml) if total_eml else 0.0
+    table.add_row("Run start", run_start_ts.astimezone().strftime("%Y-%m-%d %H:%M:%S"))
+    table.add_row("Elapsed", fmt(elapsed))
+    table.add_row("Completed (this run)", f"{completed}")
+    table.add_row("Completed (all-time)", f"{completed_all_time} / {total_eml or '?'}")
+    if total_eml:
+        table.add_row("Progress", f"{pct:.1f}%")
+    table.add_row("Processing now", str(processing))
+    table.add_row("Failed (this run)", str(failed))
+    table.add_row("Queued", str(queued))
+    table.add_row("Avg per file", f"{avg_wall:.1f}s" if avg_wall else "\u2014")
+    table.add_row("ETA (remaining)", fmt(eta_s))
+
+    # Cheap cost projection if estimate cache is present — baseline pages only.
+    est_dir = settings.data_processed_dir / "estimate"
+    if est_dir.exists():
+        import json
+        total_baseline_pages = 0
+        n_summaries = 0
+        for sp in est_dir.glob("*/summary.json"):
+            try:
+                with open(sp, "r", encoding="utf-8") as f:
+                    total_baseline_pages += int(json.load(f).get("total_pages", 0))
+                n_summaries += 1
+            except (OSError, ValueError):
+                continue
+        if n_summaries and total_eml:
+            ratio = completed_all_time / total_eml
+            done_est = int(total_baseline_pages * ratio)
+            table.add_section()
+            table.add_row("Pages (baseline)", f"~{done_est} / {total_baseline_pages}")
+
+    console.print(table)
 
 
 async def _ingest(
