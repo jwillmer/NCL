@@ -1525,79 +1525,63 @@ def _run_ingest_validation_with_conn(
         if missing_fields:
             emails_missing_archive.append((d, missing_fields))
 
-    # === Run all 22 checks in order ===
-    # Each check appends to the shared issues/warnings lists.
-    _check_results: List[Tuple[List[str], List[str]]] = [
-        # === 1. Duplicate UUID detection ===
-        _check_duplicate_uuids(docs, doc_by_uuid),
-        # === 2. Processing log checks ===
-        _check_processing_log(proc_by_file),
-        # === 3. Document type breakdown ===
-        _check_document_types(docs),
-        # === 4. Chunk -> Document linkage ===
-        _check_orphan_chunks(chunks, doc_by_uuid),
-        # === 5. Embedding completeness ===
-        _check_embedding_completeness(chunks),
-        # === 6. Empty content ===
-        _check_empty_content(chunks),
-        # === 7. Context summary / embedding_text presence ===
-        _check_context_summary(chunks, docs, doc_by_uuid),
-        # === 8. Documents without chunks ===
-        _check_docs_without_chunks(docs, chunk_doc_ids, filtered_doc_uuids),
-        # === 9. Attachment -> Email parent chain ===
-        _check_orphan_attachments(docs, email_uuids),
-        # === 10. Failed documents still in output ===
-        _check_failed_documents(docs, events, verbose),
-        # === 11. Trailing-dot filenames (may cause parsing issues) ===
-        _check_trailing_dot_filenames(docs, verbose),
-        # === 12. Topic health ===
-        _check_topic_health(topics),
-        # === 13. Archive directory and URI checks ===
-        _check_archive_uris(docs, email_uuids, archive_folders_on_disk, verbose),
-        # === 14. Stale topic references in chunk metadata ===
-        _check_stale_topic_refs(chunks, topics),
-        # === 15. Topic count accuracy (JSONL counts vs actual chunk refs) ===
-        _check_topic_count_accuracy(chunks, topics),
-        # === 16. Archive URIs point to existing files on disk ===
-        _check_broken_archive_uris(docs, archive_dir),
-        # === 17. Duplicate doc_ids and chunk_ids ===
-        _check_duplicate_ids(docs, chunks, verbose),
-        # === 18. Encoded filenames on disk (should use underscores, not %XX) ===
-        _check_encoded_filenames(archive_dir, verbose),
-        # === 19. Encoded URIs in documents.jsonl ===
-        _check_encoded_uris(docs),
-        # === 20. Broken markdown internal links ===
-        _check_broken_markdown_links(docs, archive_dir),
-        # === 21. Chunk position validity ===
-        _check_chunk_positions(chunks),
-        # === 22. Email metadata consistency ===
-        _check_email_metadata(docs),
-    ]
+    # Per-check results carry their number + short name so every emitted
+    # message can be cross-referenced back to the specific check that
+    # produced it (`[#N] ...` prefix at render time).
+    check_runs: List[Tuple[int, str, List[str], List[str]]] = []
+
+    def _run(num: int, name: str, result: Tuple[List[str], List[str]]) -> None:
+        ci, cw = result
+        check_runs.append((num, name, ci, cw))
+        issues.extend(ci)
+        warnings.extend(cw)
+
+    _run(1, "duplicate_uuids", _check_duplicate_uuids(docs, doc_by_uuid))
+    _run(2, "processing_log", _check_processing_log(proc_by_file))
+    _run(3, "document_types", _check_document_types(docs))
+    _run(4, "orphan_chunks", _check_orphan_chunks(chunks, doc_by_uuid))
+    _run(5, "embedding_completeness", _check_embedding_completeness(chunks))
+    _run(6, "empty_content", _check_empty_content(chunks))
+    _run(7, "context_summary", _check_context_summary(chunks, docs, doc_by_uuid))
+    _run(8, "docs_without_chunks",
+         _check_docs_without_chunks(docs, chunk_doc_ids, filtered_doc_uuids))
+    _run(9, "orphan_attachments", _check_orphan_attachments(docs, email_uuids))
+    _run(10, "failed_documents", _check_failed_documents(docs, events, verbose))
+    _run(11, "trailing_dot_filenames", _check_trailing_dot_filenames(docs, verbose))
+    _run(12, "topic_health", _check_topic_health(topics))
+    _run(13, "archive_uris",
+         _check_archive_uris(docs, email_uuids, archive_folders_on_disk, verbose))
+    _run(14, "stale_topic_refs", _check_stale_topic_refs(chunks, topics))
+    _run(15, "topic_count_accuracy", _check_topic_count_accuracy(chunks, topics))
+    _run(16, "broken_archive_uris", _check_broken_archive_uris(docs, archive_dir))
+    _run(17, "duplicate_ids", _check_duplicate_ids(docs, chunks, verbose))
+    _run(18, "encoded_filenames", _check_encoded_filenames(archive_dir, verbose))
+    _run(19, "encoded_uris", _check_encoded_uris(docs))
+    _run(20, "broken_markdown_links", _check_broken_markdown_links(docs, archive_dir))
+    _run(21, "chunk_positions", _check_chunk_positions(chunks))
+    _run(22, "email_metadata", _check_email_metadata(docs))
 
     # Extended checks (23+) — SQLite integrity + data-quality invariants.
     # Skipped gracefully when the RO connection couldn't be opened.
     if ro_conn is not None:
-        _check_results.extend([
-            _check_sqlite_integrity(ro_conn),      # 23
-            _check_schema_parity(ro_conn),         # 24
-        ])
-    _check_results.extend([
-        _check_embedding_mode_coverage(docs),                           # 25
-        _check_embedding_mode_inheritance(chunks, doc_by_uuid),         # 26
-        _check_single_chunk_modes(docs, chunk_doc_ids),                 # 27
-        _check_orphan_archive_folders(docs, archive_folders_on_disk),   # 28
-        _check_residual_image_refs(archive_dir),                        # 29
-        _check_duplicate_file_hashes(docs),                             # 30
-        _check_embedding_vector_sanity(chunks),                         # 31
-        _check_outdated_ingest_version(docs, current_ingest_version),   # 32
-        _check_thread_root_consistency(docs, email_uuids),              # 33
-    ])
+        _run(23, "sqlite_integrity", _check_sqlite_integrity(ro_conn))
+        _run(24, "schema_parity", _check_schema_parity(ro_conn))
+    _run(25, "embedding_mode_coverage", _check_embedding_mode_coverage(docs))
+    _run(26, "embedding_mode_inheritance",
+         _check_embedding_mode_inheritance(chunks, doc_by_uuid))
+    _run(27, "single_chunk_modes", _check_single_chunk_modes(docs, chunk_doc_ids))
+    _run(28, "orphan_archive_folders",
+         _check_orphan_archive_folders(docs, archive_folders_on_disk))
+    _run(29, "residual_image_refs", _check_residual_image_refs(archive_dir))
+    _run(30, "duplicate_file_hashes", _check_duplicate_file_hashes(docs))
+    _run(31, "embedding_vector_sanity", _check_embedding_vector_sanity(chunks))
+    _run(32, "outdated_ingest_version",
+         _check_outdated_ingest_version(docs, current_ingest_version))
+    _run(33, "thread_root_consistency",
+         _check_thread_root_consistency(docs, email_uuids))
     if ro_conn is not None:
-        _check_results.append(_check_stale_processing_entries(ro_conn)) # 34
-
-    for check_issues, check_warnings in _check_results:
-        issues.extend(check_issues)
-        warnings.extend(check_warnings)
+        _run(34, "stale_processing_entries",
+             _check_stale_processing_entries(ro_conn))
 
     # === Display results ===
     summary = Table(title="Ingest Validation Summary")
@@ -1789,13 +1773,64 @@ def _run_ingest_validation_with_conn(
 
         console.print()
 
+    # ── Check-level overview ────────────────────────────────────────
+    total_checks = len(check_runs)
+    failed_checks = sum(1 for _, _, ci, _ in check_runs if ci)
+    warn_checks = sum(1 for _, _, ci, cw in check_runs if not ci and cw)
+    passed_checks = total_checks - failed_checks - warn_checks
+
+    banner = (
+        f"[bold]Checks:[/bold] "
+        f"[green]{passed_checks} passed[/green] \u00b7 "
+        f"[yellow]{warn_checks} warn[/yellow] \u00b7 "
+        f"[red]{failed_checks} fail[/red] "
+        f"[dim](of {total_checks})[/dim]"
+    )
+    console.print(banner)
+    console.print()
+
+    # Per-check status table — lists every check that flagged something so
+    # the reader can jump straight from `[#N]` references in the detail
+    # lists below back to the check that produced them.
+    flagged = [
+        (num, name, ci, cw) for num, name, ci, cw in check_runs if ci or cw
+    ]
+    if flagged:
+        status_table = Table(title="Check Results (non-clean only)")
+        status_table.add_column("#", justify="right", style="dim")
+        status_table.add_column("Check", style="cyan")
+        status_table.add_column("Status", justify="center")
+        status_table.add_column("Issues", justify="right", style="red")
+        status_table.add_column("Warnings", justify="right", style="yellow")
+        for num, name, ci, cw in flagged:
+            # Only the parent (non-indented) messages count toward the
+            # headline number; sub-lines are context for the parent.
+            n_issues = sum(1 for m in ci if not m.startswith("  "))
+            n_warns = sum(1 for m in cw if not m.startswith("  "))
+            status = "[red]FAIL[/red]" if n_issues else "[yellow]WARN[/yellow]"
+            status_table.add_row(
+                str(num), name, status,
+                str(n_issues) if n_issues else "",
+                str(n_warns) if n_warns else "",
+            )
+        console.print(status_table)
+        console.print()
+
+    # Map issue/warning text → the check that produced it, so every
+    # top-level message gets a `[#N]` prefix.
+    def _prefix_for(msg: str, runs) -> str:
+        for num, _, ci, cw in runs:
+            if msg in ci or msg in cw:
+                return f"[dim][#{num}][/dim] "
+        return ""
+
     if issues:
         console.print(f"[bold red]Issues ({len(issues)}):[/bold red]")
         for issue in issues:
             if issue.startswith("  "):
                 console.print(f"    [dim]{issue.strip()}[/dim]")
             else:
-                console.print(f"  [red]\u2717[/red] {issue}")
+                console.print(f"  [red]\u2717[/red] {_prefix_for(issue, check_runs)}{issue}")
         console.print()
 
     if warnings:
@@ -1804,7 +1839,7 @@ def _run_ingest_validation_with_conn(
             if warning.startswith("  "):
                 console.print(f"    [dim]{warning.strip()}[/dim]")
             else:
-                console.print(f"  [yellow]![/yellow] {warning}")
+                console.print(f"  [yellow]![/yellow] {_prefix_for(warning, check_runs)}{warning}")
         console.print()
 
     if not issues and not warnings:
