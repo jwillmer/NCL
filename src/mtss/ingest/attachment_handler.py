@@ -144,6 +144,8 @@ async def _decide_and_build_chunks(
     file_ctx: str | None,
     trail: "ProcessingTrail | None" = None,
     trail_key: str | None = None,
+    peek_pages: int | None = None,
+    total_pages: int | None = None,
 ) -> list["Chunk"]:
     """Run the embedding-mode decider and build chunks via the shared
     dispatcher. Used by both the non-ZIP and ZIP-member paths so they can't
@@ -165,7 +167,12 @@ async def _decide_and_build_chunks(
 
     from ..ingest.embedding_decider import decide_embedding_mode
 
-    decision = await decide_embedding_mode(parsed_content, document)
+    decision = await decide_embedding_mode(
+        parsed_content,
+        document,
+        peek_pages=peek_pages,
+        total_pages=total_pages,
+    )
     document.embedding_mode = decision.mode
     if trail is not None and trail_key is not None:
         # Triage model is only actually consulted in the medium-confidence band —
@@ -676,6 +683,8 @@ async def _process_non_zip_attachment(
                     file_ctx=file_ctx,
                     trail=trail,
                     trail_key=trail_key,
+                    peek_pages=result.peek_pages if result.oversized_pdf else None,
+                    total_pages=result.total_pages if result.oversized_pdf else None,
                 )
 
             chunks.extend(attach_chunks)
@@ -986,6 +995,8 @@ async def _process_zip_member(
                 file_ctx=None,
                 trail=trail,
                 trail_key=trail_key,
+                peek_pages=result.peek_pages if result.oversized_pdf else None,
+                total_pages=result.total_pages if result.oversized_pdf else None,
             )
 
         enrich_chunks_with_document_metadata(attach_chunks, attach_doc)

@@ -35,7 +35,13 @@ def _safe_count_pdf_pages(file_path: Path) -> Optional[int]:
         return None
 
 
-def _peek_pdf_markdown(file_path: Path, pages: int = 3) -> Optional[str]:
+# Page count rendered by both peek branches. Kept as a module constant so the
+# preprocessor can report ``peek_pages`` on its result — the decider scales the
+# peek's token count up to a whole-doc estimate using ``total_pages / peek_pages``.
+_PEEK_PAGES = 3
+
+
+def _peek_pdf_markdown(file_path: Path, pages: int = _PEEK_PAGES) -> Optional[str]:
     """Extract the first ``pages`` pages as markdown locally via PyMuPDF4LLM.
 
     Used by the oversized-PDF branch so the embedding-mode decider can
@@ -124,6 +130,12 @@ class PreprocessResult:
     oversized_pdf: bool = False
     preview_markdown: Optional[str] = None
     total_pages: Optional[int] = None
+    # Page count actually rendered into ``preview_markdown``. Always the
+    # smaller of ``_PEEK_PAGES`` and ``total_pages``; the decider uses
+    # ``peek_pages`` / ``total_pages`` to scale the peek's token count up to
+    # an estimate for the whole document — otherwise a 2K-token peek of an
+    # 811-page sensor log would slip under the SUMMARY token gate.
+    peek_pages: Optional[int] = None
 
 
 # Extensions and MIME types handled by local parsers (tiered routing)
@@ -327,7 +339,7 @@ class DocumentPreprocessor:
             max_pages = get_settings().pdf_max_pages
             oversized = page_count is not None and page_count > max_pages
             if oversized:
-                preview = _peek_pdf_markdown(file_path, pages=3)
+                preview = _peek_pdf_markdown(file_path, pages=_PEEK_PAGES)
                 if preview is None:
                     return PreprocessResult(
                         should_process=False,
@@ -336,7 +348,7 @@ class DocumentPreprocessor:
                     )
                 annotated = (
                     f"_Oversized PDF — {page_count} pages total. "
-                    f"The following is a preview of the first 3 pages._\n\n"
+                    f"The following is a preview of the first {_PEEK_PAGES} pages._\n\n"
                     f"{preview}"
                 )
                 return PreprocessResult(
@@ -346,6 +358,7 @@ class DocumentPreprocessor:
                     oversized_pdf=True,
                     preview_markdown=annotated,
                     total_pages=page_count,
+                    peek_pages=min(_PEEK_PAGES, page_count),
                 )
 
             # Not oversized — try the COMPLEX-PDF short-circuit.
@@ -358,6 +371,7 @@ class DocumentPreprocessor:
                     oversized_pdf=True,
                     preview_markdown=complex_peek,
                     total_pages=page_count,
+                    peek_pages=min(_PEEK_PAGES, page_count) if page_count else _PEEK_PAGES,
                 )
 
         # Check local parsers first (not in registry, handled by tiered routing)

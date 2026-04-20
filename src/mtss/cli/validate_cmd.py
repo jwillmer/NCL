@@ -24,6 +24,133 @@ _HIDDEN_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 _ARCHIVE_URI_FIELDS = ("archive_path", "archive_browse_uri", "archive_download_uri")
 _ENCODED_FILENAME_RE = _re.compile(r"%[0-9A-Fa-f]{2}")
 
+# Human-readable explanation for each ingest-event reason category. Keys are
+# the canonical category (text before the first ':' in the raw reason string).
+# Unknown categories render with a blank description column.
+_REASON_DESCRIPTIONS: Dict[str, str] = {
+    "partial_download": "file incomplete on disk",
+    "attachment_too_large": "exceeds max attachment size",
+    "filtered_by_heuristic": "signature / boilerplate image filter",
+    "pdf_too_large_unreadable": "PDF over page ceiling, no text layer",
+    "unsupported_format": "no parser for this file type",
+    "Classification failed": "image vision classifier errored",
+    "File not found": "expected file missing on disk",
+    "extraction_failed": "parser raised after opening file",
+    "corrupted": "file could not be opened / read",
+    "triage_failed": "LLM triage errored, defaulted to summary",
+    "triage_prose": "LLM classified as prose, full embed",
+    "triage_noise": "LLM classified as noise, metadata_only",
+    "triage_dense": "dense tabular, summary embed",
+    "New document": "first-time ingest",
+    "Content changed since last ingest": "file hash differs from prior run",
+    "Already processed with current version": "skipped, idempotent",
+    "Ingest logic upgraded": "ingest version bumped, reprocessing",
+}
+
+
+def _reason_category(reason: str) -> str:
+    """Collapse a raw event reason into its category key for grouping/lookup.
+
+    Strips any `": <detail>"` suffix so high-cardinality reasons like
+    ``partial_download: foo.pdf`` collapse together. Also normalizes
+    ``Ingest logic upgraded from vN to vM`` to its prefix so every version
+    pair doesn't produce a separate row.
+    """
+    category = reason.split(":", 1)[0].strip()
+    if category.startswith("Ingest logic upgraded"):
+        category = "Ingest logic upgraded"
+    return category
+
+
+def _compute_last_run_cutoff(run_history: List[Dict[str, Any]]) -> Optional[str]:
+    """Return the ISO-8601 start timestamp of the most recent run, or None.
+
+    Uses ``timestamp`` (completion) minus ``elapsed_seconds``. Events with a
+    timestamp >= this cutoff are considered part of the last run.
+    """
+    if not run_history:
+        return None
+    from datetime import datetime, timedelta, timezone
+    latest = run_history[-1]
+    ts = latest.get("timestamp")
+    elapsed = latest.get("elapsed_seconds") or 0
+    if not ts:
+        return None
+    try:
+        end = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        return (end - timedelta(seconds=float(elapsed))).isoformat()
+    except Exception:
+        return None
+
+
+def _event_timestamp(e: Dict[str, Any], doc_ts_by_id: Dict[str, str]) -> Optional[str]:
+    """Resolve an event's timestamp for last-run bucketing.
+
+    Prefer the event's own ``timestamp`` field; fall back to the parent
+    document's ``updated_at`` so pre-fix events (missing their own timestamp)
+    still bucket correctly.
+    """
+    ts = e.get("timestamp")
+    if ts:
+        return ts
+    pid = e.get("parent_document_id") or e.get("document_id")
+    if pid and pid in doc_ts_by_id:
+        return doc_ts_by_id[pid]
+    return None
+
+
+def _format_examples(names: List[str], limit: int = 3) -> str:
+    """Format a short 'e.g. a, b, c' suffix from up to ``limit`` unique names."""
+    seen: List[str] = []
+    for n in names:
+        if n and n not in seen:
+            seen.append(n)
+        if len(seen) >= limit:
+            break
+    if not seen:
+        return ""
+    # Trim overly long filenames so the Note cell stays readable.
+    trimmed = [n if len(n) <= 40 else n[:37] + "..." for n in seen]
+    return "e.g. " + ", ".join(trimmed)
+
+
+def _parser_attribution_for_failed_docs(
+    failed_docs: List[Dict[str, Any]], archive_dir: Path
+) -> "Counter[str]":
+    """Aggregate parse-step parser/model names for a set of failed docs.
+
+    Reads ``archive/<folder_id>/metadata.json`` and pulls
+    ``processing.attachments[<file_name>].parse.model`` for each failed
+    attachment. Returns Counter keyed on model name (or 'unknown' when the
+    trail is missing).
+    """
+    counts: "Counter[str]" = Counter()
+    if not archive_dir.exists():
+        return counts
+    metadata_cache: Dict[str, Dict[str, Any]] = {}
+    for d in failed_docs:
+        fname = d.get("file_name") or ""
+        # Root-email folder id: compute from root_id so attachments map back.
+        root_id = d.get("root_id") or d.get("doc_id")
+        if not root_id:
+            continue
+        folder_id = compute_folder_id(root_id) if len(root_id) != 32 else root_id
+        mpath = archive_dir / folder_id / "metadata.json"
+        if folder_id not in metadata_cache:
+            try:
+                metadata_cache[folder_id] = json.loads(mpath.read_text(encoding="utf-8"))
+            except Exception:
+                metadata_cache[folder_id] = {}
+        meta = metadata_cache[folder_id]
+        trail = (meta.get("processing") or {}).get("attachments") or {}
+        parse_entry = (trail.get(fname) or {}).get("parse") or {}
+        model = parse_entry.get("model") or "unknown"
+        counts[model] += 1
+    return counts
+
+
 validate_app = typer.Typer(
     help="Validate ingest output and Supabase import integrity",
     invoke_without_command=True,
@@ -235,14 +362,18 @@ def _check_context_summary(
 ) -> Tuple[List[str], List[str]]:
     """Check 7: Context summary / embedding_text presence.
 
-    Image chunks skip LLM context generation by design — only flag non-image chunks.
+    Skipped by design: image chunks, and chunks from docs in `summary` or
+    `metadata_only` embedding mode — those modes produce a single synthesized
+    chunk whose content already serves as its own summary.
     """
     issues: List[str] = []
     warnings: List[str] = []
-    image_doc_uuids = {
-        d["id"] for d in docs if d.get("document_type") == "attachment_image"
+    skipped_doc_uuids = {
+        d["id"] for d in docs
+        if d.get("document_type") == "attachment_image"
+        or d.get("embedding_mode") in {"summary", "metadata_only"}
     }
-    text_chunks = [c for c in chunks if c["document_id"] not in image_doc_uuids]
+    text_chunks = [c for c in chunks if c["document_id"] not in skipped_doc_uuids]
     incomplete_chunks = [
         c for c in text_chunks if not c.get("context_summary") or not c.get("embedding_text")
     ]
@@ -423,8 +554,16 @@ def _check_archive_uris(
         if missing_fields:
             emails_missing_archive.append((d, missing_fields))
         if archive_folders_on_disk:
-            folder_id = d.get("archive_path") or compute_folder_id(d["doc_id"])
-            if folder_id not in archive_folders_on_disk:
+            # `archive_path` is a cached value that was stamped at ingest time
+            # and can be stale (older docs stored the 16-char doc_id prefix
+            # before the 32-char folder_id scheme). Match against either the
+            # cached path or the computed folder — whichever is on disk wins.
+            computed = compute_folder_id(d["doc_id"])
+            cached = d.get("archive_path")
+            if (
+                computed not in archive_folders_on_disk
+                and (not cached or cached not in archive_folders_on_disk)
+            ):
                 emails_without_folder.append(d)
 
     if emails_missing_archive:
@@ -671,7 +810,10 @@ def _check_broken_markdown_links(
             f"{total_broken} broken markdown links in {len(broken_md_links)} archive folders "
             f"({detail})"
         )
-        for folder_id, links in sorted(broken_md_links.items())[:10]:
+        # Sort by broken-link count descending so worst offenders surface first.
+        for folder_id, links in sorted(
+            broken_md_links.items(), key=lambda kv: (-len(kv[1]), kv[0])
+        )[:10]:
             email = folder_to_email.get(folder_id, "unknown email")
             warnings.append(f"    {folder_id} ({email}): {len(links)} broken")
         if len(broken_md_links) > 10:
@@ -913,22 +1055,112 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
         console.print()
 
     if events:
-        event_types = Counter(e.get("event_type") or "unknown" for e in events)
+        # Normalize event_type via _reason_category — legacy local_client writes
+        # the full skip_reason (e.g. "partial_download: foo.pdf") into
+        # event_type, exploding the row count. Collapse to the category.
+        event_types: "Counter[str]" = Counter(
+            _reason_category(e.get("event_type") or "unknown") for e in events
+        )
+
+        # Last-run cutoff and per-doc timestamp lookup (falls back to
+        # updated_at when an event pre-dates the timestamp field).
+        last_run_cutoff = _compute_last_run_cutoff(run_history)
+        doc_ts_by_id: Dict[str, str] = {}
+        for d in docs:
+            did = d.get("id")
+            ts = d.get("updated_at") or d.get("created_at")
+            if did and ts:
+                doc_ts_by_id[str(did)] = str(ts)
 
         ev_table = Table(title="Ingest Events")
         ev_table.add_column("Event", style="cyan")
         ev_table.add_column("Count", justify="right", style="green")
+        if last_run_cutoff:
+            ev_table.add_column("Last run", justify="right", style="magenta")
+        ev_table.add_column("Note", style="dim")
+
+        def _emit_row(label: str, total: int, last: int, note: str) -> None:
+            if last_run_cutoff:
+                ev_table.add_row(label, str(total), str(last) if last else "", note)
+            else:
+                ev_table.add_row(label, str(total), note)
+
         for et, count in event_types.most_common():
-            ev_table.add_row(et, str(count))
-            # Show reason breakdown indented below (skip if reason == event_type)
-            reason_counts = Counter(
-                e.get("reason") for e in events
-                if e.get("event_type") == et and e.get("reason") and e.get("reason") != et
-            )
-            for reason, rc in reason_counts.most_common():
-                ev_table.add_row(f"  {reason}", str(rc))
+            # Collect this event's matching records once for cheap reuse.
+            matching = [
+                e for e in events
+                if _reason_category(e.get("event_type") or "") == et
+            ]
+            last_count = 0
+            if last_run_cutoff:
+                last_count = sum(
+                    1 for e in matching
+                    if (_event_timestamp(e, doc_ts_by_id) or "") >= last_run_cutoff
+                )
+            _emit_row(et, count, last_count, _REASON_DESCRIPTIONS.get(et, ""))
+
+            # Children for this event row. Two modes:
+            #  - unsupported_format: break down by mime_type so the user can
+            #    decide whether to add a parser for a common format.
+            #  - everything else: break down by reason category (collapsing
+            #    high-cardinality filenames like "partial_download: foo.pdf").
+            child_counts: "Counter[str]" = Counter()
+            child_last: "Counter[str]" = Counter()
+            child_examples: Dict[str, List[str]] = {}
+            child_note_default = ""
+            if et == "unsupported_format":
+                child_note_default = "candidate for new parser"
+
+            def _child_key(e: Dict[str, Any]) -> str:
+                if et == "unsupported_format":
+                    mime = e.get("mime_type")
+                    if not mime:
+                        for src in (e.get("event_type"), e.get("reason")):
+                            if src and ":" in src:
+                                mime = src.split(":", 1)[1].strip()
+                                break
+                    return mime or "unknown"
+                reason = e.get("reason")
+                if not reason:
+                    return ""
+                cat = _reason_category(reason)
+                return "" if cat == et else cat
+
+            for e in matching:
+                key = _child_key(e)
+                if not key:
+                    continue
+                child_counts[key] += 1
+                if last_run_cutoff and (_event_timestamp(e, doc_ts_by_id) or "") >= last_run_cutoff:
+                    child_last[key] += 1
+                child_examples.setdefault(key, []).append(e.get("file_name") or "")
+
+            ordered = child_counts.most_common()
+            for idx, (label, rc) in enumerate(ordered):
+                connector = "\u2514\u2500" if idx == len(ordered) - 1 else "\u251c\u2500"
+                base_note = child_note_default or _REASON_DESCRIPTIONS.get(label, "")
+                examples = _format_examples(child_examples.get(label, []))
+                note = f"{base_note} — {examples}" if base_note and examples else (base_note or examples)
+                _emit_row(f" {connector} {label}", rc, child_last.get(label, 0), note)
 
         console.print(ev_table)
+
+        # Parser attribution for extraction_failed — tells you which parser
+        # produced the most failures so you know where to focus. Reads
+        # processing trail from each affected email's metadata.json.
+        failed_docs_for_attribution = [
+            d for d in docs
+            if d.get("status") == "failed" and d.get("document_type") != "email"
+        ]
+        if failed_docs_for_attribution:
+            parser_counts = _parser_attribution_for_failed_docs(
+                failed_docs_for_attribution, archive_dir
+            )
+            if parser_counts:
+                parts = [f"{p}={c}" for p, c in parser_counts.most_common()]
+                console.print(
+                    f"[dim]  failed docs by parser:[/dim] {', '.join(parts)}"
+                )
 
         # Verbose: show individual event messages
         if verbose:

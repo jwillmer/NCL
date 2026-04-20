@@ -518,9 +518,13 @@ class LocalStorageClient:
             file_size = Path(file_path).stat().st_size
         except OSError:
             file_size = None
+        # event_type is the canonical category (before any ': detail' suffix) so
+        # validate/analysis tooling doesn't see one row per unique filename. The
+        # full reason (including filename / mime detail) is preserved in `reason`.
+        event_type = reason.split(":", 1)[0].strip() if reason else "unknown"
         self._append_jsonl("ingest_events.jsonl", {
-            "event_type": reason,
-            "severity": "info" if reason == "classified_as_non_content" else "warning",
+            "event_type": event_type,
+            "severity": "info" if event_type == "classified_as_non_content" else "warning",
             "file_path": str(file_path),
             "file_name": Path(file_path).name,
             "reason": reason,
@@ -529,6 +533,7 @@ class LocalStorageClient:
             "source_eml_path": source_eml_path,
             "source_zip_path": source_zip_path,
             "parent_document_id": str(parent_document_id) if parent_document_id else None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
     # ── Result JSON ────────────────────────────────────────────────

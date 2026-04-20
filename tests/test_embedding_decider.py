@@ -165,6 +165,78 @@ class TestDecider:
         assert d.reason == "default_prose"
 
 
+# -------------------- TestOversizedPeekExtrapolation -------------------- #
+
+
+class TestOversizedPeekExtrapolation:
+    """Peeks from oversized PDFs carry too few tokens to trigger the SUMMARY
+    token gate on their own. The decider must scale the peek's token count
+    up to a whole-doc estimate using ``peek_pages`` / ``total_pages`` — else
+    dense sensor-log peeks slip through to the non-deterministic triage path."""
+
+    @pytest.fixture
+    def settings(self, comprehensive_mock_settings):
+        # decider_bulk_token_threshold defaults to 20_000; our peek is well
+        # under that without extrapolation. Keep defaults to exercise the
+        # real production thresholds.
+        return comprehensive_mock_settings
+
+    @pytest.mark.asyncio
+    async def test_oversized_tabular_peek_classified_summary_with_hint(self, settings):
+        from mtss.ingest.embedding_decider import decide_embedding_mode
+        from mtss.models.document import EmbeddingMode
+
+        # Small dense-table peek — mimics an 811-page scrubber log's first 3 pages.
+        header = "|Date|Temp|Press|Flow|pH|SO2|CO2|\n|---|---|---|---|---|---|---|\n"
+        row = "|11/29/2024 00:03:27|32.4|1.6|688.4|5.34|66.3|5.2|\n"
+        peek = "# Scrubber System Log\n\n" + header + row * 30
+        # Without the hint, token count is ~1–2K → no SUMMARY rule fires.
+        baseline = await decide_embedding_mode(peek, None, settings)
+        assert baseline.mode == EmbeddingMode.FULL
+
+        # With the hint, 1–2K tokens × (811 / 3) ≈ 400K → tabular → SUMMARY.
+        decided = await decide_embedding_mode(
+            peek, None, settings, peek_pages=3, total_pages=811
+        )
+        assert decided.mode == EmbeddingMode.SUMMARY
+        # Any deterministic SUMMARY reason is fine — whichever shape gate
+        # fires first for this fixture (tabular / bulk_numeric / etc.).
+        assert decided.reason in {"bulk_numeric", "tabular", "repetitive", "short_lines"}
+        assert decided.signals["effective_tokens"] > decided.signals["total_tokens"]
+
+    @pytest.mark.asyncio
+    async def test_oversized_prose_peek_stays_full_with_hint(self, settings):
+        """Extrapolation scales the token count only — shape ratios still
+        gate the SUMMARY rule. A prose-heavy peek of a long report should
+        keep FULL mode even when we know the doc is large."""
+        from mtss.ingest.embedding_decider import decide_embedding_mode
+        from mtss.models.document import EmbeddingMode
+
+        paragraph = (
+            "The inspection covered the engine room, deck machinery, and "
+            "cargo handling systems over a three-day period. Findings are "
+            "classified by severity and documented with photographs. The "
+            "surveyor recommends prompt rectification of the critical items "
+            "noted in Appendix A.\n\n"
+        )
+        peek = "# Vessel Inspection Report\n\n" + paragraph * 10
+        decided = await decide_embedding_mode(
+            peek, None, settings, peek_pages=3, total_pages=200
+        )
+        assert decided.mode == EmbeddingMode.FULL
+
+    @pytest.mark.asyncio
+    async def test_hint_absent_does_not_extrapolate(self, settings):
+        """Without peek_pages/total_pages the effective token count equals
+        the raw token count — preserves behavior for non-oversized docs and
+        for re-embed runs against archived peek markdown."""
+        from mtss.ingest.embedding_decider import decide_embedding_mode
+
+        peek = "Some short prose. " * 100
+        decided = await decide_embedding_mode(peek, None, settings)
+        assert decided.signals["effective_tokens"] == decided.signals["total_tokens"]
+
+
 # --------------------------- TestDeciderTriage --------------------------- #
 
 

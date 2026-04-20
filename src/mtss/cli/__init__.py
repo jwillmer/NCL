@@ -39,6 +39,7 @@ from . import (
     maintenance_cmd,
     query_cmd,
     reembed_cmd,
+    review_modes_cmd,
     validate_cmd,
 )
 
@@ -50,6 +51,7 @@ maintenance_cmd.register(app)
 entities_cmd.register(app, vessels_app, topics_app)
 validate_cmd.register(app)
 reembed_cmd.register(app)
+review_modes_cmd.register(app)
 
 if __name__ == "__main__":
     app()

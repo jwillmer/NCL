@@ -191,14 +191,23 @@ async def decide_embedding_mode(
     markdown: str,
     doc_meta: Any,
     settings: Optional[Settings] = None,
+    *,
+    peek_pages: Optional[int] = None,
+    total_pages: Optional[int] = None,
 ) -> EmbeddingDecision:
     """Choose an embedding mode for a parsed document.
 
     Args:
-        markdown: Parsed document body.
+        markdown: Parsed document body (or a short peek of it for oversized PDFs).
         doc_meta: Document metadata (Document model or dict-like); reserved
             for future use in triage prompt building.
         settings: Application settings; defaults to get_settings().
+        peek_pages: If the markdown is a peek (first N pages of an oversized
+            PDF), the N used. Paired with ``total_pages`` to extrapolate the
+            peek's token count up to an estimate for the whole document —
+            otherwise a 2K-token peek of an 811-page sensor log would slip
+            under the SUMMARY token gate and fall through to LLM triage.
+        total_pages: Full PDF page count when ``peek_pages`` is provided.
     """
     settings = settings or get_settings()
 
@@ -211,9 +220,20 @@ async def decide_embedding_mode(
         )
 
     shape = analyze(markdown)
+
+    # When the caller marks this as a peek, scale the peek's token count up
+    # to a whole-doc estimate. Shape ratios (digit/table/prose/etc.) are
+    # percentages of the peek and stay representative — don't rescale them.
+    effective_tokens = shape.total_tokens
+    if peek_pages and total_pages and total_pages > peek_pages:
+        effective_tokens = int(shape.total_tokens * total_pages / peek_pages)
+
     signals: Dict[str, Any] = {
         "total_chars": shape.total_chars,
         "total_tokens": shape.total_tokens,
+        "effective_tokens": effective_tokens,
+        "peek_pages": peek_pages,
+        "total_pages": total_pages,
         "digit_ratio": shape.digit_ratio,
         "table_char_pct": shape.table_char_pct,
         "repetition_score": shape.repetition_score,
@@ -230,7 +250,7 @@ async def decide_embedding_mode(
         return EmbeddingDecision(EmbeddingMode.METADATA_ONLY, "no_prose", signals)
 
     # 2. Bulk numeric / tabular / repetitive → SUMMARY.
-    if shape.total_tokens > settings.decider_bulk_token_threshold:
+    if effective_tokens > settings.decider_bulk_token_threshold:
         if shape.digit_ratio > settings.decider_digit_ratio:
             return EmbeddingDecision(EmbeddingMode.SUMMARY, "bulk_numeric", signals)
         if shape.table_char_pct > settings.decider_table_char_pct:
@@ -242,7 +262,7 @@ async def decide_embedding_mode(
 
     # 3. Medium-confidence band → LLM triage, always.
     if (
-        shape.total_tokens > settings.decider_medium_token_threshold
+        effective_tokens > settings.decider_medium_token_threshold
         and shape.prose_ratio < settings.decider_medium_prose_ratio
     ):
         decision = await _decide_with_llm_triage(markdown, settings)
