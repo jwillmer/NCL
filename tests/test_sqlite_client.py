@@ -129,6 +129,77 @@ def test_schema_version_seeded(tmp_client: SqliteStorageClient):
     assert int(val[0]) >= 1
 
 
+def test_processing_log_schema_matches_between_client_and_tracker(tmp_path: Path):
+    """SqliteStorageClient and SqliteProgressTracker must produce the exact
+    same ``processing_log`` schema regardless of which one initialises the
+    DB first.
+
+    Regression: the tracker historically declared its own
+    ``CREATE TABLE`` that omitted the ``ingest_version`` column. Whichever
+    class won the init race fixed the schema; writes from the loser to the
+    missing column silently no-op'd. Both classes now share
+    ``PROCESSING_LOG_SCHEMA_SQL``, so a fresh init from either side must
+    yield identical column names and identical indexes.
+    """
+    from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
+
+    def _columns(conn: sqlite3.Connection) -> list[str]:
+        return [r[1] for r in conn.execute("PRAGMA table_info(processing_log)")]
+
+    def _indexes(conn: sqlite3.Connection) -> set[str]:
+        return {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='processing_log' "
+                "AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+
+    client_dir = tmp_path / "client"
+    client = SqliteStorageClient(client_dir)
+    client_columns = _columns(client._conn)
+    client_indexes = _indexes(client._conn)
+
+    tracker_dir = tmp_path / "tracker"
+    tracker = SqliteProgressTracker(tracker_dir)
+    tracker_columns = _columns(tracker._conn)
+    tracker_indexes = _indexes(tracker._conn)
+
+    assert client_columns == tracker_columns
+    assert client_indexes == tracker_indexes
+    # ``ingest_version`` is the column the tracker historically dropped —
+    # pin it explicitly so the regression cannot regress quietly.
+    assert "ingest_version" in tracker_columns
+
+
+def test_processing_log_tracker_then_client_yields_full_schema(tmp_path: Path):
+    """Tracker-first init must leave the table with every column the
+    client expects to write. Catches any future drift where the tracker
+    is upgraded but the shared constant isn't.
+    """
+    from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
+
+    SqliteProgressTracker(tmp_path)
+    client = SqliteStorageClient(tmp_path)
+
+    columns = [
+        r[1] for r in client._conn.execute("PRAGMA table_info(processing_log)")
+    ]
+    expected = {
+        "file_path",
+        "file_hash",
+        "status",
+        "started_at",
+        "completed_at",
+        "duration_seconds",
+        "attempts",
+        "error",
+        "ingest_version",
+    }
+    assert expected.issubset(set(columns))
+
+
 # ── embedding codec ─────────────────────────────────────────────────
 
 def test_embedding_roundtrip():
