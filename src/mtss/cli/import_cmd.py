@@ -81,13 +81,23 @@ def register(app: typer.Typer):
             "-v",
             help="Enable verbose output",
         ),
+        rewrite_topics_from: Optional[Path] = typer.Option(
+            None,
+            "--rewrite-topics-from",
+            help="Path to a merge-plan JSON (from `mtss topics consolidate --json`). "
+                 "Before syncing topics, call the rewrite_chunk_topic_ids RPC so any "
+                 "remote chunks pointing at absorbed topics get rewritten to the keeper.",
+        ),
     ):
         """Push local ingest output to Supabase.
 
         Reads the local output directory (JSONL files + archive/) and
         imports everything into Supabase. Safe to re-run (idempotent).
         """
-        asyncio.run(_import_data(output_dir, skip_archives, skip_vessels, dry_run, verbose, limit))
+        asyncio.run(_import_data(
+            output_dir, skip_archives, skip_vessels, dry_run, verbose, limit,
+            rewrite_topics_from,
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +125,7 @@ async def _import_data(
     dry_run: bool,
     verbose: bool,
     limit: Optional[int] = None,
+    rewrite_topics_from: Optional[Path] = None,
 ):
     """Async implementation of import command."""
     from ..config import get_settings
@@ -141,11 +152,16 @@ async def _import_data(
     db = SupabaseClient()
     totals = {"vessels": 0, "topics": 0, "documents": 0, "chunks": 0, "archive folders": 0, "archive files": 0}
     changes = {"new_documents": 0, "new_chunks": 0, "new_archive files": 0,
-               "topics_removed": 0, "orphans_removed": 0, "failed": 0}
+               "topics_removed": 0, "orphans_removed": 0, "failed": 0, "chunks_rewritten": 0}
 
     try:
         if not skip_vessels:
             await _import_vessels(db, load_vessels_from_csv(), totals, dry_run, verbose)
+
+        if rewrite_topics_from is not None:
+            await _rewrite_remote_topic_ids(
+                db, rewrite_topics_from, changes, dry_run, verbose
+            )
 
         await _import_topics(db, resolved_output, totals, changes, dry_run, verbose)
         wave_folder_ids = await _import_documents(
@@ -282,31 +298,40 @@ async def _import_topics(db, output_dir, totals, changes, dry_run, verbose):
         console.print(f"Topics up to date ({len(topics_data)} unchanged)")
     else:
         console.print(f"  {len(to_insert)} new, {len(to_update)} changed")
-        work = [(td, "insert") for td in to_insert] + [(td, "update") for td in to_update]
-        with make_progress() as progress:
-            task_id = progress.add_task("Topics", total=len(work))
-            for td, action in work:
-                try:
-                    if action == "update":
-                        async with pool.acquire() as conn:
-                            await conn.execute(
-                                "UPDATE topics SET display_name=$2, description=$3, "
-                                "embedding=$4, chunk_count=$5, document_count=$6, "
-                                "updated_at=NOW() WHERE name=$1",
-                                td["name"],
-                                td.get("display_name", td["name"]),
-                                td.get("description"),
-                                td.get("embedding"),
-                                td.get("chunk_count", 0) or 0,
-                                td.get("document_count", 0) or 0,
-                            )
-                    else:
-                        topic = _dict_to_topic(td)
-                        await db.insert_topic(topic)
-                except Exception as e:
-                    logger.warning(f"Failed to import topic {td.get('name')}: {e}")
-                    changes["failed"] += 1
-                progress.update(task_id, advance=1)
+        # Single batched UPSERT over the changed+new set. Per-row round
+        # trips over Supabase used to take 5-10 min for ~3300 topics; this
+        # collapses to one executemany over a single pooled connection.
+        params = [
+            (
+                td["name"],
+                td.get("display_name", td["name"]),
+                td.get("description"),
+                td.get("embedding"),
+                td.get("chunk_count", 0) or 0,
+                td.get("document_count", 0) or 0,
+            )
+            for td in (to_insert + to_update)
+        ]
+        try:
+            async with pool.acquire() as conn:
+                await conn.executemany(
+                    """
+                    INSERT INTO topics
+                        (name, display_name, description, embedding, chunk_count, document_count)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (name) DO UPDATE SET
+                        display_name = EXCLUDED.display_name,
+                        description = EXCLUDED.description,
+                        embedding = EXCLUDED.embedding,
+                        chunk_count = EXCLUDED.chunk_count,
+                        document_count = EXCLUDED.document_count,
+                        updated_at = NOW()
+                    """,
+                    params,
+                )
+        except Exception as e:
+            logger.warning(f"Batch topic upsert failed: {e}")
+            changes["failed"] += len(params)
 
     # Remove stale topics from Supabase that no longer exist locally
     stale_names = [name for name in remote_by_name if name not in local_names]
@@ -322,6 +347,152 @@ async def _import_topics(db, output_dir, totals, changes, dry_run, verbose):
                     console.print(f"  [dim]Removed stale topic: {name}[/dim]")
         except Exception as e:
             logger.warning(f"Failed to prune stale topics: {e}")
+
+
+async def _rewrite_remote_topic_ids(db, plan_path: Path, changes, dry_run, verbose):
+    """Rewrite chunks.metadata.topic_ids on Supabase using a local merge plan.
+
+    The merge plan emitted by ``mtss topics consolidate --json`` carries
+    (absorbed_name, keeper_name) pairs using local names. Supabase has its
+    own UUID keyspace for topics, so we resolve names → remote UUIDs on
+    both sides, build an absorbed_uuid → keeper_uuid mapping, and hand it
+    to the ``rewrite_chunk_topic_ids`` RPC for a single server-side UPDATE.
+    Runs before the topic sync so the pruned (absorbed) topic rows no
+    longer have any chunk references pointing at them.
+    """
+    if not plan_path.exists():
+        console.print(f"[red]--rewrite-topics-from: {plan_path} not found[/red]")
+        raise typer.Exit(1)
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]Invalid JSON in {plan_path}: {exc}[/red]")
+        raise typer.Exit(1)
+    if not isinstance(plan, list) or not plan:
+        console.print(f"[yellow]Merge plan is empty — nothing to rewrite.[/yellow]")
+        return
+
+    names_needed = set()
+    for entry in plan:
+        names_needed.add(entry["absorbed_name"])
+        names_needed.add(entry["keeper_name"])
+
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        name_rows = await conn.fetch(
+            "SELECT name, id FROM topics WHERE name = ANY($1::text[])",
+            list(names_needed),
+        )
+    remote_by_name = {r["name"]: str(r["id"]) for r in name_rows}
+
+    mapping: Dict[str, str] = {}
+    missing: list[tuple[str, str]] = []
+    for entry in plan:
+        absorbed_uuid = remote_by_name.get(entry["absorbed_name"])
+        keeper_uuid = remote_by_name.get(entry["keeper_name"])
+        if absorbed_uuid and keeper_uuid:
+            mapping[absorbed_uuid] = keeper_uuid
+        else:
+            missing.append((entry["absorbed_name"], entry["keeper_name"]))
+
+    console.print(
+        f"Topic rewrite plan: {len(mapping)} pair(s) resolved to remote UUIDs"
+        + (f", {len(missing)} pair(s) not found on remote" if missing else "")
+    )
+    if verbose and missing:
+        for a, k in missing[:10]:
+            console.print(f"  [dim]skip: {a!r} / {k!r} not on remote[/dim]")
+
+    if not mapping:
+        return
+
+    # Count affected chunks before the destructive UPDATE. Same predicate
+    # the RPC uses so the preview matches the real blast radius.
+    absorbed_ids = list(mapping.keys())
+    async with pool.acquire() as conn:
+        affected_rows = await conn.fetch(
+            "SELECT id, metadata->'topic_ids' AS topic_ids FROM chunks "
+            "WHERE metadata ? 'topic_ids' "
+            "  AND EXISTS ("
+            "    SELECT 1 FROM jsonb_array_elements_text(metadata->'topic_ids') AS tid "
+            "    WHERE tid = ANY($1::text[])"
+            "  )",
+            absorbed_ids,
+        )
+    affected_count = len(affected_rows)
+    console.print(
+        f"[yellow]Blast radius:[/yellow] {affected_count} chunk(s) reference "
+        f"{len(absorbed_ids)} absorbed topic UUID(s) and would be rewritten."
+    )
+
+    # Always emit a backup of the current topic_ids arrays for the
+    # affected chunks so the user has an unambiguous rollback path —
+    # `jsonb_set` loses the pre-update value, and restoring from a
+    # corrupted live table otherwise forces a full re-ingest.
+    backup_path = plan_path.with_name(f"{plan_path.stem}.backup.json")
+    try:
+        backup_payload = [
+            {"id": str(r["id"]), "topic_ids": r["topic_ids"]}
+            for r in affected_rows
+        ]
+        backup_path.write_text(
+            json.dumps(backup_payload, indent=2, default=str), encoding="utf-8"
+        )
+        console.print(f"[dim]Rollback snapshot: {backup_path}[/dim]")
+    except OSError as exc:
+        console.print(
+            f"[red]Refusing to rewrite: could not write rollback snapshot ({exc}).[/red]"
+        )
+        raise typer.Exit(1)
+
+    if dry_run:
+        console.print("[dim](dry-run — RPC not invoked)[/dim]")
+        return
+
+    if affected_count == 0:
+        console.print(
+            "[green]Nothing to rewrite — no remote chunks reference the absorbed topics.[/green]"
+        )
+        return
+
+    # Explicit confirmation. The RPC is one UPDATE, rollback is the
+    # backup JSON we just wrote, and failure to double-check has a real
+    # cost (full reingest, hours of downtime). ``--dry-run`` or a truthy
+    # ``IMPORT_REWRITE_ASSUME_YES`` env override skips the prompt for
+    # automation, but the default is to ask.
+    import os
+    assume_yes = os.environ.get("IMPORT_REWRITE_ASSUME_YES", "").lower() in {"1", "true", "yes"}
+    if not assume_yes and not typer.confirm(
+        f"Rewrite {affected_count} chunk(s) now?", default=False
+    ):
+        console.print("[dim]Aborted. Backup snapshot retained for reference.[/dim]")
+        raise typer.Exit(0)
+
+    try:
+        async with pool.acquire() as conn:
+            rewritten = await conn.fetchval(
+                "SELECT rewrite_chunk_topic_ids($1::jsonb)",
+                json.dumps(mapping),
+            )
+    except Exception as exc:
+        console.print(
+            f"[red]rewrite_chunk_topic_ids RPC failed: {exc}[/red]\n"
+            f"[red]Rollback from {backup_path} if any rows were partially updated "
+            f"(Postgres wraps the UPDATE in an implicit transaction, so a server-side "
+            f"failure should have rolled itself back — verify before reingesting).[/red]"
+        )
+        raise
+    rewritten_int = int(rewritten or 0)
+    if rewritten_int != affected_count:
+        console.print(
+            f"[yellow]Warning:[/yellow] preview predicted {affected_count} affected rows, "
+            f"RPC reports {rewritten_int}. Possible concurrent write — inspect before continuing."
+        )
+    changes["chunks_rewritten"] = rewritten_int
+    console.print(
+        f"[green]Rewrote topic_ids on {rewritten_int} chunk(s) via RPC.[/green] "
+        f"Rollback snapshot: {backup_path}"
+    )
 
 
 async def _import_documents(db, output_dir, totals, changes, dry_run, verbose, limit=None):

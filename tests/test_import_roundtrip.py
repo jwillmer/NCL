@@ -344,6 +344,228 @@ class TestImportIdempotency:
         mock_db.persist_ingest_result.assert_not_called()
 
 
+class TestImportTopicsBatching:
+    """Verify _import_topics uses a single batched UPSERT instead of N calls."""
+
+    @pytest.mark.asyncio
+    async def test_import_topics_batches_upserts(self, tmp_path):
+        """Insert + update topics must funnel through one ``conn.executemany``.
+
+        The refactor removed per-row ``db.insert_topic`` calls in favour of a
+        single ``INSERT ... ON CONFLICT (name) DO UPDATE`` over the combined
+        set. We pin both: executemany is called exactly once with every
+        changed row, and ``db.insert_topic`` is never called.
+        """
+        from mtss.cli.import_cmd import _import_topics
+
+        # Remote shows one pre-existing topic with *different* counts so it
+        # lands in the update bucket, plus no row for "brand_new" so that
+        # lands in the insert bucket.
+        mock_conn = MagicMock()
+        mock_conn.fetch = AsyncMock(return_value=[
+            {
+                "name": "existing",
+                "chunk_count": 0,
+                "document_count": 0,
+                "description": None,
+            }
+        ])
+        mock_conn.execute = AsyncMock()
+        mock_conn.executemany = AsyncMock()
+
+        class FakeAcquire:
+            async def __aenter__(self):
+                return mock_conn
+            async def __aexit__(self, *args):
+                pass
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value = FakeAcquire()
+        mock_db = MagicMock()
+        mock_db.get_pool = AsyncMock(return_value=mock_pool)
+        mock_db.insert_topic = AsyncMock()
+
+        # Seed ingest.db so _read_jsonl("topics.jsonl") returns both rows.
+        from mtss.storage.sqlite_client import SqliteStorageClient
+
+        client = SqliteStorageClient(output_dir=tmp_path)
+        try:
+            now = "2026-04-20T00:00:00"
+            # "existing" — chunk_count diff triggers an update.
+            client._conn.execute(
+                "INSERT INTO topics(id, name, display_name, chunk_count, "
+                "document_count, created_at, updated_at) "
+                "VALUES (?, ?, ?, 7, 3, ?, ?)",
+                (str(uuid4()), "existing", "Existing", now, now),
+            )
+            # "brand_new" — not on remote → insert bucket.
+            client._conn.execute(
+                "INSERT INTO topics(id, name, display_name, chunk_count, "
+                "document_count, created_at, updated_at) "
+                "VALUES (?, ?, ?, 2, 1, ?, ?)",
+                (str(uuid4()), "brand_new", "Brand New", now, now),
+            )
+        finally:
+            client._conn.close()
+
+        totals = {"topics": 0}
+        changes = {"failed": 0, "topics_removed": 0}
+
+        await _import_topics(
+            mock_db, tmp_path, totals, changes, dry_run=False, verbose=False
+        )
+
+        # Batched upsert called exactly once with both rows.
+        assert mock_conn.executemany.await_count == 1
+        call = mock_conn.executemany.await_args
+        sql = call.args[0]
+        rows = call.args[1]
+        assert "INSERT INTO topics" in sql
+        assert "ON CONFLICT (name)" in sql
+        row_names = {r[0] for r in rows}
+        assert row_names == {"existing", "brand_new"}
+        # Per-row insert_topic must not be used anymore.
+        mock_db.insert_topic.assert_not_called()
+
+
+class TestRewriteRemoteTopicIds:
+    """Verify the merge-plan-driven rewrite_chunk_topic_ids RPC call.
+
+    The helper does more than just ``SELECT rewrite_chunk_topic_ids``: it
+    resolves names → remote UUIDs, previews the blast radius (a second
+    ``fetch``), writes a rollback backup JSON, prompts for confirmation
+    (skippable via ``IMPORT_REWRITE_ASSUME_YES``), and only then invokes
+    the RPC. The tests exercise the real flow end-to-end.
+    """
+
+    @staticmethod
+    def _plan_path(tmp_path, plan: list[dict]) -> "Path":
+        p = tmp_path / "plan.json"
+        p.write_text(json.dumps(plan), encoding="utf-8")
+        return p
+
+    @pytest.mark.asyncio
+    async def test_rewrite_remote_topic_ids_resolves_uuids_and_calls_rpc(
+        self, tmp_path, monkeypatch
+    ):
+        """Plan names → remote UUIDs → jsonb mapping → RPC invocation."""
+        from mtss.cli.import_cmd import _rewrite_remote_topic_ids
+
+        absorbed_uuid = str(uuid4())
+        keeper_uuid = str(uuid4())
+        affected_chunk_id = uuid4()
+        mock_conn = MagicMock()
+        # Two distinct fetch() calls: first resolves names, second previews
+        # the blast radius. Return rows must carry ``topic_ids`` because
+        # the helper writes them into a rollback JSON snapshot.
+        mock_conn.fetch = AsyncMock(side_effect=[
+            [
+                {"name": "absorbed", "id": absorbed_uuid},
+                {"name": "keeper", "id": keeper_uuid},
+            ],
+            [
+                {"id": affected_chunk_id, "topic_ids": [absorbed_uuid]},
+            ],
+        ])
+        mock_conn.fetchval = AsyncMock(return_value=1)
+
+        class FakeAcquire:
+            async def __aenter__(self):
+                return mock_conn
+            async def __aexit__(self, *args):
+                pass
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value = FakeAcquire()
+        mock_db = MagicMock()
+        mock_db.get_pool = AsyncMock(return_value=mock_pool)
+
+        plan_path = self._plan_path(tmp_path, [
+            {
+                "keeper_id": "local-keeper",
+                "keeper_name": "keeper",
+                "keeper_display_name": "Keeper",
+                "keeper_chunks": 9,
+                "keeper_docs": 3,
+                "absorbed_id": "local-absorbed",
+                "absorbed_name": "absorbed",
+                "absorbed_display_name": "Absorbed",
+                "absorbed_chunks": 2,
+                "absorbed_docs": 1,
+                "similarity": 0.91,
+            },
+        ])
+
+        changes = {"failed": 0, "chunks_rewritten": 0}
+
+        # Bypass the interactive confirm via the documented env override.
+        monkeypatch.setenv("IMPORT_REWRITE_ASSUME_YES", "1")
+
+        await _rewrite_remote_topic_ids(
+            mock_db, plan_path, changes, dry_run=False, verbose=False
+        )
+
+        mock_conn.fetchval.assert_awaited_once()
+        args = mock_conn.fetchval.await_args.args
+        assert args[0] == "SELECT rewrite_chunk_topic_ids($1::jsonb)"
+        mapping = json.loads(args[1])
+        assert mapping == {absorbed_uuid: keeper_uuid}
+        assert changes["chunks_rewritten"] == 1
+        # Backup snapshot must land next to the plan for rollback use.
+        backup_path = plan_path.with_name(f"{plan_path.stem}.backup.json")
+        assert backup_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_rewrite_remote_topic_ids_dry_run_skips_rpc(self, tmp_path):
+        """--dry-run must resolve UUIDs + write backup but never invoke the RPC."""
+        from mtss.cli.import_cmd import _rewrite_remote_topic_ids
+
+        absorbed_uuid = str(uuid4())
+        keeper_uuid = str(uuid4())
+        affected_chunk_id = uuid4()
+        mock_conn = MagicMock()
+        mock_conn.fetch = AsyncMock(side_effect=[
+            [
+                {"name": "absorbed", "id": absorbed_uuid},
+                {"name": "keeper", "id": keeper_uuid},
+            ],
+            [
+                {"id": affected_chunk_id, "topic_ids": [absorbed_uuid]},
+            ],
+        ])
+        mock_conn.fetchval = AsyncMock(return_value=99)
+
+        class FakeAcquire:
+            async def __aenter__(self):
+                return mock_conn
+            async def __aexit__(self, *args):
+                pass
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value = FakeAcquire()
+        mock_db = MagicMock()
+        mock_db.get_pool = AsyncMock(return_value=mock_pool)
+
+        plan_path = self._plan_path(tmp_path, [
+            {
+                "keeper_id": "local-keeper",
+                "keeper_name": "keeper",
+                "absorbed_id": "local-absorbed",
+                "absorbed_name": "absorbed",
+                "similarity": 0.93,
+            },
+        ])
+
+        changes = {"failed": 0, "chunks_rewritten": 0}
+
+        await _rewrite_remote_topic_ids(
+            mock_db, plan_path, changes, dry_run=True, verbose=False
+        )
+
+        mock_conn.fetchval.assert_not_awaited()
+        assert changes["chunks_rewritten"] == 0
+
+
 class TestUploadWithRetry:
     """Verify archive upload retry behavior for transient Supabase failures."""
 
