@@ -375,7 +375,9 @@ class TestUploadWithRetry:
             ]
         )
 
-        with patch.object(import_cmd, "time") as mock_time:
+        # Pin jitter multiplier to 1.0 so the exact-delay assertion is stable.
+        with patch.object(import_cmd, "time") as mock_time, \
+                patch("mtss._io.random.uniform", return_value=1.0):
             ok = import_cmd._upload_with_retry(storage, "doc/email.eml", b"body", "message/rfc822")
 
         assert ok is True
@@ -402,7 +404,8 @@ class TestUploadWithRetry:
         storage = MagicMock()
         storage.upload_file = MagicMock(side_effect=RuntimeError("always fails"))
 
-        with patch.object(import_cmd, "time") as mock_time:
+        with patch.object(import_cmd, "time") as mock_time, \
+                patch("mtss._io.random.uniform", return_value=1.0):
             import_cmd._upload_with_retry(storage, "k", b"b", "application/octet-stream")
 
         # MAX_ATTEMPTS attempts => MAX_ATTEMPTS - 1 sleeps between them

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import time
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -127,13 +128,17 @@ def retry_with_backoff(
     *,
     max_attempts: int = 3,
     backoff_base: float = 1.0,
+    jitter: float = 0.0,
     retriable: tuple[type[BaseException], ...] = (Exception,),
     on_retry: Callable[[int, BaseException, float], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> T:
     """Call ``fn()`` with exponential-backoff retry on ``retriable`` exceptions.
 
-    Delays between attempts are ``backoff_base * 2**0, 2**1, ...`` seconds.
+    Delays between attempts are ``backoff_base * 2**0, 2**1, ...`` seconds,
+    optionally multiplied by a random factor in ``[1-jitter, 1+jitter]`` to
+    break up thundering-herd retries from concurrent callers hitting the same
+    upstream contention point (e.g. WSAEWOULDBLOCK storms on Windows).
     The last exception is re-raised if all attempts fail. If a non-``retriable``
     exception is raised it propagates immediately without retry.
 
@@ -143,7 +148,11 @@ def retry_with_backoff(
         max_attempts: Total number of attempts (including the initial call).
             Must be >= 1.
         backoff_base: Base delay in seconds. Actual delay for attempt ``i``
-            (0-indexed, before the next try) is ``backoff_base * 2**i``.
+            (0-indexed, before the next try) is ``backoff_base * 2**i``,
+            optionally jittered.
+        jitter: Fractional jitter in ``[0.0, 1.0]``. ``0.0`` (default) keeps
+            deterministic delays; ``0.5`` spreads each delay uniformly over
+            ``[0.5 * delay, 1.5 * delay]``. Only applied between attempts.
         retriable: Tuple of exception types that trigger a retry. Defaults to
             ``(Exception,)`` for the broad-catch behavior legacy call sites
             relied on. Pass a narrower tuple to let unexpected errors surface.
@@ -162,6 +171,8 @@ def retry_with_backoff(
     """
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
+    if not 0.0 <= jitter <= 1.0:
+        raise ValueError(f"jitter must be in [0.0, 1.0], got {jitter}")
 
     last_exc: BaseException | None = None
     for attempt in range(max_attempts):
@@ -171,6 +182,8 @@ def retry_with_backoff(
             last_exc = exc
             if attempt < max_attempts - 1:
                 delay = backoff_base * (2 ** attempt)
+                if jitter:
+                    delay *= random.uniform(1.0 - jitter, 1.0 + jitter)
                 if on_retry is not None:
                     on_retry(attempt + 1, exc, delay)
                 sleep(delay)

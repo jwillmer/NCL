@@ -8,14 +8,23 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from functools import lru_cache
 from typing import List
 
-from storage3.utils import StorageException
-from supabase import Client, create_client
+# supabase-py builds the storage URL as "<supabase_url>/storage/v1" with no
+# trailing slash, which provokes a noisy httpx UserWarning on every client
+# construction. The URL is well-formed; suppress just this one message.
+warnings.filterwarnings(
+    "ignore",
+    message="Storage endpoint URL should have a trailing slash",
+)
 
-from .._io import retry_with_backoff
-from ..config import get_settings
+from storage3.utils import StorageException  # noqa: E402
+from supabase import Client, create_client  # noqa: E402
+
+from .._io import retry_with_backoff  # noqa: E402
+from ..config import get_settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +302,9 @@ class ArchiveStorage:
                     _fetch_page,
                     max_attempts=max_attempts,
                     backoff_base=backoff_base,
+                    # Same rationale as the upload path — spread concurrent
+                    # listers so a transient gateway blip doesn't sync them.
+                    jitter=0.5,
                     on_retry=_log_retry,
                     # Route through the module's `time` attribute so tests that
                     # patch `archive_storage.time` continue to observe sleeps.

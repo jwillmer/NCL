@@ -106,7 +106,9 @@ class TestListFolderRetry:
         ])
         storage = _make_storage_with_bucket(bucket)
 
-        with patch.object(archive_storage_module, "time") as mock_time:
+        # Pin jitter multiplier to 1.0 so the exact-delay assertion is stable.
+        with patch.object(archive_storage_module, "time") as mock_time, \
+                patch("mtss._io.random.uniform", return_value=1.0):
             result = storage.list_folder("doc-id", backoff_base=1.0)
 
         assert len(result) == 1
@@ -123,7 +125,8 @@ class TestListFolderRetry:
         ])
         storage = _make_storage_with_bucket(bucket)
 
-        with patch.object(archive_storage_module, "time") as mock_time:
+        with patch.object(archive_storage_module, "time") as mock_time, \
+                patch("mtss._io.random.uniform", return_value=1.0):
             storage.list_folder("doc-id", backoff_base=1.0)
 
         assert bucket.list.call_count == 3
