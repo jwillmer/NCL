@@ -940,6 +940,478 @@ def _check_email_metadata(
     return issues, warnings
 
 
+# ---------------------------------------------------------------------------
+# Extended checks (23+) — SQLite-level integrity + data-quality invariants
+# added after the original 22-check contract. These surface issues that
+# pre-SQLite validate couldn't observe: FK drift, schema drift, embedding
+# mode inheritance, archive-disk drift, residual parser artifacts, stale
+# PROCESSING rows, ingest-version regression.
+# ---------------------------------------------------------------------------
+
+# Expected columns for critical tables — compared against live schema to
+# catch drift between tracker/client schemas. Mirrors sqlite_client.py DDL.
+_EXPECTED_COLUMNS: Dict[str, Set[str]] = {
+    "documents": {
+        "id", "doc_id", "source_id", "document_type", "status", "error_message",
+        "file_hash", "file_name", "file_path", "parent_id", "root_id", "depth",
+        "content_version", "ingest_version", "archive_path", "title",
+        "source_title", "mime_type", "content_type", "size_bytes",
+        "embedding_mode", "archive_browse_uri", "archive_download_uri",
+        "metadata_json", "processed_at", "created_at", "updated_at",
+    },
+    "chunks": {
+        "id", "chunk_id", "document_id", "source_id", "content", "chunk_index",
+        "char_start", "char_end", "line_from", "line_to", "page_number",
+        "section_title", "section_path_json", "context_summary",
+        "embedding_text", "embedding", "embedding_dim", "embedding_mode",
+        "source_title", "archive_browse_uri", "archive_download_uri",
+        "metadata_json", "created_at",
+    },
+    "processing_log": {
+        "file_path", "file_hash", "status", "started_at", "completed_at",
+        "duration_seconds", "attempts", "error", "ingest_version",
+    },
+    "chunk_topics": {"chunk_id", "topic_id"},
+    "topics": {
+        "id", "name", "display_name", "description", "keywords_json",
+        "embedding", "embedding_dim", "chunk_count", "document_count",
+        "created_at", "updated_at",
+    },
+}
+
+# Residual parser image-ref patterns — any hit means `strip_llamaparse_image_refs`
+# missed a form. Image-form (`![...]`) only; link-form is reported by check 20.
+_RESIDUAL_IMAGE_PATTERNS = [
+    _re.compile(r"<img\s[^>]*>", _re.IGNORECASE),
+    _re.compile(r"!\[[^\]]*\]\(page_\d+_(?:image|chart|seal|table|layout)\w*[^)]*\)"),
+    _re.compile(r"!\[[^\]]*\]\(image_\d+\.(?:png|jpe?g)\)"),
+    _re.compile(r"!\[[^\]]*\]\(layout(?:_\w+)*\)"),
+    _re.compile(r"!\[[^\]]*\]\(image\)"),
+]
+
+
+def _check_sqlite_integrity(conn) -> Tuple[List[str], List[str]]:
+    """Check 23: SQLite built-in integrity + foreign-key checks.
+
+    `PRAGMA foreign_key_check` returns one row per FK violation (table,
+    rowid, referenced table, fk id). `PRAGMA integrity_check` returns
+    the literal string 'ok' when clean.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    try:
+        fk_rows = list(conn.execute("PRAGMA foreign_key_check"))
+    except Exception as e:
+        warnings.append(f"foreign_key_check failed to run: {e}")
+        fk_rows = []
+    if fk_rows:
+        by_table: "Counter[str]" = Counter(row[0] for row in fk_rows)
+        summary = ", ".join(f"{t}={n}" for t, n in by_table.most_common())
+        issues.append(
+            f"{len(fk_rows)} foreign-key violations ({summary}) "
+            f"— run `mtss repair` or drop the offending rows"
+        )
+
+    try:
+        ic_rows = list(conn.execute("PRAGMA integrity_check"))
+    except Exception as e:
+        warnings.append(f"integrity_check failed to run: {e}")
+        ic_rows = []
+    if ic_rows and not (len(ic_rows) == 1 and ic_rows[0][0] == "ok"):
+        issues.append(
+            f"SQLite integrity_check failed ({len(ic_rows)} issues) — DB is corrupt"
+        )
+        for row in ic_rows[:5]:
+            issues.append(f"  {row[0]}")
+    return issues, warnings
+
+
+def _check_schema_parity(conn) -> Tuple[List[str], List[str]]:
+    """Check 24: Live schema matches the expected column set per table.
+
+    Drift here is the root cause of commit 9c70622 / fc38daf — tracker
+    and client used to produce two slightly-different processing_log
+    tables, silently dropping writes from whichever lost the race.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    for table, expected in _EXPECTED_COLUMNS.items():
+        try:
+            actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        except Exception as e:
+            issues.append(f"Could not read schema for {table}: {e}")
+            continue
+        if not actual:
+            issues.append(f"Table {table!r} is missing")
+            continue
+        missing = expected - actual
+        extra = actual - expected
+        if missing:
+            issues.append(
+                f"Table {table!r} missing columns: {sorted(missing)}"
+            )
+        if extra:
+            warnings.append(
+                f"Table {table!r} has unexpected columns (schema drift): {sorted(extra)}"
+            )
+    return issues, warnings
+
+
+def _check_embedding_mode_coverage(
+    docs: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 25: Every non-failed, non-image document has a valid embedding_mode.
+
+    Tied to Bug B-prime (commit 63e608d): empty-parse path used to skip
+    stamping embedding_mode, leaving downstream re-embed heuristics with
+    no hint whether to chunk or synthesize.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    valid = {"full", "summary", "metadata_only"}
+    missing: List[Dict[str, Any]] = []
+    invalid: List[Tuple[Dict[str, Any], str]] = []
+    for d in docs:
+        if d.get("status") == "failed":
+            continue
+        if d.get("document_type") == "attachment_image":
+            continue
+        mode = d.get("embedding_mode")
+        if not mode:
+            missing.append(d)
+        elif mode not in valid:
+            invalid.append((d, mode))
+    if missing:
+        issues.append(
+            f"{len(missing)} document(s) missing embedding_mode "
+            f"(re-embed cannot classify — fix with `mtss re-embed`)"
+        )
+    if invalid:
+        issues.append(
+            f"{len(invalid)} document(s) have unknown embedding_mode values"
+        )
+        for d, mode in invalid[:5]:
+            issues.append(f"  {d.get('doc_id', '?')[:16]}: {mode!r}")
+    return issues, warnings
+
+
+def _check_embedding_mode_inheritance(
+    chunks: List[Dict[str, Any]],
+    doc_by_uuid: Dict[str, Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 26: Chunks inherit embedding_mode from their parent document.
+
+    Per CLAUDE.md: mode is stamped on Document and inherited by every Chunk.
+    Mismatch means the mode changed after chunks were written.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    mismatches = 0
+    missing_on_chunk = 0
+    for c in chunks:
+        parent = doc_by_uuid.get(c.get("document_id") or "")
+        if not parent:
+            continue  # reported by check 4
+        parent_mode = parent.get("embedding_mode")
+        if not parent_mode:
+            continue  # reported by check 25
+        chunk_mode = c.get("embedding_mode")
+        if not chunk_mode:
+            missing_on_chunk += 1
+        elif chunk_mode != parent_mode:
+            mismatches += 1
+    if missing_on_chunk:
+        warnings.append(
+            f"{missing_on_chunk} chunk(s) missing embedding_mode inherited from document"
+        )
+    if mismatches:
+        issues.append(
+            f"{mismatches} chunk(s) have embedding_mode that disagrees with parent document"
+        )
+    return issues, warnings
+
+
+def _check_single_chunk_modes(
+    docs: List[Dict[str, Any]],
+    chunk_doc_ids: "Counter[str]",
+) -> Tuple[List[str], List[str]]:
+    """Check 27: `summary` / `metadata_only` docs have exactly one chunk.
+
+    The whole point of those modes is one synthesized chunk per doc. A
+    count other than 1 (for successful docs) means chunking diverged.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    offenders: List[Tuple[Dict[str, Any], int]] = []
+    for d in docs:
+        if d.get("status") == "failed":
+            continue
+        if d.get("embedding_mode") not in {"summary", "metadata_only"}:
+            continue
+        n = chunk_doc_ids.get(d["id"], 0)
+        if n != 1:
+            offenders.append((d, n))
+    if offenders:
+        issues.append(
+            f"{len(offenders)} summary/metadata_only document(s) "
+            f"do not have exactly 1 chunk"
+        )
+        for d, n in offenders[:5]:
+            issues.append(
+                f"  {d.get('embedding_mode')}: {d.get('file_name', '?')[:50]} ({n} chunks)"
+            )
+    return issues, warnings
+
+
+def _check_orphan_archive_folders(
+    docs: List[Dict[str, Any]],
+    archive_folders_on_disk: Set[str],
+) -> Tuple[List[str], List[str]]:
+    """Check 28: Archive folders on disk with no corresponding email document.
+
+    Inverse of check 13. Leftovers from deleted emails or interrupted
+    runs waste disk. Warning only — safe to leave; fix with an
+    archive-sweep script if they accumulate.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    if not archive_folders_on_disk:
+        return issues, warnings
+    expected: Set[str] = set()
+    for d in docs:
+        if d.get("depth", 0) != 0:
+            continue
+        doc_id = d.get("doc_id") or ""
+        if doc_id:
+            expected.add(compute_folder_id(doc_id))
+        # Also accept the cached archive_path (legacy 16-char form still on disk).
+        ap = d.get("archive_path")
+        if ap:
+            expected.add(ap)
+    orphans = sorted(archive_folders_on_disk - expected)
+    if orphans:
+        warnings.append(
+            f"{len(orphans)} archive folder(s) on disk with no matching email document"
+        )
+        for folder in orphans[:10]:
+            warnings.append(f"    {folder}")
+        if len(orphans) > 10:
+            warnings.append(f"    ... and {len(orphans) - 10} more")
+    return issues, warnings
+
+
+def _check_residual_image_refs(
+    archive_dir: Path,
+) -> Tuple[List[str], List[str]]:
+    """Check 29: Residual LlamaParse/Gemini image refs in archive markdown.
+
+    `strip_llamaparse_image_refs` should have scrubbed these; presence means
+    the regex missed a form. Run `mtss clean-archive-md` to re-apply.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    if not archive_dir.exists():
+        return issues, warnings
+    offenders: Dict[str, int] = {}
+    total = 0
+    for md in archive_dir.rglob("*.md"):
+        try:
+            text = md.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        hits = 0
+        for pattern in _RESIDUAL_IMAGE_PATTERNS:
+            hits += len(pattern.findall(text))
+        if hits:
+            folder = str(md.relative_to(archive_dir)).split("/")[0].split("\\")[0]
+            offenders[folder] = offenders.get(folder, 0) + hits
+            total += hits
+    if total:
+        warnings.append(
+            f"{total} residual image ref(s) in {len(offenders)} archive folder(s) "
+            f"(run `mtss clean-archive-md`)"
+        )
+        for folder, n in sorted(offenders.items(), key=lambda kv: -kv[1])[:5]:
+            warnings.append(f"    {folder}: {n}")
+    return issues, warnings
+
+
+def _check_duplicate_file_hashes(
+    docs: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 30: Same file_hash on multiple documents.
+
+    The tracker dedupes pending files by hash, so this should never happen
+    during normal ingest. `--retry-failed` with a stale hash or a manual
+    SQL insert could theoretically produce one.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    by_hash: Dict[str, List[Dict[str, Any]]] = {}
+    for d in docs:
+        h = d.get("file_hash")
+        if not h:
+            continue
+        if d.get("document_type") != "email":
+            continue  # attachment dupes are expected (same PDF in many emails)
+        by_hash.setdefault(h, []).append(d)
+    dupes = {h: ds for h, ds in by_hash.items() if len(ds) > 1}
+    if dupes:
+        warnings.append(
+            f"{len(dupes)} file_hash value(s) map to multiple email documents"
+        )
+        for h, ds in list(dupes.items())[:5]:
+            names = ", ".join(
+                d.get("source_id", "?")[:40] for d in ds[:3]
+            )
+            warnings.append(f"    {h[:12]}: {names}")
+    return issues, warnings
+
+
+def _check_embedding_vector_sanity(
+    chunks: List[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """Check 31: Embedding vectors are finite and non-zero.
+
+    All-zero / NaN / Inf vectors slip through the embedding API once in a
+    while (rate-limit retries, truncated responses). They poison retrieval
+    silently — cosine against a zero vector is undefined.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    import math
+    zero = 0
+    nan_inf = 0
+    for c in chunks:
+        emb = c.get("embedding")
+        if not emb:
+            continue
+        try:
+            total_sq = 0.0
+            bad = False
+            for v in emb:
+                if not math.isfinite(v):
+                    bad = True
+                    break
+                total_sq += v * v
+        except (TypeError, ValueError):
+            continue
+        if bad:
+            nan_inf += 1
+        elif total_sq == 0.0:
+            zero += 1
+    if nan_inf:
+        issues.append(f"{nan_inf} chunk embedding(s) contain NaN or Inf values")
+    if zero:
+        issues.append(f"{zero} chunk embedding(s) are all zeros (useless for retrieval)")
+    return issues, warnings
+
+
+def _check_outdated_ingest_version(
+    docs: List[Dict[str, Any]],
+    current_version: Optional[int],
+) -> Tuple[List[str], List[str]]:
+    """Check 32: Documents stamped with an older ingest_version.
+
+    Informational: `mtss ingest --reprocess-outdated` exists specifically
+    to catch these. Warning (not issue) — nothing is broken, just old.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    if current_version is None:
+        return issues, warnings
+    by_version: "Counter[int]" = Counter()
+    for d in docs:
+        v = d.get("ingest_version")
+        if isinstance(v, int) and v < current_version:
+            by_version[v] += 1
+    if by_version:
+        total = sum(by_version.values())
+        parts = ", ".join(f"v{v}={n}" for v, n in sorted(by_version.items()))
+        warnings.append(
+            f"{total} document(s) below current ingest_version (v{current_version}): {parts}"
+        )
+    return issues, warnings
+
+
+def _check_thread_root_consistency(
+    docs: List[Dict[str, Any]],
+    email_uuids: Set[str],
+) -> Tuple[List[str], List[str]]:
+    """Check 33: Thread-root + attachment-root invariants.
+
+    - Email docs at depth=0: root_id must equal id (they ARE the root).
+    - Non-email docs: root_id must reference an existing email document.
+    """
+    issues: List[str] = []
+    warnings: List[str] = []
+    self_ref_violations = 0
+    missing_root_parent = 0
+    for d in docs:
+        if d.get("document_type") == "email" and d.get("depth", 0) == 0:
+            if d.get("root_id") and d["root_id"] != d["id"]:
+                self_ref_violations += 1
+        elif d.get("document_type") != "email":
+            root = d.get("root_id")
+            if root and root not in email_uuids:
+                missing_root_parent += 1
+    if self_ref_violations:
+        issues.append(
+            f"{self_ref_violations} email document(s) have root_id != id (thread root mis-stamp)"
+        )
+    if missing_root_parent:
+        warnings.append(
+            f"{missing_root_parent} non-email document(s) have root_id pointing to a non-email / missing document"
+        )
+    return issues, warnings
+
+
+def _check_stale_processing_entries(conn) -> Tuple[List[str], List[str]]:
+    """Check 34: PROCESSING rows older than the stale threshold.
+
+    Covers crashed ingest runs that left rows stuck in PROCESSING. The
+    main ingest's `--retry-failed` flow resets these automatically, but
+    surfacing them here saves users from discovering the backlog only
+    when the next ingest quietly skips over them.
+    """
+    from datetime import datetime, timedelta, timezone
+    from ._common import STALE_PROCESSING_THRESHOLD_MINUTES
+
+    issues: List[str] = []
+    warnings: List[str] = []
+    try:
+        rows = list(conn.execute(
+            "SELECT file_path, started_at FROM processing_log "
+            "WHERE status = 'PROCESSING' AND started_at IS NOT NULL"
+        ))
+    except Exception as e:
+        warnings.append(f"stale-processing check failed: {e}")
+        return issues, warnings
+    if not rows:
+        return issues, warnings
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=STALE_PROCESSING_THRESHOLD_MINUTES
+    )
+    stale: List[str] = []
+    for row in rows:
+        try:
+            started = datetime.fromisoformat(row[1])
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if started < cutoff:
+                stale.append(row[0])
+        except (TypeError, ValueError):
+            continue
+    if stale:
+        warnings.append(
+            f"{len(stale)} file(s) stuck in PROCESSING > {STALE_PROCESSING_THRESHOLD_MINUTES} min "
+            f"(run `mtss reset-stale` if no ingest is active)"
+        )
+        for fp in stale[:5]:
+            warnings.append(f"    {fp}")
+    return issues, warnings
+
+
 def _run_ingest_validation(output_dir: Path, verbose: bool):
     if not output_dir.exists():
         console.print(f"[red]Output directory not found: {output_dir}[/red]")
@@ -952,6 +1424,51 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
     events = _load_jsonl(output_dir / "ingest_events.jsonl")
     proc_log = _load_jsonl(output_dir / "processing_log.jsonl")
     run_history = _load_jsonl(output_dir / "run_history.jsonl")
+
+    # Dedicated read-only connection for SQLite-level checks (PRAGMAs,
+    # schema parity, stale-row queries). Kept separate from _load_jsonl's
+    # transient client connections so it stays open for the whole run.
+    import sqlite3 as _sqlite3
+    db_path = output_dir / "ingest.db"
+    ro_conn: Optional[_sqlite3.Connection] = None
+    try:
+        ro_conn = _sqlite3.connect(
+            f"file:{db_path.as_posix()}?mode=ro", uri=True, isolation_level=None
+        )
+    except _sqlite3.OperationalError:
+        ro_conn = None
+
+    try:
+        current_ingest_version: Optional[int] = None
+        try:
+            from ..config import get_settings
+            current_ingest_version = int(get_settings().current_ingest_version)
+        except Exception:
+            current_ingest_version = None
+        _run_ingest_validation_with_conn(
+            output_dir, verbose, docs, chunks, topics, events, proc_log,
+            run_history, ro_conn, current_ingest_version,
+        )
+    finally:
+        if ro_conn is not None:
+            try:
+                ro_conn.close()
+            except Exception:
+                pass
+
+
+def _run_ingest_validation_with_conn(
+    output_dir: Path,
+    verbose: bool,
+    docs: List[Dict[str, Any]],
+    chunks: List[Dict[str, Any]],
+    topics: List[Dict[str, Any]],
+    events: List[Dict[str, Any]],
+    proc_log: List[Dict[str, Any]],
+    run_history: List[Dict[str, Any]],
+    ro_conn,
+    current_ingest_version: Optional[int],
+):
 
     if not docs and not chunks:
         console.print("[yellow]No data found in output directory.[/yellow]")
@@ -1056,6 +1573,28 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
         # === 22. Email metadata consistency ===
         _check_email_metadata(docs),
     ]
+
+    # Extended checks (23+) — SQLite integrity + data-quality invariants.
+    # Skipped gracefully when the RO connection couldn't be opened.
+    if ro_conn is not None:
+        _check_results.extend([
+            _check_sqlite_integrity(ro_conn),      # 23
+            _check_schema_parity(ro_conn),         # 24
+        ])
+    _check_results.extend([
+        _check_embedding_mode_coverage(docs),                           # 25
+        _check_embedding_mode_inheritance(chunks, doc_by_uuid),         # 26
+        _check_single_chunk_modes(docs, chunk_doc_ids),                 # 27
+        _check_orphan_archive_folders(docs, archive_folders_on_disk),   # 28
+        _check_residual_image_refs(archive_dir),                        # 29
+        _check_duplicate_file_hashes(docs),                             # 30
+        _check_embedding_vector_sanity(chunks),                         # 31
+        _check_outdated_ingest_version(docs, current_ingest_version),   # 32
+        _check_thread_root_consistency(docs, email_uuids),              # 33
+    ])
+    if ro_conn is not None:
+        _check_results.append(_check_stale_processing_entries(ro_conn)) # 34
+
     for check_issues, check_warnings in _check_results:
         issues.extend(check_issues)
         warnings.extend(check_warnings)

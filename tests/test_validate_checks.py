@@ -26,18 +26,30 @@ from mtss.cli.validate_cmd import (
     _check_context_summary,
     _check_docs_without_chunks,
     _check_document_types,
+    _check_duplicate_file_hashes,
     _check_duplicate_ids,
     _check_duplicate_uuids,
     _check_email_metadata,
     _check_embedding_completeness,
+    _check_embedding_mode_coverage,
+    _check_embedding_mode_inheritance,
+    _check_embedding_vector_sanity,
     _check_empty_content,
     _check_encoded_filenames,
     _check_encoded_uris,
     _check_failed_documents,
+    _check_orphan_archive_folders,
     _check_orphan_attachments,
     _check_orphan_chunks,
+    _check_outdated_ingest_version,
     _check_processing_log,
+    _check_residual_image_refs,
+    _check_schema_parity,
+    _check_single_chunk_modes,
+    _check_sqlite_integrity,
+    _check_stale_processing_entries,
     _check_stale_topic_refs,
+    _check_thread_root_consistency,
     _check_topic_count_accuracy,
     _check_topic_health,
     _check_trailing_dot_filenames,
@@ -827,3 +839,346 @@ def test_check_email_metadata_clean():
     # Non-email docs are ignored entirely
     attachment = _make_doc(doc_type="attachment_document", email_participants=None)
     assert _check_email_metadata([ok, attachment]) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# Extended checks (23+)
+# ---------------------------------------------------------------------------
+
+
+def _make_mini_db(tmp_path, extra_sql: str = "") -> "sqlite3.Connection":
+    """Create a minimal schema-correct DB for extended-check tests.
+
+    Uses the live PROCESSING_LOG_SCHEMA_SQL so processing_log stays
+    aligned with the production schema. `extra_sql` lets tests inject
+    rows or violations.
+    """
+    import sqlite3
+    from mtss.storage.sqlite_client import _SCHEMA_SQL
+    db = tmp_path / "ingest.db"
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(_SCHEMA_SQL)
+    if extra_sql:
+        conn.executescript(extra_sql)
+    return conn
+
+
+# --- Check 23: SQLite integrity ----------------------------------------------
+
+
+@pytest.mark.unit
+def test_check_sqlite_integrity_clean(tmp_path):
+    conn = _make_mini_db(tmp_path)
+    try:
+        assert _check_sqlite_integrity(conn) == ([], [])
+    finally:
+        conn.close()
+
+
+@pytest.mark.unit
+def test_check_sqlite_integrity_flags_fk_violation(tmp_path):
+    # Insert a chunk_topics row pointing at a non-existent chunk and topic
+    # by temporarily disabling FK enforcement.
+    conn = _make_mini_db(tmp_path)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT INTO chunk_topics(chunk_id, topic_id) VALUES (?, ?)",
+            ("ghost-chunk", "ghost-topic"),
+        )
+        conn.execute("PRAGMA foreign_keys=ON")
+        issues, _ = _check_sqlite_integrity(conn)
+        assert any("foreign-key violations" in i for i in issues)
+    finally:
+        conn.close()
+
+
+# --- Check 24: schema parity --------------------------------------------------
+
+
+@pytest.mark.unit
+def test_check_schema_parity_clean(tmp_path):
+    conn = _make_mini_db(tmp_path)
+    try:
+        assert _check_schema_parity(conn) == ([], [])
+    finally:
+        conn.close()
+
+
+@pytest.mark.unit
+def test_check_schema_parity_flags_missing_column(tmp_path):
+    # Drop-and-recreate processing_log without the ingest_version column.
+    conn = _make_mini_db(tmp_path)
+    try:
+        conn.executescript(
+            "DROP TABLE processing_log;"
+            "CREATE TABLE processing_log ("
+            "  file_path TEXT PRIMARY KEY, file_hash TEXT NOT NULL,"
+            "  status TEXT NOT NULL, started_at TEXT, completed_at TEXT,"
+            "  duration_seconds REAL, attempts INTEGER DEFAULT 0, error TEXT"
+            ");"
+        )
+        issues, _ = _check_schema_parity(conn)
+        assert any("processing_log" in i and "ingest_version" in i for i in issues)
+    finally:
+        conn.close()
+
+
+# --- Check 25: embedding_mode coverage ---------------------------------------
+
+
+@pytest.mark.unit
+def test_check_embedding_mode_coverage_flags_missing():
+    docs = [
+        {**_make_doc(doc_type="attachment_document"), "embedding_mode": "full"},
+        {**_make_doc(doc_type="attachment_document"), "embedding_mode": None},
+        {**_make_doc(doc_type="attachment_document", status="failed")},  # ignored
+        {**_make_doc(doc_type="attachment_image")},  # ignored
+    ]
+    issues, _ = _check_embedding_mode_coverage(docs)
+    assert any("1 document(s) missing embedding_mode" in i for i in issues)
+
+
+@pytest.mark.unit
+def test_check_embedding_mode_coverage_flags_invalid():
+    docs = [
+        {**_make_doc(doc_type="attachment_document"), "embedding_mode": "bogus"},
+    ]
+    issues, _ = _check_embedding_mode_coverage(docs)
+    assert any("unknown embedding_mode values" in i for i in issues)
+
+
+@pytest.mark.unit
+def test_check_embedding_mode_coverage_clean():
+    docs = [
+        {**_make_doc(doc_type="email"), "embedding_mode": "full"},
+        {**_make_doc(doc_type="attachment_document"), "embedding_mode": "summary"},
+    ]
+    assert _check_embedding_mode_coverage(docs) == ([], [])
+
+
+# --- Check 26: embedding_mode inheritance ------------------------------------
+
+
+@pytest.mark.unit
+def test_check_embedding_mode_inheritance_flags_mismatch():
+    doc = {**_make_doc(), "embedding_mode": "full"}
+    by_uuid = {doc["id"]: doc}
+    chunks = [
+        {**_make_chunk(doc["id"]), "embedding_mode": "summary"},  # mismatch
+        {**_make_chunk(doc["id"]), "embedding_mode": None},       # missing
+        {**_make_chunk(doc["id"]), "embedding_mode": "full"},     # ok
+    ]
+    issues, warnings = _check_embedding_mode_inheritance(chunks, by_uuid)
+    assert any("disagrees with parent document" in i for i in issues)
+    assert any("missing embedding_mode inherited" in w for w in warnings)
+
+
+@pytest.mark.unit
+def test_check_embedding_mode_inheritance_clean():
+    doc = {**_make_doc(), "embedding_mode": "full"}
+    by_uuid = {doc["id"]: doc}
+    chunks = [{**_make_chunk(doc["id"]), "embedding_mode": "full"} for _ in range(3)]
+    assert _check_embedding_mode_inheritance(chunks, by_uuid) == ([], [])
+
+
+# --- Check 27: single-chunk modes --------------------------------------------
+
+
+@pytest.mark.unit
+def test_check_single_chunk_modes_flags_multi_chunk_summary():
+    doc = {**_make_doc(), "embedding_mode": "summary"}
+    counts = Counter({doc["id"]: 3})
+    issues, _ = _check_single_chunk_modes([doc], counts)
+    assert any("do not have exactly 1 chunk" in i for i in issues)
+
+
+@pytest.mark.unit
+def test_check_single_chunk_modes_clean():
+    summary_doc = {**_make_doc(), "embedding_mode": "summary"}
+    meta_doc = {**_make_doc(), "embedding_mode": "metadata_only"}
+    full_doc = {**_make_doc(), "embedding_mode": "full"}
+    counts = Counter({
+        summary_doc["id"]: 1, meta_doc["id"]: 1, full_doc["id"]: 42,
+    })
+    assert _check_single_chunk_modes(
+        [summary_doc, meta_doc, full_doc], counts
+    ) == ([], [])
+
+
+# --- Check 28: orphan archive folders ----------------------------------------
+
+
+@pytest.mark.unit
+def test_check_orphan_archive_folders_flags_extras():
+    from mtss.utils import compute_folder_id
+    doc = _make_doc(doc_id="kept00000000000000000000000000aa")
+    expected_folder = compute_folder_id(doc["doc_id"])
+    on_disk = {expected_folder, "orphan_folder_1", "orphan_folder_2"}
+    _, warnings = _check_orphan_archive_folders([doc], on_disk)
+    assert any("2 archive folder(s) on disk with no matching email" in w for w in warnings)
+
+
+@pytest.mark.unit
+def test_check_orphan_archive_folders_clean():
+    from mtss.utils import compute_folder_id
+    doc = _make_doc(doc_id="kept00000000000000000000000000aa")
+    expected = compute_folder_id(doc["doc_id"])
+    assert _check_orphan_archive_folders([doc], {expected}) == ([], [])
+
+
+# --- Check 29: residual image refs -------------------------------------------
+
+
+@pytest.mark.unit
+def test_check_residual_image_refs_flags_llamaparse_artifacts(tmp_path):
+    archive = tmp_path / "archive"
+    folder = archive / "abc"
+    folder.mkdir(parents=True)
+    (folder / "email.md").write_text(
+        "# Report\n"
+        "![fig](page_1_image_2.jpg)\n"
+        "<img src=\"foo.png\" alt=\"bar\"/>\n"
+        "![gen](image_3.png)\n"
+    )
+    _, warnings = _check_residual_image_refs(archive)
+    assert any("residual image ref" in w for w in warnings)
+
+
+@pytest.mark.unit
+def test_check_residual_image_refs_clean(tmp_path):
+    archive = tmp_path / "archive"
+    folder = archive / "ok"
+    folder.mkdir(parents=True)
+    (folder / "email.md").write_text("# Clean\n\nJust prose, no refs.\n")
+    assert _check_residual_image_refs(archive) == ([], [])
+
+
+# --- Check 30: duplicate file_hash ------------------------------------------
+
+
+@pytest.mark.unit
+def test_check_duplicate_file_hashes_flags_emails_with_same_hash():
+    docs = [
+        {**_make_doc(source_id="a.eml"), "file_hash": "h1"},
+        {**_make_doc(source_id="b.eml"), "file_hash": "h1"},
+        {**_make_doc(source_id="c.eml"), "file_hash": "h2"},
+    ]
+    _, warnings = _check_duplicate_file_hashes(docs)
+    assert any("map to multiple email documents" in w for w in warnings)
+
+
+@pytest.mark.unit
+def test_check_duplicate_file_hashes_ignores_attachment_dupes():
+    docs = [
+        {**_make_doc(doc_type="attachment_document", source_id="x"), "file_hash": "same"},
+        {**_make_doc(doc_type="attachment_document", source_id="y"), "file_hash": "same"},
+    ]
+    assert _check_duplicate_file_hashes(docs) == ([], [])
+
+
+# --- Check 31: embedding vector sanity --------------------------------------
+
+
+@pytest.mark.unit
+def test_check_embedding_vector_sanity_flags_zero_and_nan():
+    doc = _make_doc()
+    chunks = [
+        _make_chunk(doc["id"], embedding=(0.0, 0.0, 0.0)),
+        _make_chunk(doc["id"], embedding=(float("nan"), 0.1)),
+        _make_chunk(doc["id"], embedding=(float("inf"), 0.1)),
+        _make_chunk(doc["id"], embedding=(0.1, 0.2)),  # good
+    ]
+    issues, _ = _check_embedding_vector_sanity(chunks)
+    assert any("are all zeros" in i for i in issues)
+    assert any("NaN or Inf" in i for i in issues)
+
+
+@pytest.mark.unit
+def test_check_embedding_vector_sanity_clean():
+    doc = _make_doc()
+    chunks = [_make_chunk(doc["id"], embedding=(0.1, 0.2)) for _ in range(3)]
+    assert _check_embedding_vector_sanity(chunks) == ([], [])
+
+
+# --- Check 32: outdated ingest_version --------------------------------------
+
+
+@pytest.mark.unit
+def test_check_outdated_ingest_version_flags_older_rows():
+    docs = [
+        {**_make_doc(), "ingest_version": 3},
+        {**_make_doc(), "ingest_version": 5},
+        {**_make_doc(), "ingest_version": 5},
+    ]
+    _, warnings = _check_outdated_ingest_version(docs, current_version=5)
+    assert any("below current ingest_version" in w and "v3=1" in w for w in warnings)
+
+
+@pytest.mark.unit
+def test_check_outdated_ingest_version_clean():
+    docs = [{**_make_doc(), "ingest_version": 5} for _ in range(3)]
+    assert _check_outdated_ingest_version(docs, current_version=5) == ([], [])
+
+
+# --- Check 33: thread-root consistency --------------------------------------
+
+
+@pytest.mark.unit
+def test_check_thread_root_consistency_flags_email_with_foreign_root():
+    email = _make_doc(doc_type="email")
+    email["root_id"] = "some-other-uuid"  # email should point to itself
+    issues, _ = _check_thread_root_consistency([email], {email["id"]})
+    assert any("root_id != id" in i for i in issues)
+
+
+@pytest.mark.unit
+def test_check_thread_root_consistency_flags_attachment_with_missing_root():
+    email = _make_doc(doc_type="email")
+    att = _make_doc(doc_type="attachment_document", root_id="ghost-uuid")
+    email_uuids = {email["id"]}
+    _, warnings = _check_thread_root_consistency([email, att], email_uuids)
+    assert any("root_id pointing to a non-email" in w for w in warnings)
+
+
+@pytest.mark.unit
+def test_check_thread_root_consistency_clean():
+    email = _make_doc(doc_type="email")
+    att = _make_doc(doc_type="attachment_document", root_id=email["id"])
+    assert _check_thread_root_consistency([email, att], {email["id"]}) == ([], [])
+
+
+# --- Check 34: stale processing entries -------------------------------------
+
+
+@pytest.mark.unit
+def test_check_stale_processing_entries_flags_old_rows(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    conn = _make_mini_db(tmp_path)
+    try:
+        old_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        conn.execute(
+            "INSERT INTO processing_log(file_path, file_hash, status, started_at) "
+            "VALUES (?, ?, 'PROCESSING', ?)",
+            ("stuck.eml", "h", old_ts),
+        )
+        _, warnings = _check_stale_processing_entries(conn)
+        assert any("stuck in PROCESSING" in w for w in warnings)
+    finally:
+        conn.close()
+
+
+@pytest.mark.unit
+def test_check_stale_processing_entries_clean(tmp_path):
+    from datetime import datetime, timezone
+    conn = _make_mini_db(tmp_path)
+    try:
+        conn.execute(
+            "INSERT INTO processing_log(file_path, file_hash, status, started_at) "
+            "VALUES (?, ?, 'PROCESSING', ?)",
+            ("fresh.eml", "h", datetime.now(timezone.utc).isoformat()),
+        )
+        assert _check_stale_processing_entries(conn) == ([], [])
+    finally:
+        conn.close()
