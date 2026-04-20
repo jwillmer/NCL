@@ -523,6 +523,43 @@ class TestLlamaParseParseCallKwargs:
         )
 
     @pytest.mark.asyncio
+    async def test_empty_output_raises_empty_content_error(
+        self, tmp_path, mock_llamaparse_settings
+    ):
+        """LlamaParse must raise ``EmptyContentError`` (not bare
+        ``ValueError``) when the SDK returns no markdown.
+
+        Regression: this previously raised ``ValueError`` so callers couldn't
+        distinguish "parser opened the file but got nothing" from "parser
+        blew up on I/O", breaking the convention every other parser already
+        followed (LocalCsv, LocalHtml, LocalDocx, LocalPDF, GeminiPDF all
+        signal empty content via ``EmptyContentError``).
+        """
+        from unittest.mock import AsyncMock
+
+        from mtss.parsers import llamaparse_parser
+        from mtss.parsers.base import EmptyContentError
+        from mtss.parsers.llamaparse_parser import LlamaParseParser
+
+        legacy = tmp_path / "legacy.doc"
+        legacy.write_bytes(b"fake-doc-payload")
+
+        empty_result = MagicMock()
+        # Whitespace-only markdown reproduces the real SDK behaviour for
+        # image-only legacy office files — the inner ``strip()`` guard fires.
+        empty_result.markdown.pages = [MagicMock(markdown="   \n  \n")]
+        fake_client = MagicMock()
+        fake_client.parsing.parse = AsyncMock(return_value=empty_result)
+
+        with patch.object(llamaparse_parser, "_get_llamaparse_client", return_value=fake_client), \
+             patch.object(llamaparse_parser, "_llamaparse_semaphore", None), \
+             patch("mtss.parsers.llamaparse_parser.get_settings", return_value=mock_llamaparse_settings):
+            parser = LlamaParseParser()
+            parser.settings = mock_llamaparse_settings
+            with pytest.raises(EmptyContentError):
+                await parser.parse(legacy)
+
+    @pytest.mark.asyncio
     async def test_every_outbound_kwarg_is_in_sdk_signature(
         self, tmp_path, mock_llamaparse_settings, sdk_parse_param_names
     ):

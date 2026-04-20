@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..config import get_settings
-from .base import BaseParser
+from .base import BaseParser, EmptyContentError
 
 if TYPE_CHECKING:
     from llama_cloud import AsyncLlamaCloud
@@ -230,7 +230,14 @@ class LlamaParseParser(BaseParser):
                 markdown_text = strip_llamaparse_image_refs(markdown_text)
 
                 if not markdown_text or not markdown_text.strip():
-                    raise ValueError(f"LlamaParse produced no content for {file_path}")
+                    # Use the shared empty-content sentinel so callers can
+                    # distinguish "parser opened the file but extracted
+                    # nothing" from "parser blew up". Other parsers
+                    # (LocalCsv/LocalHtml/local docx) already raise this on
+                    # the same condition; LlamaParse is now consistent.
+                    raise EmptyContentError(
+                        f"LlamaParse produced no content for {file_path}"
+                    )
 
                 from ..cli._common import _service_counter
                 _service_counter.add("llamaparse")
