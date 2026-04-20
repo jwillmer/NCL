@@ -1,18 +1,34 @@
-"""Backfill ``embedding_mode`` for image attachment documents.
+"""Backfill ``embedding_mode`` for attachment documents that bypass the decider.
 
 Background
 ----------
-Image-attachment processing in ``attachment_handler.py`` historically did not
-stamp ``Document.embedding_mode`` (the path bypasses the embedding decider —
-images produce a single vision-derived chunk instead of being chunked from
-text). The column landed in SQLite as ``NULL`` for every image attachment.
+Two attachment-handler paths historically completed without stamping
+``Document.embedding_mode``:
 
-Downstream filters (``mtss re-embed``, ``mtss validate``, future RAG queries)
-treat ``embedding_mode IS NULL`` as "not yet decided" and either skip the row
-or surface it as a warning. This script repairs existing rows in-place by
-setting ``embedding_mode = 'metadata_only'`` (the same value the live
-ingest now stamps for images) for any document whose ``document_type`` is
-``attachment_image`` and whose ``embedding_mode`` is NULL.
+1. **Image branch** (any ``attachment_image`` row). Image processing
+   produces a single vision-derived chunk and skips the embedding decider
+   entirely; ``embedding_mode`` was never assigned.
+2. **Empty-parse branch** (any ``status='completed'`` doc with 0 chunks).
+   When the parser opened the file but extracted no text (image-only
+   PDFs, ``.url`` shortcut files), the handler logged ``no_body_chunks``
+   and marked the doc COMPLETED, but skipped ``_decide_and_build_chunks``
+   because it was gated on ``if parsed_content:``. ``embedding_mode``
+   was never assigned.
+
+Both branches now stamp ``METADATA_ONLY`` at ingest time. This script
+repairs the existing rows that landed before the fix:
+
+- Image rows: ``document_type = 'attachment_image' AND embedding_mode IS NULL``
+- Empty-parse rows: ``status = 'completed' AND embedding_mode IS NULL``
+  (the image clause is a subset; UNION dedupes)
+
+Downstream filters (``mtss re-embed``, ``mtss validate``, future RAG
+queries) treat ``embedding_mode IS NULL`` as "not yet decided" and either
+skip the row or surface it as a warning, so leaving the rows NULL is a
+silent observability gap.
+
+FAILED rows are intentionally untouched — the parser blew up before the
+decider could run, so NULL is the correct state for those.
 
 No re-parse, no LLM calls, no API cost.
 
@@ -38,16 +54,22 @@ from pathlib import Path
 logger = logging.getLogger("repair_image_embedding_modes")
 
 
-def _candidate_rows(conn: sqlite3.Connection) -> list[tuple[str, str | None]]:
+def _candidate_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str | None]]:
+    """Image OR completed-with-no-mode rows. FAILED rows excluded — NULL is
+    the right state for those (the parser blew up before the decider)."""
     rows = conn.execute(
         """
-        SELECT id, file_name
+        SELECT id, document_type, file_name
         FROM documents
-        WHERE document_type = 'attachment_image'
-          AND embedding_mode IS NULL
+        WHERE embedding_mode IS NULL
+          AND (
+              document_type = 'attachment_image'
+              OR status = 'completed'
+          )
+        ORDER BY document_type, file_name
         """
     ).fetchall()
-    return [(r[0], r[1]) for r in rows]
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 def _apply(conn: sqlite3.Connection) -> int:
@@ -56,8 +78,11 @@ def _apply(conn: sqlite3.Connection) -> int:
         UPDATE documents
            SET embedding_mode = 'metadata_only',
                updated_at     = datetime('now')
-         WHERE document_type = 'attachment_image'
-           AND embedding_mode IS NULL
+         WHERE embedding_mode IS NULL
+           AND (
+               document_type = 'attachment_image'
+               OR status = 'completed'
+           )
         """
     )
     return cursor.rowcount
@@ -90,14 +115,25 @@ def main() -> int:
     conn.execute("PRAGMA busy_timeout=30000")
     try:
         candidates = _candidate_rows(conn)
-        logger.info("Found %d image documents with embedding_mode = NULL", len(candidates))
+        logger.info(
+            "Found %d documents needing embedding_mode backfill "
+            "(image OR completed-with-NULL)",
+            len(candidates),
+        )
         if not candidates:
             logger.info("Nothing to do.")
             return 0
 
+        # Per-type breakdown to make the impact obvious before --apply.
+        by_type: dict[str, int] = {}
+        for _, doc_type, _ in candidates:
+            by_type[doc_type] = by_type.get(doc_type, 0) + 1
+        for doc_type, n in sorted(by_type.items()):
+            logger.info("  %-22s %d", doc_type, n)
+
         sample = candidates[:10]
-        for row_id, name in sample:
-            logger.info("  %s  %s", row_id, name or "(no file_name)")
+        for row_id, doc_type, name in sample:
+            logger.info("  %s  [%s]  %s", row_id, doc_type, name or "(no file_name)")
         if len(candidates) > len(sample):
             logger.info("  ... and %d more", len(candidates) - len(sample))
 

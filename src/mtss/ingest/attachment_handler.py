@@ -666,6 +666,11 @@ async def _process_non_zip_attachment(
 
                 if not parsed_content:
                     vprint("  -> 0 chunks (document has no extractable text)", file_ctx)
+                    # Empty parse skips the embedding decider (gated below on
+                    # ``if parsed_content``), so stamp the mode here. Without
+                    # this the doc lands COMPLETED with embedding_mode = NULL
+                    # — same shape as the historical image-branch bug.
+                    attach_doc.embedding_mode = EmbeddingMode.METADATA_ONLY
                     components.db.log_ingest_event(
                         document_id=attach_doc.id,
                         event_type="no_body_chunks",
@@ -994,6 +999,10 @@ async def _process_zip_member(
                     parser=_zip_parser,
                 )
             if not parsed_content:
+                # Mirror the non-ZIP path: empty parse means the decider
+                # never runs, so stamp METADATA_ONLY here to keep the row
+                # out of the embedding_mode = NULL bucket.
+                attach_doc.embedding_mode = EmbeddingMode.METADATA_ONLY
                 components.db.log_ingest_event(
                     document_id=attach_doc.id,
                     event_type="no_body_chunks",
