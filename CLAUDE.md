@@ -37,6 +37,7 @@ Targeted repair commands — preferred over full reingest (API costs).
 | `mtss reprocess` | Re-ingest docs below a target ingest version. | Full re-parse. |
 | `mtss reindex-chunks` | Re-chunk from archived markdown (adds line numbers, regenerates context). | LLM for context. |
 | `mtss re-embed` | Re-classify embedding mode + re-chunk + re-embed against archived markdown. No re-parse. `--dry-run`, `--limit`, `--mode`, `--force`. | Embeddings + (LLM triage on the medium-confidence band only). |
+| `mtss backup` | Snapshot `ingest.db` (via `VACUUM INTO`, safe during reads) + zip `archive/` into `data/backup/<YYYYMMDD-HHMMSS>/`. DB alone is useless without archive/, so both are captured together. `--dry-run`, `--dest`, `--compression-level`. | None. |
 
 ## Parsers (`src/mtss/parsers/`)
 

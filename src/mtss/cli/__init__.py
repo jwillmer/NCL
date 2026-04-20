@@ -33,6 +33,7 @@ app.add_typer(topics_app, name="topics")
 # Register commands from each module
 from . import (
     admin_cmd,
+    backup_cmd,
     entities_cmd,
     import_cmd,
     ingest_cmd,
@@ -52,6 +53,7 @@ entities_cmd.register(app, vessels_app, topics_app)
 validate_cmd.register(app)
 reembed_cmd.register(app)
 review_modes_cmd.register(app)
+backup_cmd.register(app)
 
 if __name__ == "__main__":
     app()
