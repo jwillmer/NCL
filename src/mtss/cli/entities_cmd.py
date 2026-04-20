@@ -94,9 +94,146 @@ def register(app: typer.Typer, vessels_app: typer.Typer, topics_app: typer.Typer
     # ==================== Topics Commands ====================
 
     @topics_app.command("list")
-    def topics_list():
-        """List all topics with document counts."""
-        asyncio.run(_topics_list())
+    def topics_list(
+        output_dir: Optional[Path] = typer.Option(
+            None,
+            "--output-dir",
+            "-o",
+            help="Directory containing ingest.db (default: data/output)",
+        ),
+        sort: str = typer.Option(
+            "chunks",
+            "--sort",
+            "-s",
+            help="Sort key: chunks | docs | name (default: chunks).",
+        ),
+        filter_substring: Optional[str] = typer.Option(
+            None,
+            "--filter",
+            "-f",
+            help="Case-insensitive substring match against name + display_name.",
+        ),
+        min_chunks: int = typer.Option(
+            0,
+            "--min-chunks",
+            help="Only show topics with at least this many chunks.",
+        ),
+        limit: int = typer.Option(
+            50,
+            "--limit",
+            "-l",
+            help="Max rows to show (0 = show all). Default 50.",
+        ),
+        json_out: Optional[Path] = typer.Option(
+            None,
+            "--json",
+            help="Write the full filtered list to this JSON file.",
+        ),
+    ):
+        """List topics from local ingest.db with sort/filter/paginate.
+
+        Reads `data/output/ingest.db` (WAL mode — safe during active ingests).
+        """
+        _topics_list_local(output_dir, sort, filter_substring, min_chunks, limit, json_out)
+
+    @topics_app.command("consolidate")
+    def topics_consolidate(
+        output_dir: Optional[Path] = typer.Option(
+            None,
+            "--output-dir",
+            "-o",
+            help="Directory containing ingest.db (default: data/output)",
+        ),
+        strategy: str = typer.Option(
+            "pairwise",
+            "--strategy",
+            help="Merge strategy: pairwise | cluster | name. Default pairwise (greedy single-pair merges). `cluster` does single-linkage transitive merges. `name` groups topics whose normalized name is identical (case/punct-insensitive).",
+        ),
+        threshold: float = typer.Option(
+            0.80,
+            "--threshold",
+            "-t",
+            help="Cosine similarity threshold for pairwise/cluster. Ignored by --strategy name.",
+        ),
+        apply: bool = typer.Option(
+            False,
+            "--apply",
+            help="Actually perform the merge. Without this, the command is dry-run only.",
+        ),
+        yes: bool = typer.Option(
+            False,
+            "--yes",
+            "-y",
+            help="Skip the interactive confirmation on --apply.",
+        ),
+        limit: int = typer.Option(
+            50,
+            "--limit",
+            "-l",
+            help="Max merges to show in the preview table (0 = show all).",
+        ),
+        json_out: Optional[Path] = typer.Option(
+            None,
+            "--json",
+            help="Write the full merge plan to this JSON file.",
+        ),
+    ):
+        """Consolidate near-duplicate topics.
+
+        Dry-run by default. Prints the greedy merge plan — which topic
+        absorbs which — and exits without touching ingest.db. Re-run with
+        ``--apply`` to actually perform the merge; you'll be prompted once
+        unless ``--yes`` is set.
+
+        Strategies:
+          pairwise — merges every (A, B) pair with cosine >= threshold (greedy).
+          cluster  — single-linkage: A-B-C chains collapse even if A-C < threshold.
+          name     — merges topics whose normalized name is identical (case/punct).
+
+        WARNING: a local merge leaves orphan topic UUIDs inside the remote
+        ``chunks.metadata.topic_ids`` JSONB array in Supabase. Plan a
+        re-import or topic-rewrite RPC before pushing.
+        """
+        _topics_consolidate(output_dir, strategy, threshold, apply, yes, limit, json_out)
+
+    @topics_app.command("audit")
+    def topics_audit(
+        output_dir: Optional[Path] = typer.Option(
+            None,
+            "--output-dir",
+            "-o",
+            help="Directory containing ingest.db (default: data/output)",
+        ),
+        lower: float = typer.Option(
+            0.75,
+            "--lower",
+            help="Lower cosine threshold (inclusive). Default 0.75.",
+        ),
+        upper: float = typer.Option(
+            0.85,
+            "--upper",
+            help="Upper cosine threshold (exclusive). Default 0.85 — the ingest dedup line.",
+        ),
+        limit: int = typer.Option(
+            50,
+            "--limit",
+            "-l",
+            help="Max pairs to show in the table (0 = show all).",
+        ),
+        json_out: Optional[Path] = typer.Option(
+            None,
+            "--json",
+            help="Write the full pair list to this JSON file.",
+        ),
+    ):
+        """Audit topic dedup: flag near-duplicate pairs in the [lower, upper) band.
+
+        Read-only against local ingest.db. Pairs above `upper` were already
+        merged; pairs below `lower` are considered distinct. The band in
+        between is the grey zone worth a human look before lowering the
+        merge threshold and running a consolidation pass.
+        """
+        _topics_audit(output_dir, lower, upper, limit, json_out)
 
 
 async def _vessels_import(csv_file: Optional[Path], clear: bool):
@@ -325,30 +462,292 @@ async def _vessels_list():
         await db.close()
 
 
-async def _topics_list():
-    """Async implementation of topics list command."""
-    from ..storage.supabase_client import SupabaseClient
+def _topics_list_local(
+    output_dir: Optional[Path],
+    sort: str,
+    filter_substring: Optional[str],
+    min_chunks: int,
+    limit: int,
+    json_out: Optional[Path],
+) -> None:
+    """Local-SQLite implementation of `mtss topics list`."""
+    import json as _json
 
-    db = SupabaseClient()
+    from ..storage.sqlite_client import SqliteStorageClient
+
+    sort_columns = {
+        "chunks": "chunk_count DESC, document_count DESC, name ASC",
+        "docs": "document_count DESC, chunk_count DESC, name ASC",
+        "name": "name ASC",
+    }
+    if sort not in sort_columns:
+        console.print(f"[red]--sort must be one of: {', '.join(sort_columns)}[/red]")
+        raise typer.Exit(2)
+
+    resolved_output = output_dir or Path("data/output")
+    db_path = resolved_output / "ingest.db"
+    if not db_path.exists():
+        console.print(f"[red]ingest.db not found in {resolved_output}[/red]")
+        raise typer.Exit(1)
 
     try:
-        topics = await db.get_all_topics()
+        db = SqliteStorageClient(output_dir=resolved_output)
+    except Exception as exc:
+        console.print(f"[red]Failed to open ingest.db: {exc}[/red]")
+        raise typer.Exit(1)
 
-        if not topics:
-            console.print("[dim]No topics in database[/dim]")
-            return
+    query_parts = [
+        "SELECT id, name, display_name, chunk_count, document_count",
+        "FROM topics",
+    ]
+    where = ["chunk_count >= ?"]
+    params: list[object] = [min_chunks]
+    if filter_substring:
+        where.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(display_name, '')) LIKE ?)")
+        needle = f"%{filter_substring.lower()}%"
+        params.extend([needle, needle])
+    query_parts.append("WHERE " + " AND ".join(where))
+    query_parts.append(f"ORDER BY {sort_columns[sort]}")
+    rows = list(db._conn.execute(" ".join(query_parts), params))
+    total = db._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
 
-        table = Table(title=f"Topics ({len(topics)} total)")
-        table.add_column("Name", style="cyan")
-        table.add_column("Chunks", justify="right", style="green")
+    console.print(
+        f"[cyan]Topics:[/cyan] {total} total, [bold]{len(rows)}[/bold] match filter "
+        f"(min_chunks={min_chunks}"
+        + (f", filter={filter_substring!r}" if filter_substring else "")
+        + f", sort={sort})"
+    )
 
-        for topic in topics:
-            table.add_row(
-                topic.display_name,
-                str(topic.chunk_count),
-            )
+    if not rows:
+        console.print("[yellow]No topics match the filter.[/yellow]")
+        if json_out:
+            json_out.write_text(_json.dumps([], indent=2), encoding="utf-8")
+        return
 
-        console.print(table)
+    display = rows if limit == 0 else rows[:limit]
+    table = Table(title=f"Topics ({len(display)} shown of {len(rows)})")
+    table.add_column("Chunks", justify="right", style="green")
+    table.add_column("Docs", justify="right", style="green")
+    table.add_column("Name", style="cyan")
+    for r in display:
+        table.add_row(
+            str(r["chunk_count"] or 0),
+            str(r["document_count"] or 0),
+            r["display_name"] or r["name"],
+        )
+    console.print(table)
 
-    finally:
-        await db.close()
+    if limit != 0 and len(rows) > limit:
+        console.print(
+            f"[dim]{len(rows) - limit} more row(s) hidden. Use --limit 0 to show all, "
+            f"or --filter to narrow.[/dim]"
+        )
+
+    if json_out:
+        payload = [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "display_name": r["display_name"] or r["name"],
+                "chunk_count": r["chunk_count"] or 0,
+                "document_count": r["document_count"] or 0,
+            }
+            for r in rows
+        ]
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        console.print(f"[dim]Full list written to {json_out}[/dim]")
+
+
+def _topics_consolidate(
+    output_dir: Optional[Path],
+    strategy: str,
+    threshold: float,
+    apply: bool,
+    yes: bool,
+    limit: int,
+    json_out: Optional[Path],
+) -> None:
+    """Local implementation of `mtss topics consolidate`."""
+    import json as _json
+
+    from ..storage.sqlite_client import SqliteStorageClient
+
+    valid_strategies = {"pairwise", "cluster", "name"}
+    if strategy not in valid_strategies:
+        console.print(
+            f"[red]--strategy must be one of: {', '.join(sorted(valid_strategies))}[/red]"
+        )
+        raise typer.Exit(2)
+    if strategy != "name" and not 0 < threshold < 1:
+        console.print("[red]--threshold must be in (0, 1)[/red]")
+        raise typer.Exit(2)
+
+    resolved_output = output_dir or Path("data/output")
+    db_path = resolved_output / "ingest.db"
+    if not db_path.exists():
+        console.print(f"[red]ingest.db not found in {resolved_output}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        db = SqliteStorageClient(output_dir=resolved_output)
+    except Exception as exc:
+        console.print(f"[red]Failed to open ingest.db: {exc}[/red]")
+        raise typer.Exit(1)
+
+    before_total = db._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+    with_embeddings = db._conn.execute(
+        "SELECT COUNT(*) FROM topics WHERE embedding IS NOT NULL"
+    ).fetchone()[0]
+
+    if strategy == "pairwise":
+        plan = db.compute_merge_plan(threshold)
+        header = f"strategy=pairwise threshold={threshold:.2f}"
+    elif strategy == "cluster":
+        plan = db.compute_cluster_merge_plan(threshold)
+        header = f"strategy=cluster threshold={threshold:.2f}"
+    else:  # name
+        plan = db.compute_name_merge_plan()
+        header = "strategy=name (normalized-name buckets)"
+
+    mode_label = "[bold yellow]DRY-RUN[/bold yellow]" if not apply else "[bold red]APPLY[/bold red]"
+    console.print(
+        f"{mode_label} {header} · "
+        f"{before_total} topics ({with_embeddings} with embeddings) → "
+        f"plan: [bold]{len(plan)}[/bold] merge(s)"
+    )
+    if strategy != "name" and before_total != with_embeddings:
+        missing = before_total - with_embeddings
+        console.print(
+            f"[yellow]Warning:[/yellow] {missing} topic(s) lack embeddings — excluded from consolidation"
+        )
+
+    if not plan:
+        console.print("[green]No merges at this threshold. Nothing to do.[/green]")
+        if json_out:
+            json_out.write_text(_json.dumps([], indent=2), encoding="utf-8")
+        return
+
+    display = plan if limit == 0 else plan[:limit]
+    table = Table(title=f"Merge plan ({len(display)} shown of {len(plan)})")
+    table.add_column("Sim", justify="right", style="magenta")
+    table.add_column("Keeper", style="cyan")
+    table.add_column("K·chunks", justify="right", style="green")
+    table.add_column("Absorbed →", style="cyan")
+    table.add_column("A·chunks", justify="right", style="green")
+    for p in display:
+        table.add_row(
+            f"{p['similarity']:.3f}",
+            p["keeper_display_name"],
+            str(p["keeper_chunks"]),
+            p["absorbed_display_name"],
+            str(p["absorbed_chunks"]),
+        )
+    console.print(table)
+
+    if json_out:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(_json.dumps(plan, indent=2), encoding="utf-8")
+        console.print(f"[dim]Full plan written to {json_out}[/dim]")
+
+    if not apply:
+        console.print(
+            "[dim]Dry-run only. Re-run with --apply to execute these merges.[/dim]"
+        )
+        return
+
+    console.print(
+        "[yellow]About to mutate ingest.db:[/yellow] "
+        f"{len(plan)} topic row(s) will be deleted, chunk_topics remapped, counts transferred."
+    )
+    console.print(
+        "[yellow]Remote Supabase footgun:[/yellow] any already-imported chunks will retain the absorbed "
+        "topic UUIDs inside metadata.topic_ids until those documents are re-imported."
+    )
+
+    if not yes:
+        if not typer.confirm("Proceed with merge?", default=False):
+            console.print("[dim]Aborted. No changes written.[/dim]")
+            raise typer.Exit(0)
+
+    merges = db.apply_merge_plan(plan)
+    after_total = db._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+    console.print(
+        f"[green]Merged {len(merges)} topic pair(s).[/green] "
+        f"Topics {before_total} → {after_total} (-{before_total - after_total})."
+    )
+
+
+def _topics_audit(
+    output_dir: Optional[Path],
+    lower: float,
+    upper: float,
+    limit: int,
+    json_out: Optional[Path],
+) -> None:
+    """Local (read-only) implementation of `mtss topics audit`."""
+    import json as _json
+
+    from ..storage.sqlite_client import SqliteStorageClient
+
+    resolved_output = output_dir or Path("data/output")
+    db_path = resolved_output / "ingest.db"
+    if not db_path.exists():
+        console.print(f"[red]ingest.db not found in {resolved_output}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        db = SqliteStorageClient(output_dir=resolved_output)
+    except Exception as exc:
+        console.print(f"[red]Failed to open ingest.db: {exc}[/red]")
+        raise typer.Exit(1)
+
+    total_topics = db._conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+    with_embeddings = db._conn.execute(
+        "SELECT COUNT(*) FROM topics WHERE embedding IS NOT NULL"
+    ).fetchone()[0]
+
+    try:
+        pairs = db.audit_similar_topics(lower=lower, upper=upper)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+    console.print(
+        f"[cyan]Topics:[/cyan] {total_topics} total, "
+        f"{with_embeddings} with embeddings; "
+        f"band [{lower:.2f}, {upper:.2f}) → [bold]{len(pairs)}[/bold] pair(s)"
+    )
+    if total_topics != with_embeddings:
+        missing = total_topics - with_embeddings
+        console.print(
+            f"[yellow]Warning:[/yellow] {missing} topic(s) lack embeddings — excluded from audit"
+        )
+
+    if not pairs:
+        console.print("[green]No near-duplicate pairs in the audit band.[/green]")
+        if json_out:
+            json_out.write_text(_json.dumps([], indent=2), encoding="utf-8")
+        return
+
+    display = pairs if limit == 0 else pairs[:limit]
+    table = Table(title=f"Near-duplicate topic pairs ({len(display)} shown of {len(pairs)})")
+    table.add_column("Sim", justify="right", style="magenta")
+    table.add_column("Keeper", style="cyan")
+    table.add_column("K·chunks", justify="right", style="green")
+    table.add_column("Absorbed", style="cyan")
+    table.add_column("A·chunks", justify="right", style="green")
+    for p in display:
+        table.add_row(
+            f"{p['similarity']:.3f}",
+            p["keeper_display_name"],
+            str(p["keeper_chunks"]),
+            p["absorbed_display_name"],
+            str(p["absorbed_chunks"]),
+        )
+    console.print(table)
+
+    if json_out:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(_json.dumps(pairs, indent=2), encoding="utf-8")
+        console.print(f"[dim]Full report written to {json_out}[/dim]")

@@ -24,10 +24,19 @@ app = typer.Typer(
     name="MTSS",
     help="MTSS - Email RAG Pipeline for processing EML files with attachments",
     context_settings={"help_option_names": _HELP_OPTION_NAMES},
+    no_args_is_help=True,
 )
-vessels_app = typer.Typer(help="Vessel registry management", context_settings={"help_option_names": _HELP_OPTION_NAMES})
+vessels_app = typer.Typer(
+    help="Vessel registry management",
+    context_settings={"help_option_names": _HELP_OPTION_NAMES},
+    no_args_is_help=True,
+)
 app.add_typer(vessels_app, name="vessels")
-topics_app = typer.Typer(help="Topic management for categorization and filtering", context_settings={"help_option_names": _HELP_OPTION_NAMES})
+topics_app = typer.Typer(
+    help="Topic management for categorization and filtering",
+    context_settings={"help_option_names": _HELP_OPTION_NAMES},
+    no_args_is_help=True,
+)
 app.add_typer(topics_app, name="topics")
 
 # Register commands from each module
