@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
 
 from ...models.topic import Topic, TopicSummary
@@ -671,18 +671,79 @@ class DomainRepository(BaseRepository):
 
         return counts
 
-    async def delete_all_data(self) -> Dict[str, int]:
+    def _batched_delete(
+        self,
+        table: str,
+        *,
+        id_col: str = "id",
+        batch_size: int = 100,
+        status: Optional[Callable[[str], None]] = None,
+    ) -> int:
+        """Delete every row from ``table`` in small ID-scoped batches.
+
+        PostgREST enforces a per-statement timeout (~8s) and a single
+        ``DELETE ... WHERE true`` against a large table blows past it
+        (observed on ``topics`` with ~3.4k rows — error 57014). Select
+        a batch of primary keys, delete by ``.in_()``, repeat until the
+        table drains. Returns total rows deleted.
+
+        ``status`` is an optional live-progress sink (CLI spinner); it
+        receives a fresh message after each batch so the caller can show
+        the user which table is draining without waiting for the full
+        coroutine to return.
+        """
+        total = 0
+        if status:
+            status(f"Deleting {table}...")
+        while True:
+            select_result = (
+                self.client.table(table)
+                .select(id_col)
+                .limit(batch_size)
+                .execute()
+            )
+            if not select_result.data:
+                break
+            ids = [row[id_col] for row in select_result.data]
+            delete_result = (
+                self.client.table(table)
+                .delete()
+                .in_(id_col, ids)
+                .execute()
+            )
+            total += len(delete_result.data) if delete_result.data else 0
+            if status:
+                status(f"Deleting {table}... {total} rows")
+            if len(ids) < batch_size:
+                break
+        return total
+
+    async def delete_all_data(
+        self,
+        status: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, int]:
         """Delete all data from all tables.
 
         Deletes in correct order to respect foreign key constraints.
+
+        ``status`` is an optional live-progress sink: on a large corpus
+        this coroutine can easily run for minutes, and without a
+        per-table signal the CLI looks frozen to the user. The callback
+        receives a short human-readable message for each table it
+        starts, plus per-batch updates for the batched-delete paths.
 
         Returns:
             Dictionary with table names and deleted row counts.
         """
         counts: Dict[str, int] = {}
 
+        def _notify(msg: str) -> None:
+            if status:
+                status(msg)
+
         # Delete in order respecting foreign keys
         # conversations has FK to vessels — delete first
+        _notify("Deleting conversations...")
         result = (
             self.client.table("conversations")
             .delete()
@@ -694,6 +755,7 @@ class DomainRepository(BaseRepository):
         # LangGraph checkpoint tables (no FK to our tables, but related to conversations)
         # These are created by AsyncPostgresSaver and store conversation message history
         for table in ["checkpoint_blobs", "checkpoint_writes", "checkpoints"]:
+            _notify(f"Deleting {table}...")
             try:
                 # Delete all rows - use neq with impossible value as Supabase requires a filter
                 result = (
@@ -708,6 +770,7 @@ class DomainRepository(BaseRepository):
                 counts[table] = 0
 
         # ingest_events has FK to documents
+        _notify("Deleting ingest_events...")
         result = (
             self.client.table("ingest_events")
             .delete()
@@ -719,51 +782,16 @@ class DomainRepository(BaseRepository):
         # chunks has FK to documents (will also be deleted by CASCADE, but explicit is clearer)
         # Delete in batches to avoid statement timeout on large tables
         # Use small batch size (100) to avoid URL length limits with .in_() queries
-        chunks_deleted = 0
-        batch_size = 100
-        while True:
-            # First, select a batch of IDs
-            select_result = (
-                self.client.table("chunks")
-                .select("id")
-                .limit(batch_size)
-                .execute()
-            )
-            if not select_result.data:
-                break
-            ids_to_delete = [row["id"] for row in select_result.data]
-            # Delete the batch by IDs
-            result = (
-                self.client.table("chunks")
-                .delete()
-                .in_("id", ids_to_delete)
-                .execute()
-            )
-            batch_count = len(result.data) if result.data else 0
-            chunks_deleted += batch_count
-            if len(ids_to_delete) < batch_size:
-                break
-        counts["chunks"] = chunks_deleted
+        counts["chunks"] = self._batched_delete("chunks", status=status)
 
         # processing_log has no FK
-        result = (
-            self.client.table("processing_log")
-            .delete()
-            .neq("id", "00000000-0000-0000-0000-000000000000")
-            .execute()
-        )
-        counts["processing_log"] = len(result.data) if result.data else 0
+        counts["processing_log"] = self._batched_delete("processing_log", status=status)
 
         # documents is the main table (CASCADE will handle any remaining children)
-        result = (
-            self.client.table("documents")
-            .delete()
-            .neq("id", "00000000-0000-0000-0000-000000000000")
-            .execute()
-        )
-        counts["documents"] = len(result.data) if result.data else 0
+        counts["documents"] = self._batched_delete("documents", status=status)
 
         # vessels — no FK dependencies remain after conversations deleted
+        _notify("Deleting vessels...")
         result = (
             self.client.table("vessels")
             .delete()
@@ -773,12 +801,6 @@ class DomainRepository(BaseRepository):
         counts["vessels"] = len(result.data) if result.data else 0
 
         # topics — no FK dependencies
-        result = (
-            self.client.table("topics")
-            .delete()
-            .neq("id", "00000000-0000-0000-0000-000000000000")
-            .execute()
-        )
-        counts["topics"] = len(result.data) if result.data else 0
+        counts["topics"] = self._batched_delete("topics", status=status)
 
         return counts

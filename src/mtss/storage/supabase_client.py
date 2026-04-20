@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
 
 from supabase import create_client
@@ -281,6 +281,9 @@ class SupabaseClient:
     async def reset_failed_documents(self, file_paths: List[str]) -> Dict[str, int]:
         return await self._domain.reset_failed_documents(file_paths)
 
-    async def delete_all_data(self) -> Dict[str, int]:
-        return await self._domain.delete_all_data()
+    async def delete_all_data(
+        self,
+        status: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, int]:
+        return await self._domain.delete_all_data(status=status)
 

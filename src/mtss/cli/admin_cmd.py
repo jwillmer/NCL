@@ -350,9 +350,15 @@ async def _clean():
     db = SupabaseClient()
 
     try:
-        # Delete from database
-        vprint("Deleting database records...")
-        counts = await db.delete_all_data()
+        # Delete from database — live spinner so the user can see which
+        # table is draining; a full clean can run for minutes on a real
+        # corpus and without this feedback the CLI looks frozen.
+        with console.status(
+            "[cyan]Deleting database records...[/cyan]", spinner="dots"
+        ) as _status:
+            counts = await db.delete_all_data(
+                status=lambda msg: _status.update(f"[cyan]{msg}[/cyan]")
+            )
 
         # Show database deletion results
         total_db_records = sum(counts.values())
