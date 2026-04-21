@@ -113,9 +113,6 @@ async def run_question(
     # (the agent clears citation_map before END, so .ainvoke() loses the retrieval list)
     citation_map_data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
-    # Opt-in per-step latency capture. ContextVars propagate into tasks spawned
-    # by graph.astream / asyncio.gather, so step timings recorded inside nodes
-    # accumulate here without agent-side awareness.
     step_buf = start_capture()
     started = time.monotonic()
 
@@ -132,9 +129,6 @@ async def run_question(
 
     latency_ms = int((time.monotonic() - started) * 1000)
 
-    # Aggregate step timings: a key can fire multiple times (e.g. chat_llm1_ms
-    # on a multi-turn conversation); summing is cheaper for consumers than
-    # preserving the list and still preserves total time in that step.
     step_latencies_ms: Optional[Dict[str, int]] = None
     if step_buf:
         agg: Dict[str, int] = {}

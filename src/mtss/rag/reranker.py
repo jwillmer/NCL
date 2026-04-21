@@ -42,9 +42,9 @@ class Reranker:
     async def rerank_results(
         self,
         query: str,
-        results: List[RetrievalResult],
+        results: List["RetrievalResult"],
         top_n: Optional[int] = None,
-    ) -> List[RetrievalResult]:
+    ) -> List["RetrievalResult"]:
         """Rerank results by relevance to query.
 
         Args:

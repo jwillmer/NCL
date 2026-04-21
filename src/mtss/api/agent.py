@@ -304,11 +304,6 @@ def _build_system_prompt(vessel: Optional[Vessel] = None) -> str:
     base_prompt = _load_system_prompt()
 
     if vessel:
-        # Vessel model fields: name, vessel_type, vessel_class. No IMO number
-        # is stored on Vessel today (see models/vessel.py) — historical prompt
-        # referenced a non-existent ``vessel.imo`` attribute, which would
-        # crash on any query with a resolved vessel. Surface what we actually
-        # have so the model can still anchor its response to the right ship.
         vessel_context = f"""
 ## Current Vessel Filter
 
@@ -570,9 +565,6 @@ async def chat_node(
     else:
         invoker = model
 
-    # chat_llm1_ms = first-pass call that picks a tool; chat_llm2_ms = the
-    # answer-generation call after search_node populated citation_map_data.
-    # Same call site, disambiguated by branch.
     llm_step = "chat_llm2_ms" if citation_map_data else "chat_llm1_ms"
     async with record_step(llm_step):
         response = await invoker.ainvoke(
@@ -753,9 +745,6 @@ async def search_node(
                 topic_matcher=TopicMatcher(engine.retriever.db, engine.retriever.embeddings),
                 db=engine.retriever.db,
             )
-            # Both branches of the gather are timed individually via record_step;
-            # because ContextVars propagate into tasks spawned by gather, the
-            # inner timings accumulate in the same eval buffer.
             async def _timed_filter():
                 async with record_step("topic_filter_ms"):
                     return await topic_filter.analyze_query(
@@ -806,10 +795,7 @@ async def search_node(
             if vessel_filter:
                 metadata_filter.update(vessel_filter)
 
-        # Get raw search results (pass pre-computed embedding when available).
-        # Covers vector search + Cohere rerank (the two inner phases aren't
-        # cleanly separable without reworking search_only; we time the pair
-        # together as ``search_rerank_ms`` and can split later if needed).
+        # Get raw search results (pass pre-computed embedding when available)
         async with record_step("search_rerank_ms"):
             retrieval_results = await engine.search_only(
                 question=question,

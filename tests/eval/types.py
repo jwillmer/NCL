@@ -86,11 +86,7 @@ class RunMetrics(BaseModel):
     output_tokens: int = 0
     cost_usd: float = 0.0
     tool_calls: int = 0
-    # Per-step breakdown populated by ``step_timing.record_step``. Keys:
-    # intent_ms, chat_llm1_ms, chat_llm2_ms, topic_filter_ms, embed_ms,
-    # search_rerank_ms, validate_ms. Repeats in the same run are summed
-    # (e.g. multi-turn chats fire chat_llm1_ms more than once).
-    # Optional so pre-instrumentation runs still parse.
+    # Populated by step_timing.record_step. Optional for backward compat.
     step_latencies_ms: Optional[Dict[str, int]] = None
 
 

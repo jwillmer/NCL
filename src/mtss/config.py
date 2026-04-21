@@ -156,17 +156,12 @@ class Settings(BaseSettings):
     # Reranker Configuration
     rerank_enabled: bool = Field(default=True, validation_alias="RERANK_ENABLED")
     rerank_model: str = Field(
-        default="cohere/rerank-v3.5", validation_alias="RERANK_MODEL"
+        default="cohere/rerank-4-fast", validation_alias="RERANK_MODEL"
     )
     rerank_top_n: int = Field(default=8, validation_alias="RERANK_TOP_N")
     rerank_score_floor: float = Field(default=0.2, validation_alias="RERANK_SCORE_FLOOR")
 
-    # Retrieval Configuration. top_k=40 preserved: smoke-05 (2026-04-21)
-    # dropped it to 20 and q02 (a broad "fleet last month" query) lost all
-    # 5 retrieved chunks — overall_mean halved (0.34 → 0.17) for a 17s
-    # latency saving. Recall wins over speed until we have a better
-    # retrieval strategy for broad queries (e.g. topic-boost instead of
-    # topic-filter, or adaptive top_k based on query breadth).
+    # Retrieval Configuration
     retrieval_top_k: int = Field(default=40, validation_alias="RETRIEVAL_TOP_K")
 
     # Hybrid Search (vector + BM25)
