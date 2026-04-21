@@ -224,9 +224,15 @@ class TopicFilter:
 
         detected_names = [t.name for t in extracted]
 
-        # Step 2: Match to existing topics
+        # Step 2: Match each extracted name to a CLUSTER of DB topics (top-K).
+        # The ontology has a lot of near-synonyms per concept (e.g. ~7 "spare
+        # parts" rows), so top-1 matching historically missed ~40% of the
+        # relevant chunks per query. Top-K at a loose threshold (0.55 default)
+        # pools the cluster; the reranker downstream filters residual noise.
         try:
-            match_results = await self.matcher.find_topics_by_names(detected_names)
+            clusters = await self.matcher.find_topic_clusters(
+                detected_names, top_k=settings.topic_query_top_k
+            )
         except Exception as e:
             logger.warning("Topic matching failed: %s", e)
             return TopicFilterResult(
@@ -234,67 +240,73 @@ class TopicFilter:
                 message=TopicMessages.no_topic_match(detected_names),
             )
 
-        # Separate matched vs unmatched
-        matched_topics: List[MatchedTopic] = []
+        # Pool across all extracted names and dedupe by topic id.
+        pooled: Dict[UUID, "Topic"] = {}  # type: ignore[name-defined]
         unmatched_names: List[str] = []
-
-        for original_name, topic in match_results:
-            if topic:
-                # topics.chunk_count is a stored aggregate maintained by the
-                # ingest path — use it directly instead of re-running the RPC
-                # every query. The live count via count_chunks_by_topic is
-                # only needed when a vessel_filter is applied (the row-level
-                # aggregate does not know about per-vessel subsets).
-                count = topic.chunk_count
-                filtered = count
-                if vessel_filter:
-                    filtered = await self.db.get_chunks_count_for_topic(
-                        topic.id, vessel_filter
-                    )
-                matched_topics.append(
-                    MatchedTopic(
-                        id=topic.id,
-                        name=topic.name,
-                        display_name=topic.display_name,
-                        chunk_count=count,
-                        filtered_count=filtered,
-                    )
-                )
-            else:
+        for original_name, cluster in clusters:
+            if not cluster:
                 unmatched_names.append(original_name)
+                continue
+            for t in cluster:
+                pooled.setdefault(t.id, t)
 
-        # Topic loosening: retry at lower threshold if results are sparse
+        # Convert to MatchedTopic list; apply vessel_filter only when set
+        # (stored chunk_count handles the no-filter case without a DB call).
+        matched_topics: List[MatchedTopic] = []
+        for t in pooled.values():
+            count = t.chunk_count
+            filtered = count
+            if vessel_filter:
+                filtered = await self.db.get_chunks_count_for_topic(
+                    t.id, vessel_filter
+                )
+            matched_topics.append(
+                MatchedTopic(
+                    id=t.id,
+                    name=t.name,
+                    display_name=t.display_name,
+                    chunk_count=count,
+                    filtered_count=filtered,
+                )
+            )
+
+        # Loosening safety: if the top-K / primary-threshold pass still came
+        # back sparse, retry with the looser threshold setting. With the new
+        # default (primary=0.55, min_chunks=1) this rarely fires — kept for
+        # operators who tighten the primary threshold via env overrides.
         total_chunks_initial = sum(t.chunk_count for t in matched_topics)
         if total_chunks_initial < settings.topic_loosening_min_chunks and detected_names:
             try:
-                loose_results = await self.matcher.find_topics_by_names(
-                    detected_names, threshold=settings.topic_match_threshold_loose
+                loose_clusters = await self.matcher.find_topic_clusters(
+                    detected_names,
+                    top_k=settings.topic_query_top_k,
+                    threshold=settings.topic_match_threshold_loose,
                 )
-                loose_matched: List[MatchedTopic] = []
+                loose_pooled: Dict[UUID, "Topic"] = {}  # type: ignore[name-defined]
                 loose_unmatched: List[str] = []
-                for original_name, topic in loose_results:
-                    if topic:
-                        # Same optimization as the strict pass: the stored
-                        # topic.chunk_count aggregate replaces the RPC in the
-                        # no-vessel-filter case.
-                        count = topic.chunk_count
-                        filtered = count
-                        if vessel_filter:
-                            filtered = await self.db.get_chunks_count_for_topic(
-                                topic.id, vessel_filter
-                            )
-                        loose_matched.append(
-                            MatchedTopic(
-                                id=topic.id,
-                                name=topic.name,
-                                display_name=topic.display_name,
-                                chunk_count=count,
-                                filtered_count=filtered,
-                            )
-                        )
-                    else:
+                for original_name, cluster in loose_clusters:
+                    if not cluster:
                         loose_unmatched.append(original_name)
-
+                        continue
+                    for t in cluster:
+                        loose_pooled.setdefault(t.id, t)
+                loose_matched: List[MatchedTopic] = []
+                for t in loose_pooled.values():
+                    count = t.chunk_count
+                    filtered = count
+                    if vessel_filter:
+                        filtered = await self.db.get_chunks_count_for_topic(
+                            t.id, vessel_filter
+                        )
+                    loose_matched.append(
+                        MatchedTopic(
+                            id=t.id,
+                            name=t.name,
+                            display_name=t.display_name,
+                            chunk_count=count,
+                            filtered_count=filtered,
+                        )
+                    )
                 loose_total = sum(t.chunk_count for t in loose_matched)
                 if loose_total > total_chunks_initial:
                     logger.info(

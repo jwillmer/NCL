@@ -166,18 +166,31 @@ class Settings(BaseSettings):
     topic_auto_merge_threshold: float = Field(
         default=0.76, ge=0.0, le=1.0, validation_alias="TOPIC_AUTO_MERGE_THRESHOLD"
     )
-    # Query-time topic match threshold (lenient — matches synonyms).
+    # Query-time topic match threshold. Tuned via scripts/tune_topic_filter.py
+    # against the golden question set: 0.55 Pareto-dominates the old 0.70
+    # default (match rate 59.5% → 97.3% at the same per-match precision) on
+    # this ontology (~3k rows, median 1 chunk per topic, heavy near-synonym
+    # fragmentation like the 7 "spare parts" topics). Re-tune if the topic
+    # ontology changes significantly.
     topic_query_match_threshold: float = Field(
-        default=0.70, ge=0.0, le=1.0, validation_alias="TOPIC_QUERY_MATCH_THRESHOLD"
+        default=0.55, ge=0.0, le=1.0, validation_alias="TOPIC_QUERY_MATCH_THRESHOLD"
+    )
+    # Top-K per extracted name. K=3 covers the common cluster size without
+    # meaningful precision loss (judged 53% vs 59% at K=1) and roughly
+    # doubles the chunk pool (13.6 vs 7.2 chunks/query). Reranker handles
+    # residual noise.
+    topic_query_top_k: int = Field(
+        default=3, ge=1, le=20, validation_alias="TOPIC_QUERY_TOP_K"
     )
 
-    # Topic Loosening (query-time). Kicks in when the strict match returns
-    # fewer than topic_loosening_min_chunks results.
+    # Topic Loosening (query-time). Rarely fires with the tuned primary
+    # threshold of 0.55 + top-K=3; retained as a safety belt for operators
+    # who tighten the primary threshold via env overrides.
     topic_match_threshold_loose: float = Field(
-        default=0.55, ge=0.0, le=1.0, validation_alias="TOPIC_MATCH_THRESHOLD_LOOSE"
+        default=0.50, ge=0.0, le=1.0, validation_alias="TOPIC_MATCH_THRESHOLD_LOOSE"
     )
     topic_loosening_min_chunks: int = Field(
-        default=3, ge=1, le=50, validation_alias="TOPIC_LOOSENING_MIN_CHUNKS"
+        default=1, ge=1, le=50, validation_alias="TOPIC_LOOSENING_MIN_CHUNKS"
     )
 
     # LlamaParse Configuration (legacy binary Office only: .doc, .xls, .ppt).

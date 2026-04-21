@@ -564,6 +564,58 @@ class TopicMatcher:
             results.append((name, topic))
         return results
 
+    async def find_topic_clusters(
+        self,
+        names: List[str],
+        top_k: int = 3,
+        threshold: float | None = None,
+    ) -> List[Tuple[str, List[Topic]]]:
+        """Find the top-K closest DB topics for each query-extracted name.
+
+        Used by the query-time topic filter. Returns a *cluster* of related
+        topics per extracted name rather than a single winner. The topic
+        ontology is highly fragmented (median chunk_count=1, common
+        concepts like "spare parts" span ~7 near-synonymous topic rows),
+        so top-1 matching leaves most of the relevant chunk cluster on the
+        table. Top-K + a loose threshold (0.55 default) pools the cluster;
+        the Cohere reranker downstream cleans up residual noise.
+
+        Exact-name cache hits always win the cluster's first slot, then
+        HNSW similarity fills the remaining slots.
+        """
+        topic_cache = get_topic_cache()
+        await topic_cache.ensure_loaded(self.db)
+
+        effective_threshold = (
+            threshold if threshold is not None else self.query_similarity_threshold
+        )
+
+        out: List[Tuple[str, List[Topic]]] = []
+        for name in names:
+            seen: set[UUID] = set()
+            cluster: List[Topic] = []
+
+            exact = topic_cache.match_by_name(name)
+            if exact is not None:
+                cluster.append(exact)
+                seen.add(exact.id)
+
+            if len(cluster) < top_k:
+                embedding = await self.embeddings.generate_embedding(name)
+                sims = await topic_cache.cosine_similar(
+                    self.db, embedding, threshold=effective_threshold, limit=top_k
+                )
+                for topic, _score in sims:
+                    if topic.id in seen:
+                        continue
+                    cluster.append(topic)
+                    seen.add(topic.id)
+                    if len(cluster) >= top_k:
+                        break
+
+            out.append((name, cluster))
+        return out
+
     async def find_related_topics(
         self,
         query: str,

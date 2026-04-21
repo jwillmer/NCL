@@ -207,12 +207,24 @@ class TestTopicExtractorIntegration:
 class TestTopicMatcher:
     """Tests for TopicMatcher."""
 
+    @pytest.fixture(autouse=True)
+    def reset_entity_cache(self):
+        """Reset the process-wide TopicCache between tests so module-level
+        state from the matcher's cache-aware lookup path doesn't bleed
+        across test cases."""
+        from mtss.processing import entity_cache
+
+        entity_cache._topic_cache = entity_cache.TopicCache()
+        yield
+        entity_cache._topic_cache = entity_cache.TopicCache()
+
     @pytest.fixture
     def mock_db(self):
         """Create a mock database client."""
         db = AsyncMock()
         db.get_topic_by_name = AsyncMock(return_value=None)
         db.find_similar_topics = AsyncMock(return_value=[])
+        db.list_all_topics_lightweight = AsyncMock(return_value=[])
         db.insert_topic = AsyncMock()
         db.get_topic_by_id = AsyncMock()
         return db
@@ -253,9 +265,15 @@ class TestTopicMatcher:
     async def test_get_or_create_similar_merge(self, matcher, mock_db):
         """Should merge with similar topic above threshold."""
         existing_id = uuid4()
+        existing_topic = Topic(
+            id=existing_id, name="cargo damage", display_name="Cargo Damage"
+        )
         mock_db.find_similar_topics.return_value = [
             {"id": existing_id, "name": "cargo damage", "display_name": "Cargo Damage", "similarity": 0.95}
         ]
+        # Cache's cosine_similar hydrates hits it doesn't already know about
+        # via get_topic_by_id.
+        mock_db.get_topic_by_id.return_value = existing_topic
 
         topic_id = await matcher.get_or_create_topic("Damage to Cargo")
 
@@ -404,9 +422,13 @@ class TestTopicMatcher:
     async def test_batch_similar_merge(self, matcher, mock_db, mock_embeddings):
         """Should merge with existing similar topic."""
         existing_id = uuid4()
+        existing_topic = Topic(
+            id=existing_id, name="cargo damage", display_name="Cargo Damage"
+        )
         mock_db.find_similar_topics.return_value = [
             {"id": existing_id, "name": "cargo damage", "similarity": 0.95}
         ]
+        mock_db.get_topic_by_id.return_value = existing_topic
         mock_embeddings.generate_embeddings_batch = AsyncMock(
             return_value=[[0.1] * 1536]
         )

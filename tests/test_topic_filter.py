@@ -125,7 +125,7 @@ class TestTopicFilter:
     def mock_matcher(self):
         """Create a mock topic matcher."""
         matcher = AsyncMock()
-        matcher.find_topics_by_names = AsyncMock(return_value=[])
+        matcher.find_topic_clusters = AsyncMock(return_value=[])
         matcher.find_related_topics = AsyncMock(return_value=[])
         return matcher
 
@@ -158,7 +158,7 @@ class TestTopicFilter:
         mock_extractor.extract_topics_from_query.return_value = [
             ExtractedTopic(name="Cargo Damage")
         ]
-        mock_matcher.find_topics_by_names.return_value = [("Cargo Damage", None)]
+        mock_matcher.find_topic_clusters.return_value = [("Cargo Damage", [])]
 
         result = await topic_filter.analyze_query("Cargo damage incidents?")
 
@@ -182,7 +182,7 @@ class TestTopicFilter:
         mock_extractor.extract_topics_from_query.return_value = [
             ExtractedTopic(name="Cargo Damage")
         ]
-        mock_matcher.find_topics_by_names.return_value = [("Cargo Damage", topic)]
+        mock_matcher.find_topic_clusters.return_value = [("Cargo Damage", [topic])]
         mock_db.get_chunks_count_for_topic.return_value = 10
 
         result = await topic_filter.analyze_query("Cargo damage incidents?")
@@ -208,7 +208,7 @@ class TestTopicFilter:
         mock_extractor.extract_topics_from_query.return_value = [
             ExtractedTopic(name="Cargo Damage")
         ]
-        mock_matcher.find_topics_by_names.return_value = [("Cargo Damage", topic)]
+        mock_matcher.find_topic_clusters.return_value = [("Cargo Damage", [topic])]
         mock_db.get_chunks_count_for_topic.return_value = 0
 
         result = await topic_filter.analyze_query("Cargo damage incidents?")
@@ -221,19 +221,21 @@ class TestTopicFilter:
         self, topic_filter, mock_extractor, mock_matcher, mock_db
     ):
         """Should proceed when ANY matched topic has results."""
-        topic1 = Topic(id=uuid4(), name="cargo damage", display_name="Cargo Damage")
-        topic2 = Topic(id=uuid4(), name="engine issues", display_name="Engine Issues")
+        topic1 = Topic(
+            id=uuid4(), name="cargo damage", display_name="Cargo Damage", chunk_count=0
+        )
+        topic2 = Topic(
+            id=uuid4(), name="engine issues", display_name="Engine Issues", chunk_count=5
+        )
 
         mock_extractor.extract_topics_from_query.return_value = [
             ExtractedTopic(name="Cargo Damage"),
             ExtractedTopic(name="Engine Issues"),
         ]
-        mock_matcher.find_topics_by_names.return_value = [
-            ("Cargo Damage", topic1),
-            ("Engine Issues", topic2),
+        mock_matcher.find_topic_clusters.return_value = [
+            ("Cargo Damage", [topic1]),
+            ("Engine Issues", [topic2]),
         ]
-        # First topic has 0, second has 5
-        mock_db.get_chunks_count_for_topic.side_effect = [0, 5, 0, 5]
 
         result = await topic_filter.analyze_query("Cargo damage and engine problems?")
 
@@ -254,9 +256,9 @@ class TestTopicFilter:
             ExtractedTopic(name="Cargo Damage"),
             ExtractedTopic(name="Engine Issues"),
         ]
-        mock_matcher.find_topics_by_names.return_value = [
-            ("Cargo Damage", topic1),
-            ("Engine Issues", topic2),
+        mock_matcher.find_topic_clusters.return_value = [
+            ("Cargo Damage", [topic1]),
+            ("Engine Issues", [topic2]),
         ]
         mock_db.get_chunks_count_for_topic.return_value = 0
 
@@ -274,9 +276,12 @@ class TestTopicFilter:
         mock_extractor.extract_topics_from_query.return_value = [
             ExtractedTopic(name="Cargo Damage")
         ]
-        mock_matcher.find_topics_by_names.return_value = [("Cargo Damage", topic)]
-        # Total count is 10, but filtered count is 0
-        mock_db.get_chunks_count_for_topic.side_effect = [10, 0]
+        mock_matcher.find_topic_clusters.return_value = [("Cargo Damage", [topic])]
+        # Total count is 10, but filtered count is 0. With stored chunk_count
+        # skipping the first RPC (migration fix), only the vessel-filtered
+        # call happens. Set topic.chunk_count on the mock to 10.
+        topic.chunk_count = 10
+        mock_db.get_chunks_count_for_topic.side_effect = [0]
 
         result = await topic_filter.analyze_query(
             "Cargo damage incidents?",
@@ -307,7 +312,23 @@ class TestTopicFilter:
 
 
 class TestTopicLoosening:
-    """Tests for topic loosening (retry at lower threshold)."""
+    """Tests for topic loosening (retry at lower threshold).
+
+    The tuned default (min_chunks=1) rarely triggers loosening — these
+    tests explicitly raise the threshold via get_settings override so
+    the retry path exercises.
+    """
+
+    @pytest.fixture(autouse=True)
+    def force_loosening_on(self, monkeypatch):
+        """Simulate pre-tune defaults so the retry path is exercised."""
+        from mtss.config import get_settings
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("TOPIC_LOOSENING_MIN_CHUNKS", "5")
+        monkeypatch.setenv("TOPIC_MATCH_THRESHOLD_LOOSE", "0.50")
+        yield
+        get_settings.cache_clear()
 
     @pytest.fixture
     def mock_extractor(self):
@@ -342,19 +363,19 @@ class TestTopicLoosening:
         ]
         # First call (strict): returns topic with 2 chunks
         # Second call (loose): returns different topic with 15 chunks
-        mock_matcher.find_topics_by_names.side_effect = [
-            [("Cargo Damage", topic_strict)],
-            [("Cargo Damage", topic_loose)],
+        topic_strict.chunk_count = 2
+        topic_loose.chunk_count = 15
+        mock_matcher.find_topic_clusters.side_effect = [
+            [("Cargo Damage", [topic_strict])],
+            [("Cargo Damage", [topic_loose])],
         ]
-        # Counts: strict=2, loose_total=15, loose_filtered=15
-        mock_db.get_chunks_count_for_topic.side_effect = [2, 15]
 
         result = await topic_filter.analyze_query("Cargo damage?")
 
         assert result.should_skip_rag is False
         assert result.total_chunk_count == 15
-        # find_topics_by_names called twice (strict then loose)
-        assert mock_matcher.find_topics_by_names.call_count == 2
+        # find_topic_clusters called twice (strict then loose)
+        assert mock_matcher.find_topic_clusters.call_count == 2
 
     @pytest.mark.asyncio
     async def test_loosening_skipped_when_enough_chunks(
@@ -366,15 +387,15 @@ class TestTopicLoosening:
         mock_extractor.extract_topics_from_query.return_value = [
             ExtractedTopic(name="Cargo Damage")
         ]
-        mock_matcher.find_topics_by_names.return_value = [("Cargo Damage", topic)]
-        mock_db.get_chunks_count_for_topic.return_value = 10
+        topic.chunk_count = 10
+        mock_matcher.find_topic_clusters.return_value = [("Cargo Damage", [topic])]
 
         result = await topic_filter.analyze_query("Cargo damage?")
 
         assert result.should_skip_rag is False
         assert result.total_chunk_count == 10
-        # Only one call — no retry
-        assert mock_matcher.find_topics_by_names.call_count == 1
+        # Only one call — no retry (10 chunks >= min_chunks threshold)
+        assert mock_matcher.find_topic_clusters.call_count == 1
 
     @pytest.mark.asyncio
     async def test_loosening_no_improvement_keeps_original(
@@ -387,11 +408,11 @@ class TestTopicLoosening:
             ExtractedTopic(name="Cargo Damage")
         ]
         # Both calls return same topic with 1 chunk
-        mock_matcher.find_topics_by_names.side_effect = [
-            [("Cargo Damage", topic)],
-            [("Cargo Damage", topic)],
+        topic.chunk_count = 1
+        mock_matcher.find_topic_clusters.side_effect = [
+            [("Cargo Damage", [topic])],
+            [("Cargo Damage", [topic])],
         ]
-        mock_db.get_chunks_count_for_topic.side_effect = [1, 1]
 
         result = await topic_filter.analyze_query("Cargo damage?")
 
@@ -409,11 +430,11 @@ class TestTopicLoosening:
             ExtractedTopic(name="Cargo Damage")
         ]
         # First call succeeds, second throws
-        mock_matcher.find_topics_by_names.side_effect = [
-            [("Cargo Damage", topic)],
+        topic.chunk_count = 1
+        mock_matcher.find_topic_clusters.side_effect = [
+            [("Cargo Damage", [topic])],
             Exception("DB connection failed"),
         ]
-        mock_db.get_chunks_count_for_topic.return_value = 1
 
         result = await topic_filter.analyze_query("Cargo damage?")
 
