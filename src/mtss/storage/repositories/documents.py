@@ -24,6 +24,26 @@ def _to_datetime(val: Any) -> datetime | None:
         return datetime.fromisoformat(val)
     return val
 
+
+def _strip_nul(val: Any) -> Any:
+    """Recursively strip NUL bytes (\\x00) from strings.
+
+    Postgres TEXT columns reject `\\x00` as "invalid byte sequence for encoding
+    UTF8". SQLite (the local ingest store) tolerates them, so malformed bytes
+    surviving a parse can reach import without warning. Applied at the asyncpg
+    bind boundary so every text column, array, and jsonb leaf is scrubbed.
+    """
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return val.replace("\x00", "") if "\x00" in val else val
+    if isinstance(val, list):
+        return [_strip_nul(v) for v in val]
+    if isinstance(val, dict):
+        return {k: _strip_nul(v) for k, v in val.items()}
+    return val
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -421,15 +441,15 @@ class DocumentRepository(BaseRepository):
         """Insert chunks via asyncpg connection (shared by insert_chunks and persist_ingest_result)."""
         records = [
             (
-                chunk.id, chunk.chunk_id or "", chunk.document_id,
-                chunk.content, chunk.chunk_index,
-                chunk.context_summary, chunk.embedding_text,
-                chunk.section_path, chunk.section_title,
-                chunk.source_title, chunk.source_id,
+                chunk.id, _strip_nul(chunk.chunk_id or ""), chunk.document_id,
+                _strip_nul(chunk.content), chunk.chunk_index,
+                _strip_nul(chunk.context_summary), _strip_nul(chunk.embedding_text),
+                _strip_nul(chunk.section_path), _strip_nul(chunk.section_title),
+                _strip_nul(chunk.source_title), _strip_nul(chunk.source_id),
                 chunk.page_number, chunk.line_from, chunk.line_to,
                 chunk.char_start, chunk.char_end,
-                chunk.archive_browse_uri, chunk.archive_download_uri,
-                chunk.embedding, json.dumps(chunk.metadata),
+                _strip_nul(chunk.archive_browse_uri), _strip_nul(chunk.archive_download_uri),
+                chunk.embedding, json.dumps(_strip_nul(chunk.metadata)),
             )
             for chunk in chunks
         ]
@@ -467,32 +487,32 @@ class DocumentRepository(BaseRepository):
             )
             """,
             doc.id,
-            doc.source_id or "",
-            doc.doc_id or "",
+            _strip_nul(doc.source_id or ""),
+            _strip_nul(doc.doc_id or ""),
             doc.content_version,
             doc.ingest_version or settings.current_ingest_version,
             doc.parent_id,
             doc.root_id,
             doc.depth,
-            doc.path,
+            _strip_nul(doc.path),
             doc.document_type.value,
-            doc.file_path,
-            doc.file_name,
-            doc.file_hash,
-            doc.source_title,
-            doc.archive_path,
-            doc.archive_browse_uri,
-            doc.archive_download_uri,
+            _strip_nul(doc.file_path),
+            _strip_nul(doc.file_name),
+            _strip_nul(doc.file_hash),
+            _strip_nul(doc.source_title),
+            _strip_nul(doc.archive_path),
+            _strip_nul(doc.archive_browse_uri),
+            _strip_nul(doc.archive_download_uri),
             doc.status.value,
-            doc.error_message,
+            _strip_nul(doc.error_message),
             datetime.now(timezone.utc) if doc.status == ProcessingStatus.COMPLETED else None,
-            doc.email_metadata.subject if doc.email_metadata else None,
-            doc.email_metadata.participants if doc.email_metadata else None,
-            doc.email_metadata.initiator if doc.email_metadata else None,
+            _strip_nul(doc.email_metadata.subject) if doc.email_metadata else None,
+            _strip_nul(doc.email_metadata.participants) if doc.email_metadata else None,
+            _strip_nul(doc.email_metadata.initiator) if doc.email_metadata else None,
             _to_datetime(doc.email_metadata.date_start) if doc.email_metadata else None,
             _to_datetime(doc.email_metadata.date_end) if doc.email_metadata else None,
             doc.email_metadata.message_count if doc.email_metadata else None,
-            doc.attachment_metadata.content_type if doc.attachment_metadata else None,
+            _strip_nul(doc.attachment_metadata.content_type) if doc.attachment_metadata else None,
             doc.attachment_metadata.size_bytes if doc.attachment_metadata else None,
         )
 
@@ -576,25 +596,25 @@ class DocumentRepository(BaseRepository):
                 records = [
                     (
                         chunk.id,
-                        chunk.chunk_id or "",
+                        _strip_nul(chunk.chunk_id or ""),
                         chunk.document_id,
-                        chunk.content,
+                        _strip_nul(chunk.content),
                         chunk.chunk_index,
-                        chunk.context_summary,
-                        chunk.embedding_text,
-                        chunk.section_path,
-                        chunk.section_title,
-                        chunk.source_title,
-                        chunk.source_id,
+                        _strip_nul(chunk.context_summary),
+                        _strip_nul(chunk.embedding_text),
+                        _strip_nul(chunk.section_path),
+                        _strip_nul(chunk.section_title),
+                        _strip_nul(chunk.source_title),
+                        _strip_nul(chunk.source_id),
                         chunk.page_number,
                         chunk.line_from,
                         chunk.line_to,
                         chunk.char_start,
                         chunk.char_end,
-                        chunk.archive_browse_uri,
-                        chunk.archive_download_uri,
+                        _strip_nul(chunk.archive_browse_uri),
+                        _strip_nul(chunk.archive_download_uri),
                         chunk.embedding,
-                        json.dumps(chunk.metadata),
+                        json.dumps(_strip_nul(chunk.metadata)),
                     )
                     for chunk in new_chunks
                 ]

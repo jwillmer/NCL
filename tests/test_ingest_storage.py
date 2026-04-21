@@ -208,6 +208,117 @@ class TestSupabaseClient:
             data = call_args[0][0]
             assert len(data.get("reason", "")) <= 200
 
+    @pytest.mark.asyncio
+    async def test_insert_chunks_strips_nul_bytes_in_text(
+        self, supabase_client, sample_chunks
+    ):
+        """Postgres TEXT rejects \\x00 as invalid UTF-8; SQLite ingest may have
+        smuggled NUL bytes through (e.g. from a malformed PDF extract). The
+        asyncpg bind must strip them so the import doesn't abort on a single
+        poisoned chunk."""
+        sample_chunks[0].content = "before\x00after"
+        sample_chunks[1].context_summary = "ctx\x00nul"
+        sample_chunks[2].section_path = ["head\x00er", "clean"]
+        sample_chunks[3].metadata = {"k": "v\x00alue", "nested": ["a\x00b"]}
+
+        mock_conn = AsyncMock()
+
+        class MockAcquireContext:
+            async def __aenter__(self):
+                return mock_conn
+
+            async def __aexit__(self, *args):
+                pass
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value = MockAcquireContext()
+        supabase_client._pool = mock_pool
+
+        await supabase_client.insert_chunks(sample_chunks)
+
+        records = mock_conn.executemany.call_args.args[1]
+        # Records layout: (id, chunk_id, document_id, content, chunk_index,
+        # context_summary, embedding_text, section_path, ...
+        # ... , embedding, metadata)
+        all_text_fields = []
+        for rec in records:
+            all_text_fields.extend(
+                [
+                    rec[1],   # chunk_id
+                    rec[3],   # content
+                    rec[5],   # context_summary
+                    rec[6] or "",  # embedding_text
+                    *(rec[7] or []),  # section_path
+                    rec[19],  # metadata (jsonb string)
+                ]
+            )
+        assert all("\x00" not in f for f in all_text_fields if f is not None)
+        # Non-NUL content is preserved verbatim.
+        assert records[0][3] == "beforeafter"
+        assert records[1][5] == "ctxnul"
+        assert records[2][7] == ["header", "clean"]
+        # metadata jsonb stays valid JSON, NUL stripped.
+        import json as _json
+        md = _json.loads(records[3][19])
+        assert md == {"k": "value", "nested": ["ab"]}
+
+    @pytest.mark.asyncio
+    async def test_persist_ingest_result_strips_nul_bytes_in_document_fields(
+        self, supabase_client, sample_document
+    ):
+        """Document TEXT fields (subject, participants, source_title, ...)
+        must also have NUL stripped before binding."""
+        sample_document.source_title = "Subject\x00 with nul"
+        sample_document.file_name = "file\x00.eml"
+        sample_document.email_metadata.subject = "S\x00ubj"
+        sample_document.email_metadata.participants = ["a\x00@b", "c@d"]
+
+        mock_conn = MagicMock()
+        mock_conn.execute = AsyncMock()
+        mock_conn.executemany = AsyncMock()
+
+        class MockTransactionContext:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, *args):
+                pass
+
+        mock_conn.transaction = MagicMock(return_value=MockTransactionContext())
+
+        class MockAcquireContext:
+            async def __aenter__(self):
+                return mock_conn
+
+            async def __aexit__(self, *args):
+                pass
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value = MockAcquireContext()
+        supabase_client._pool = mock_pool
+
+        await supabase_client.persist_ingest_result(
+            email_doc=sample_document,
+            attachment_docs=[],
+            chunks=[],
+        )
+
+        # _insert_document_pg binds positional args; find the INSERT call.
+        insert_call = next(
+            c for c in mock_conn.execute.call_args_list
+            if "INSERT INTO documents" in c.args[0]
+        )
+        bound = insert_call.args[1:]
+        str_args = [a for a in bound if isinstance(a, str)]
+        list_args = [a for a in bound if isinstance(a, list)]
+        assert all("\x00" not in s for s in str_args)
+        for lst in list_args:
+            assert all("\x00" not in x for x in lst if isinstance(x, str))
+        # Non-NUL portion preserved.
+        assert "Subject with nul" in str_args
+        assert "file.eml" in str_args
+        assert "Subj" in str_args
+
     def test_row_to_document_conversion(self, supabase_client):
         """Row to document conversion should work."""
         row = {
