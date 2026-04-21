@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Dict, List
 
 from ..config import get_settings
 from ..models.chunk import RetrievalResult
+from ..observability.step_timing import record_step
 from ..processing.embeddings import EmbeddingGenerator
 from ..storage.supabase_client import SupabaseClient
 from .reranker import Reranker
@@ -64,13 +65,14 @@ class Retriever:
             query_embedding = await self.embeddings.generate_embedding(query)
 
         settings = get_settings()
-        results = await self.db.search_similar_chunks(
-            query_embedding=query_embedding,
-            match_threshold=similarity_threshold,
-            match_count=top_k,
-            metadata_filter=metadata_filter,
-            query_text=query if settings.hybrid_search_enabled else None,
-        )
+        async with record_step("db_search_ms"):
+            results = await self.db.search_similar_chunks(
+                query_embedding=query_embedding,
+                match_threshold=similarity_threshold,
+                match_count=top_k,
+                metadata_filter=metadata_filter,
+                query_text=query if settings.hybrid_search_enabled else None,
+            )
 
         if not results:
             return []
@@ -82,9 +84,10 @@ class Retriever:
         if use_rerank and self.reranker.enabled and len(retrieval_results) > effective_top_n:
             if on_progress:
                 await on_progress("Reranking results...")
-            retrieval_results = await self.reranker.rerank_results(
-                query=query, results=retrieval_results, top_n=rerank_top_n
-            )
+            async with record_step("rerank_api_ms"):
+                retrieval_results = await self.reranker.rerank_results(
+                    query=query, results=retrieval_results, top_n=rerank_top_n
+                )
 
         return retrieval_results
 
