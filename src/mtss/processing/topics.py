@@ -16,6 +16,7 @@ from uuid import UUID
 
 from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..models.topic import ExtractedTopic, Topic
+from .entity_cache import get_topic_cache
 
 if TYPE_CHECKING:
     from ..processing.embeddings import EmbeddingGenerator
@@ -379,26 +380,33 @@ class TopicMatcher:
         if normalized in self._name_cache:
             return self._name_cache[normalized]
 
-        # Check exact name match in DB
+        # Check process-wide topic cache (in-memory mirror of topics table)
+        topic_cache = get_topic_cache()
+        await topic_cache.ensure_loaded(self.db)
+        cached_match = topic_cache.match_by_name(name)
+        if cached_match is not None:
+            self._name_cache[normalized] = cached_match.id
+            return cached_match.id
+
+        # Fallback exact name match in DB (cache may be missing a fresh row)
         existing = await self.db.get_topic_by_name(normalized)
         if existing:
             self._name_cache[normalized] = existing.id
+            topic_cache.upsert(existing)
             return existing.id
 
         # Generate embedding for similarity search
         embedding = await self.embeddings.generate_embedding(name)
 
-        # Find similar topics
-        similar = await self.db.find_similar_topics(
-            embedding, threshold=self.similarity_threshold, limit=3
+        # Server-side HNSW-indexed similarity search (wrapped by the cache
+        # so the returned Topic instance stays cache-consistent).
+        cached_sim = await topic_cache.cosine_similar(
+            self.db, embedding, threshold=self.similarity_threshold, limit=1
         )
-
-        if similar:
-            top_match = similar[0]
-            if top_match["similarity"] >= self.similarity_threshold:
-                # Auto-merge (same or close enough)
-                self._name_cache[normalized] = top_match["id"]
-                return top_match["id"]
+        if cached_sim:
+            matched_topic, _score = cached_sim[0]
+            self._name_cache[normalized] = matched_topic.id
+            return matched_topic.id
 
         # Create new topic
         topic = Topic(
@@ -409,6 +417,7 @@ class TopicMatcher:
         )
         created = await self.db.insert_topic(topic)
         self._name_cache[normalized] = created.id
+        topic_cache.upsert(created)
         return created.id
 
     async def get_or_create_topics_batch(
@@ -431,6 +440,9 @@ class TopicMatcher:
         results: List[Optional[UUID]] = [None] * len(topics)
         needs_embedding: List[Tuple[int, str, Optional[str]]] = []  # (index, name, desc)
 
+        topic_cache = get_topic_cache()
+        await topic_cache.ensure_loaded(self.db)
+
         # Pass 1: Check cache and DB exact match
         for i, (name, description) in enumerate(topics):
             normalized = self._normalize_name(name)
@@ -439,9 +451,16 @@ class TopicMatcher:
                 results[i] = self._name_cache[normalized]
                 continue
 
+            cached_match = topic_cache.match_by_name(name)
+            if cached_match is not None:
+                self._name_cache[normalized] = cached_match.id
+                results[i] = cached_match.id
+                continue
+
             existing = await self.db.get_topic_by_name(normalized)
             if existing:
                 self._name_cache[normalized] = existing.id
+                topic_cache.upsert(existing)
                 results[i] = existing.id
                 continue
 
@@ -463,16 +482,14 @@ class TopicMatcher:
                 results[i] = self._name_cache[normalized]
                 continue
 
-            similar = await self.db.find_similar_topics(
-                embedding, threshold=self.similarity_threshold, limit=3
+            cached_sim = await topic_cache.cosine_similar(
+                self.db, embedding, threshold=self.similarity_threshold, limit=1
             )
-
-            if similar:
-                top_match = similar[0]
-                if top_match["similarity"] >= self.similarity_threshold:
-                    self._name_cache[normalized] = top_match["id"]
-                    results[i] = top_match["id"]
-                    continue
+            if cached_sim:
+                matched_topic, _score = cached_sim[0]
+                self._name_cache[normalized] = matched_topic.id
+                results[i] = matched_topic.id
+                continue
 
             # Create new topic
             topic = Topic(
@@ -483,6 +500,7 @@ class TopicMatcher:
             )
             created = await self.db.insert_topic(topic)
             self._name_cache[normalized] = created.id
+            topic_cache.upsert(created)
             results[i] = created.id
 
         return results  # type: ignore[return-value]
@@ -501,20 +519,29 @@ class TopicMatcher:
         """
         normalized = self._normalize_name(name)
 
-        # Check exact match first
+        topic_cache = get_topic_cache()
+        await topic_cache.ensure_loaded(self.db)
+
+        # Check exact-name match in the cache (O(1)).
+        cached_match = topic_cache.match_by_name(name)
+        if cached_match is not None:
+            return cached_match
+
+        # Cache miss on exact name — fall back to DB in case the cache is
+        # stale for a just-created topic.
         existing = await self.db.get_topic_by_name(normalized)
         if existing:
+            topic_cache.upsert(existing)
             return existing
 
-        # Try embedding similarity
+        # Server-side HNSW-indexed cosine search.
         effective_threshold = threshold if threshold is not None else self.query_similarity_threshold
         embedding = await self.embeddings.generate_embedding(name)
-        similar = await self.db.find_similar_topics(
-            embedding, threshold=effective_threshold, limit=1
+        cached_sim = await topic_cache.cosine_similar(
+            self.db, embedding, threshold=effective_threshold, limit=1
         )
-
-        if similar:
-            return await self.db.get_topic_by_id(similar[0]["id"])
+        if cached_sim:
+            return cached_sim[0][0]
 
         return None
 
@@ -553,16 +580,21 @@ class TopicMatcher:
         embedding = await self.embeddings.generate_embedding(query)
         exclude_set = set(exclude_ids) if exclude_ids else set()
 
-        similar = await self.db.find_similar_topics(
-            embedding, threshold=0.5, limit=limit + len(exclude_set)
+        topic_cache = get_topic_cache()
+        await topic_cache.ensure_loaded(self.db)
+
+        # Over-fetch so we can still return `limit` after filtering zero-chunk topics.
+        cached_sim = await topic_cache.cosine_similar(
+            self.db,
+            embedding,
+            threshold=0.5,
+            limit=limit + len(exclude_set) + 5,
+            exclude_ids=exclude_set,
         )
 
-        results = []
-        for match in similar:
-            if match["id"] in exclude_set:
-                continue
-            topic = await self.db.get_topic_by_id(match["id"])
-            if topic and topic.chunk_count > 0:
+        results: List[Topic] = []
+        for topic, _score in cached_sim:
+            if topic.chunk_count > 0:
                 results.append(topic)
             if len(results) >= limit:
                 break

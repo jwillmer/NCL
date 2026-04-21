@@ -215,6 +215,17 @@ async def lifespan(app: FastAPI):
     else:
         logger.debug("Langfuse disabled")
 
+    # Pre-warm process-wide caches (topics + vessels) so the first request
+    # doesn't pay cold-load latency on the hot path.
+    try:
+        from ..processing.entity_cache import warm_caches
+        from ..storage.supabase_client import SupabaseClient
+
+        await warm_caches(SupabaseClient())
+        logger.info("Topic + vessel caches pre-warmed")
+    except Exception as exc:
+        logger.warning("Cache pre-warm failed (non-fatal): %s", exc)
+
     # Initialize AsyncPostgresSaver for LangGraph conversation persistence
     logger.info("Initializing LangGraph checkpointer...")
     async with AsyncPostgresSaver.from_conn_string(settings.supabase_db_url) as checkpointer:

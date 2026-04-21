@@ -252,6 +252,9 @@ class SupabaseClient:
     async def get_all_topics(self) -> List[TopicSummary]:
         return await self._domain.get_all_topics()
 
+    async def list_all_topics_lightweight(self) -> List[Topic]:
+        return await self._domain.list_all_topics_lightweight()
+
     async def get_chunks_count_for_topic(
         self, topic_id: UUID, vessel_filter: Optional[Dict] = None
     ) -> int:

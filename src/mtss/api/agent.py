@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, cast
 
@@ -157,11 +156,8 @@ def _sanitize_messages_for_llm(messages: List[BaseMessage]) -> List[BaseMessage]
     return sanitized
 
 
-# Bounded LRU cache for vessel lookups to avoid repeated DB queries.
-# Capped to prevent unbounded memory growth when many unique vessel_ids are seen
-# over the lifetime of the API process.
-_VESSEL_CACHE_MAXSIZE = 128
-_vessel_cache: "OrderedDict[str, Optional[Vessel]]" = OrderedDict()
+# Vessel lookups use the process-wide VesselCache (in-memory mirror of the
+# ``vessels`` table, ~50 rows with a 5-minute TTL). See processing/entity_cache.py.
 
 
 class AgentState(MessagesState):
@@ -205,33 +201,31 @@ def _load_system_prompt() -> str:
 
 
 async def _get_vessel_info(vessel_id: Optional[str]) -> Optional[Vessel]:
-    """Get vessel info from the bounded LRU cache or fall back to the database.
+    """Resolve vessel info through the process-wide VesselCache.
 
-    The cache is capped at ``_VESSEL_CACHE_MAXSIZE`` entries; each hit or insert
-    promotes the key to the most-recently-used position, and the least-recently
-    used entry is evicted when the cap is exceeded.
+    The cache is a full in-memory mirror of the vessels table (tiny — ~50 rows),
+    so we lazy-load it once per process (with a 5-minute TTL) instead of doing a
+    DB round-trip per request.
     """
     if not vessel_id:
         return None
 
-    if vessel_id in _vessel_cache:
-        # Promote to most-recently-used on hit.
-        _vessel_cache.move_to_end(vessel_id)
-        return _vessel_cache[vessel_id]
+    from uuid import UUID
+    from ..processing.entity_cache import get_vessel_cache
 
     try:
-        from uuid import UUID
-        client = SupabaseClient()
-        vessel = await client.get_vessel_by_id(UUID(vessel_id))
-    except Exception as e:
-        logger.warning("Failed to fetch vessel info for %s: %s", vessel_id, e)
+        vid = UUID(vessel_id)
+    except (ValueError, TypeError):
         return None
 
-    _vessel_cache[vessel_id] = vessel
-    _vessel_cache.move_to_end(vessel_id)
-    if len(_vessel_cache) > _VESSEL_CACHE_MAXSIZE:
-        _vessel_cache.popitem(last=False)
-    return vessel
+    vessel_cache = get_vessel_cache()
+    try:
+        await vessel_cache.ensure_loaded(SupabaseClient())
+    except Exception as e:
+        logger.warning("Failed to load vessel cache: %s", e)
+        return None
+
+    return vessel_cache.get_by_id(vid)
 
 
 def _build_system_prompt(vessel: Optional[Vessel] = None) -> str:

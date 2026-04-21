@@ -240,7 +240,12 @@ class TopicFilter:
 
         for original_name, topic in match_results:
             if topic:
-                count = await self.db.get_chunks_count_for_topic(topic.id)
+                # topics.chunk_count is a stored aggregate maintained by the
+                # ingest path — use it directly instead of re-running the RPC
+                # every query. The live count via count_chunks_by_topic is
+                # only needed when a vessel_filter is applied (the row-level
+                # aggregate does not know about per-vessel subsets).
+                count = topic.chunk_count
                 filtered = count
                 if vessel_filter:
                     filtered = await self.db.get_chunks_count_for_topic(
@@ -269,7 +274,10 @@ class TopicFilter:
                 loose_unmatched: List[str] = []
                 for original_name, topic in loose_results:
                     if topic:
-                        count = await self.db.get_chunks_count_for_topic(topic.id)
+                        # Same optimization as the strict pass: the stored
+                        # topic.chunk_count aggregate replaces the RPC in the
+                        # no-vessel-filter case.
+                        count = topic.chunk_count
                         filtered = count
                         if vessel_filter:
                             filtered = await self.db.get_chunks_count_for_topic(

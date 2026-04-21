@@ -414,6 +414,29 @@ class DomainRepository(BaseRepository):
             for row in rows
         ]
 
+    async def list_all_topics_lightweight(self) -> List[Topic]:
+        """Return every topic row WITHOUT the embedding column.
+
+        Used by TopicCache to keep an in-memory mirror for O(1) name lookup
+        and stored `chunk_count` access. The embedding column is deliberately
+        omitted: the HNSW-indexed ``find_similar_topics`` RPC does all
+        cosine work server-side, so the client never needs a local vector
+        matrix. Dropping the embedding turns a ~92 MB transfer (1536 floats
+        per row, cast to text) into a ~300 KB transfer, and the query
+        completes in under a second instead of timing out at 120s.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, display_name, description,
+                       chunk_count, document_count,
+                       created_at, updated_at
+                FROM topics
+                """
+            )
+        return [self._row_to_topic(dict(row)) for row in rows]
+
     async def get_chunks_count_for_topic(
         self, topic_id: UUID, vessel_filter: Optional[Dict] = None
     ) -> int:
