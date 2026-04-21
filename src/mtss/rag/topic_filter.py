@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
 from ..config import get_settings
@@ -188,6 +188,7 @@ class TopicFilter:
         self,
         query: str,
         vessel_filter: Optional[Dict] = None,
+        on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> TopicFilterResult:
         """Analyze query and determine if RAG should proceed.
 
@@ -209,6 +210,8 @@ class TopicFilter:
         settings = get_settings()
 
         # Step 1: Extract topics from query (with error handling)
+        if on_progress:
+            await on_progress("Extracting topics")
         try:
             extracted = await self.extractor.extract_topics_from_query(query)
         except Exception as e:

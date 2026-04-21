@@ -441,7 +441,9 @@ async def search_node(
                 topic_matcher=TopicMatcher(engine.retriever.db, engine.retriever.embeddings),
                 db=engine.retriever.db,
             )
-            filter_task = topic_filter.analyze_query(question, vessel_filter)
+            filter_task = topic_filter.analyze_query(
+                question, vessel_filter, on_progress=on_progress
+            )
             embed_task = engine.retriever.embed_query(question)
             filter_result, query_embedding = await asyncio.gather(
                 filter_task, embed_task
