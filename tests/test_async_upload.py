@@ -17,8 +17,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from storage3.utils import StorageException
+
 from mtss.storage import async_upload
-from mtss.storage.async_upload import UploadItem, _upload_one, upload_many
+from mtss.storage.async_upload import (
+    UploadItem,
+    _upload_one,
+    sanitize_storage_key,
+    upload_many,
+)
 
 
 def _mk_item(tmp_path: Path, name: str = "file.pdf") -> UploadItem:
@@ -140,6 +147,88 @@ class TestUploadOne:
             "content-type": item.content_type,
             "upsert": "true",
         }
+
+
+class TestTerminalErrorShortCircuit:
+    """StorageException with a 4xx payload must break the retry loop."""
+
+    async def test_invalid_key_stops_after_one_attempt(self, tmp_path, monkeypatch):
+        """``InvalidKey`` is a structural 400 from the storage API — retrying
+        wastes the full backoff budget on the same failure."""
+        bucket = MagicMock()
+        bucket.upload = AsyncMock(
+            side_effect=StorageException(
+                {"statusCode": 400, "error": "InvalidKey", "message": "Invalid key:foo"}
+            )
+        )
+        fake_sleep = AsyncMock()
+        monkeypatch.setattr(async_upload.asyncio, "sleep", fake_sleep)
+
+        item = _mk_item(tmp_path)
+        ok = await _upload_one(
+            bucket,
+            item,
+            max_attempts=5,
+            backoff_base=0.01,
+            jitter=0.0,
+            on_retry=None,
+            on_progress=None,
+        )
+
+        assert ok is False
+        assert bucket.upload.await_count == 1  # no retry
+        assert fake_sleep.await_count == 0
+
+    async def test_server_5xx_still_retries(self, tmp_path, monkeypatch):
+        """5xx is transient — retry loop must keep going."""
+        bucket = MagicMock()
+        bucket.upload = AsyncMock(
+            side_effect=[
+                StorageException({"statusCode": 502, "error": "BadGateway"}),
+                None,
+            ]
+        )
+        monkeypatch.setattr(async_upload.asyncio, "sleep", AsyncMock())
+
+        item = _mk_item(tmp_path)
+        ok = await _upload_one(
+            bucket,
+            item,
+            max_attempts=3,
+            backoff_base=0.01,
+            jitter=0.0,
+            on_retry=None,
+            on_progress=None,
+        )
+
+        assert ok is True
+        assert bucket.upload.await_count == 2
+
+
+class TestSanitizeStorageKey:
+    def test_strips_percent_sign(self):
+        assert (
+            sanitize_storage_key("folder/attachments/2%_sds.pdf")
+            == "folder/attachments/2__sds.pdf"
+        )
+
+    def test_leaves_safe_keys_untouched(self):
+        # Covers every char in Supabase's allowed set except the weird ones.
+        safe = "abc123_/!-.*'() &$@=;:+,?xyz"
+        assert sanitize_storage_key(safe) == safe
+
+    def test_is_idempotent(self):
+        raw = "a%b#c[d].pdf"
+        once = sanitize_storage_key(raw)
+        twice = sanitize_storage_key(once)
+        assert once == twice
+        assert "%" not in once and "#" not in once and "[" not in once
+
+    def test_preserves_slash_for_subfolders(self):
+        assert (
+            sanitize_storage_key("folder/attachments/file.pdf")
+            == "folder/attachments/file.pdf"
+        )
 
 
 class TestUploadManySemaphore:

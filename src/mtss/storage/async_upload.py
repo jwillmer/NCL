@@ -26,16 +26,56 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
 import httpx
 from storage3 import AsyncStorageClient
+from storage3.utils import StorageException
 
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+# Supabase Storage validates object keys against this character set
+# (see storage-api/src/http/routes/object/util.ts). A key containing
+# anything outside this set is rejected with ``{"error": "InvalidKey",
+# "statusCode": 400}`` and no amount of retrying will help. Keys must
+# be sanitized before the upload is dispatched.
+_SAFE_KEY_RE = re.compile(r"[\w/!\-.*'() &$@=;:+,?]")
+
+
+def sanitize_storage_key(key: str) -> str:
+    """Replace characters Supabase Storage's key validator rejects with ``_``.
+
+    The real-world offender is ``%`` appearing in attachment filenames
+    like ``STHAMEX_SV-HT_2%_F-10_9273_SDS.pdf``. The sanitizer is
+    deterministic so repeated runs collapse to the same remote key.
+    """
+    if all(_SAFE_KEY_RE.fullmatch(c) for c in key):
+        return key
+    return "".join(c if _SAFE_KEY_RE.fullmatch(c) else "_" for c in key)
+
+
+def _is_terminal_upload_error(exc: BaseException) -> bool:
+    """True for errors no retry can recover: 4xx client errors from the
+    storage API. Retrying them wastes the full backoff budget (~7.5s on
+    the default 5-attempt ladder) per bad file."""
+    if not isinstance(exc, StorageException):
+        return False
+    payload = exc.args[0] if exc.args else None
+    if not isinstance(payload, dict):
+        return False
+    status = payload.get("statusCode")
+    # statusCode arrives as str on some storage3 paths, int on others.
+    try:
+        status_int = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status_int = None
+    return status_int is not None and 400 <= status_int < 500
 
 
 @dataclass(frozen=True)
@@ -191,6 +231,10 @@ async def _upload_one(
             return True
         except Exception as exc:
             last_exc = exc
+            if _is_terminal_upload_error(exc):
+                # 4xx from the storage API — the request is structurally
+                # wrong (e.g. InvalidKey). Retrying will re-fail identically.
+                break
             if attempt == max_attempts:
                 break
             delay = backoff_base * (2 ** (attempt - 1))
