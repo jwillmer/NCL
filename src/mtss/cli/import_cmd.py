@@ -18,7 +18,8 @@ from ._common import console, make_progress
 from ..models.serializers import dict_to_chunk as _dict_to_chunk
 from ..models.serializers import dict_to_document as _dict_to_document
 from ..models.serializers import dict_to_topic as _dict_to_topic
-from ..storage.async_upload import UploadItem, upload_many
+from ..storage.async_upload import UploadItem, sanitize_storage_key, upload_many
+from ..utils import compute_folder_id
 
 logger = logging.getLogger(__name__)
 
@@ -178,14 +179,20 @@ async def _import_data(
             archive_dir = resolved_output / "archive"
             if archive_dir.exists():
                 docs_data = _read_jsonl(resolved_output / "documents.jsonl")
+                # Archive folders are named by ``compute_folder_id(doc_id)`` —
+                # a 32-char hash in a distinct keyspace from the 16-char
+                # doc_id itself. Using ``doc_id[:16]`` here produces IDs
+                # that never match the remote folder names, so every
+                # pre-existing folder gets flagged as orphan and deleted.
                 local_doc_folder_ids = {
-                    d["doc_id"][:16] for d in docs_data
+                    compute_folder_id(d["doc_id"]) for d in docs_data
                     if d.get("doc_id") and d.get("document_type") == "email"
                 }
                 await _import_archives(
                     archive_dir, local_doc_folder_ids, totals, changes, dry_run, verbose,
                     folder_filter=wave_folder_ids if limit is not None else None,
                     skip_orphans=limit is not None,
+                    db=db,
                 )
             elif verbose:
                 console.print("[dim]No archive/ directory found, skipping.[/dim]")
@@ -501,10 +508,10 @@ async def _rewrite_remote_topic_ids(db, plan_path: Path, changes, dry_run, verbo
 async def _import_documents(db, output_dir, totals, changes, dry_run, verbose, limit=None):
     """Import documents + chunks from JSONL files.
 
-    Returns the set of folder_ids (doc_id[:16]) for emails imported (or
-    attempted) this run. Callers use this to scope the archive-upload phase
-    in wave mode so untouched folders aren't rescanned. On dry-run the set
-    still reflects what *would* be imported.
+    Returns the set of folder_ids (compute_folder_id(doc_id)) for emails
+    imported (or attempted) this run. Callers use this to scope the
+    archive-upload phase in wave mode so untouched folders aren't
+    rescanned. On dry-run the set still reflects what *would* be imported.
     """
     docs_data = _read_jsonl(output_dir / "documents.jsonl")
     chunks_data = _read_jsonl(output_dir / "chunks.jsonl")
@@ -551,8 +558,13 @@ async def _import_documents(db, output_dir, totals, changes, dry_run, verbose, l
             f"({len(roots) - total_pending} already imported)[/yellow]"
         )
 
+    # Archive folders are named via ``compute_folder_id`` (32-char), not
+    # ``doc_id[:16]``. Using the wrong keyspace here turns the folder
+    # filter into an empty intersection → _import_archives processes
+    # every folder instead of the wave slice, and (worse) every existing
+    # remote folder looks orphan and is queued for deletion.
     wave_folder_ids: set[str] = {
-        r["doc_id"][:16] for r in new_roots if r.get("doc_id")
+        compute_folder_id(r["doc_id"]) for r in new_roots if r.get("doc_id")
     }
 
     console.print(f"Importing {len(roots)} emails ({len(docs_data)} documents, {len(chunks_data)} chunks)...")
@@ -674,6 +686,7 @@ async def _import_archives(
     verbose,
     folder_filter: Optional[set] = None,
     skip_orphans: bool = False,
+    db: Optional[Any] = None,
 ):
     """Upload archive files to Supabase Storage, skipping files that already exist.
 
@@ -687,7 +700,7 @@ async def _import_archives(
 
     resolved_archive = archive_dir.resolve()
 
-    # Collect local files grouped by folder (doc_id[:16])
+    # Collect local files grouped by folder (compute_folder_id(doc_id), 32-char)
     local_by_folder: Dict[str, List[tuple[Path, str]]] = {}
     for file_path in archive_dir.rglob("*"):
         if not file_path.is_file():
@@ -798,17 +811,29 @@ async def _import_archives(
         with make_progress() as progress:
             task_id = progress.add_task("Archives", total=len(files_to_upload))
 
-            upload_items = [
-                UploadItem(
-                    local_path=lp,
-                    remote_key=rk,
-                    content_type=(
-                        mimetypes.guess_type(str(lp))[0]
-                        or "application/octet-stream"
-                    ),
+            # Map sanitized → original rel_key so we can patch the
+            # documents row's ``archive_*_uri`` back in Postgres after a
+            # successful upload (the URIs were stamped from the raw
+            # filename at ingest time).
+            sanitized_to_original: Dict[str, str] = {}
+            upload_items: List[UploadItem] = []
+            for lp, rk in files_to_upload:
+                safe_key = sanitize_storage_key(rk)
+                if safe_key != rk:
+                    sanitized_to_original[safe_key] = rk
+                    logger.warning(
+                        f"Sanitized invalid storage key: {rk!r} -> {safe_key!r}"
+                    )
+                upload_items.append(
+                    UploadItem(
+                        local_path=lp,
+                        remote_key=safe_key,
+                        content_type=(
+                            mimetypes.guess_type(str(lp))[0]
+                            or "application/octet-stream"
+                        ),
+                    )
                 )
-                for lp, rk in files_to_upload
-            ]
 
             def _on_retry(attempt: int, exc: BaseException, delay: float, rel_key: str) -> None:
                 logger.warning(
@@ -816,9 +841,14 @@ async def _import_archives(
                     f"Retrying in {delay:.1f}s..."
                 )
 
+            patched_uris: List[tuple[str, str]] = []  # (original_rel_key, safe_rel_key)
+
             def _on_progress(item: UploadItem, success: bool) -> None:
                 if success:
                     changes["new_archive files"] += 1
+                    original = sanitized_to_original.get(item.remote_key)
+                    if original is not None:
+                        patched_uris.append((original, item.remote_key))
                 else:
                     changes["failed"] += 1
                 progress.update(task_id, advance=1)
@@ -833,6 +863,9 @@ async def _import_archives(
                 on_retry=_on_retry,
                 on_progress=_on_progress,
             )
+
+            if patched_uris and db is not None:
+                await _repoint_sanitized_archive_uris(db, patched_uris)
 
     if orphan_keys:
         console.print(f"Removing {len(orphan_keys)} orphan archive files...")
@@ -858,3 +891,53 @@ async def _import_archives(
         if removed_folders:
             console.print(f"  [green]Removed {removed_folders} orphan folders[/green]")
         changes["orphans_removed"] += removed_folders
+
+
+async def _repoint_sanitized_archive_uris(
+    db, patched: List[tuple[str, str]]
+) -> None:
+    """Rewrite ``archive_download_uri`` (and chunk copies) for attachments
+    whose remote key was sanitized at upload time.
+
+    The ingest step stamps the URI using the raw filename. When the key
+    is rewritten to satisfy Supabase Storage's validator (e.g. ``%`` →
+    ``_``) the persisted URI no longer resolves. This patches the
+    documents + chunks rows so citation links stay live.
+
+    ``patched`` is a list of ``(original_rel_key, safe_rel_key)`` pairs
+    where each rel_key looks like
+    ``"<folder_id>/attachments/<filename>"``.
+    """
+    if not patched:
+        return
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for original, safe in patched:
+                original_suffix = f"/archive/{original}"
+                safe_suffix = f"/archive/{safe}"
+                # Documents can use an absolute download URI or a
+                # relative ``/archive/...`` one; match by endswith so
+                # both flavours get repointed. Using ``right(url, N) =
+                # suffix`` avoids a LIKE with special chars in ``%``.
+                n = len(original_suffix)
+                await conn.execute(
+                    """
+                    UPDATE documents
+                    SET archive_download_uri = LEFT(archive_download_uri, LENGTH(archive_download_uri) - $3) || $2,
+                        updated_at = NOW()
+                    WHERE RIGHT(archive_download_uri, $3) = $1
+                    """,
+                    original_suffix, safe_suffix, n,
+                )
+                await conn.execute(
+                    """
+                    UPDATE chunks
+                    SET archive_download_uri = LEFT(archive_download_uri, LENGTH(archive_download_uri) - $3) || $2
+                    WHERE RIGHT(archive_download_uri, $3) = $1
+                    """,
+                    original_suffix, safe_suffix, n,
+                )
+    logger.info(
+        "Repointed %d document URIs after key sanitization.", len(patched)
+    )

@@ -25,6 +25,7 @@ import pytest
 
 from mtss.cli import import_cmd
 from mtss.storage.async_upload import UploadItem
+from mtss.utils import compute_folder_id
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +227,90 @@ class TestImportArchivesAsyncFanout:
         assert changes["new_archive files"] == 3
         assert changes["failed"] == 2
 
+    async def test_sanitizes_unsafe_keys_and_repoints_uris(
+        self, tmp_path, monkeypatch
+    ):
+        """Files with ``%`` or other chars Supabase's key validator rejects
+        must be uploaded under a sanitized key, and the persisted URIs
+        for those docs must be rewritten to match."""
+        folder_id = "e" * 16
+        folder = tmp_path / folder_id / "attachments"
+        folder.mkdir(parents=True)
+        (folder / "safe.pdf").write_bytes(b"a")
+        (folder / "2%_sds.pdf").write_bytes(b"b")
+        (folder / "report#draft.pdf").write_bytes(b"c")
+
+        calls = _install_fake_upload_many(monkeypatch)
+
+        # Capture UPDATE params for later assertion.
+        update_calls: list[tuple] = []
+
+        class _FakeConn:
+            async def execute(self, sql, *args):
+                if "UPDATE documents" in sql or "UPDATE chunks" in sql:
+                    update_calls.append((sql, args))
+
+            def transaction(self):
+                class _Ctx:
+                    async def __aenter__(self_inner):
+                        return None
+
+                    async def __aexit__(self_inner, *a):
+                        return None
+
+                return _Ctx()
+
+        class _FakeAcquire:
+            async def __aenter__(self_inner):
+                return _FakeConn()
+
+            async def __aexit__(self_inner, *a):
+                return None
+
+        fake_pool = MagicMock()
+        fake_pool.acquire = MagicMock(return_value=_FakeAcquire())
+
+        fake_db = MagicMock()
+
+        async def _get_pool():
+            return fake_pool
+
+        fake_db.get_pool = _get_pool
+
+        with patch(
+            "mtss.storage.archive_storage.ArchiveStorage",
+            return_value=_make_mock_archive_storage(),
+        ):
+            changes: dict = {
+                "new_archive files": 0, "failed": 0, "orphans_removed": 0,
+            }
+            await import_cmd._import_archives(
+                tmp_path, {folder_id}, {}, changes, dry_run=False, verbose=False,
+                db=fake_db,
+            )
+
+        remote_keys = {it.remote_key for it in calls[0]["items"]}
+        # ``%`` and ``#`` replaced by ``_``, slash preserved.
+        assert f"{folder_id}/attachments/safe.pdf" in remote_keys
+        assert f"{folder_id}/attachments/2__sds.pdf" in remote_keys
+        assert f"{folder_id}/attachments/report_draft.pdf" in remote_keys
+        # No raw invalid chars ever reach the upload call.
+        assert all("%" not in k and "#" not in k for k in remote_keys)
+
+        # Two UPDATE pairs (documents + chunks) per sanitized file = 4.
+        assert len(update_calls) == 4
+        # Every UPDATE carries the original /archive/... suffix as $1
+        # and the safe suffix as $2, so citations don't break.
+        update_pairs = {(c[1][0], c[1][1]) for c in update_calls}
+        assert (
+            f"/archive/{folder_id}/attachments/2%_sds.pdf",
+            f"/archive/{folder_id}/attachments/2__sds.pdf",
+        ) in update_pairs
+        assert (
+            f"/archive/{folder_id}/attachments/report#draft.pdf",
+            f"/archive/{folder_id}/attachments/report_draft.pdf",
+        ) in update_pairs
+
     async def test_no_files_to_upload_short_circuits(
         self, tmp_path, monkeypatch
     ):
@@ -264,6 +349,124 @@ class TestImportArchivesAsyncFanout:
         assert len(calls) == 0
         assert changes["new_archive files"] == 0
         assert changes["failed"] == 0
+
+
+class TestImportArchivesOrphanFolderKeyspace:
+    """Regression: archive folders live under ``compute_folder_id(doc_id)``
+    (32-char), not ``doc_id[:16]``. Passing the wrong keyspace in
+    ``local_doc_folder_ids`` makes every remote folder look orphan and
+    queued for deletion — catastrophic on a fresh full-run after prior
+    wave imports. Keep this test as the guardrail."""
+
+    async def test_matching_folder_is_not_orphan(self, tmp_path, monkeypatch):
+        doc_id = "abcdef0123456789"  # 16-char doc_id
+        folder_id = compute_folder_id(doc_id)  # 32-char archive folder
+        assert len(folder_id) == 32
+
+        # Local tree uses the 32-char compute_folder_id name — this is
+        # how archive_generator writes folders on disk.
+        _make_archive_tree(tmp_path, folder_id, count=2)
+
+        _install_fake_upload_many(monkeypatch)
+
+        mock_storage = _make_mock_archive_storage()
+        # Remote bucket already has the folder and its files (prior wave).
+        def fake_list_folder(folder, *args, **kwargs):
+            if folder == "":
+                return [{"name": folder_id, "id": None}]
+            if folder == folder_id:
+                return [
+                    {"name": f"file_{i:03d}.txt", "id": f"id-{i}"}
+                    for i in range(2)
+                ]
+            return []
+
+        mock_storage.list_folder.side_effect = fake_list_folder
+
+        with patch(
+            "mtss.storage.archive_storage.ArchiveStorage",
+            return_value=mock_storage,
+        ):
+            changes: dict = {
+                "new_archive files": 0, "failed": 0, "orphans_removed": 0,
+            }
+            # Caller hands the correct 32-char folder_id (as fixed
+            # ``_import_data`` now does via compute_folder_id).
+            await import_cmd._import_archives(
+                tmp_path,
+                {folder_id},
+                {},
+                changes,
+                dry_run=False,
+                verbose=False,
+            )
+
+        mock_storage.delete_folder.assert_not_called()
+        assert changes["orphans_removed"] == 0
+
+    async def test_16char_doc_id_is_flagged_orphan_regression(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards the historical bug direction: if a caller passes
+        ``doc_id[:16]`` (as ``_import_data`` used to), the legitimate
+        32-char folder is wrongly treated as orphan. This test locks in
+        the contract: the caller MUST produce 32-char folder IDs."""
+        doc_id = "abcdef0123456789"
+        folder_id = compute_folder_id(doc_id)
+
+        _make_archive_tree(tmp_path, folder_id, count=1)
+        _install_fake_upload_many(monkeypatch)
+
+        mock_storage = _make_mock_archive_storage()
+
+        def fake_list_folder(folder, *args, **kwargs):
+            if folder == "":
+                return [{"name": folder_id, "id": None}]
+            if folder == folder_id:
+                return [{"name": "file_000.txt", "id": "id-0"}]
+            return []
+
+        mock_storage.list_folder.side_effect = fake_list_folder
+
+        with patch(
+            "mtss.storage.archive_storage.ArchiveStorage",
+            return_value=mock_storage,
+        ):
+            changes: dict = {
+                "new_archive files": 0, "failed": 0, "orphans_removed": 0,
+            }
+            # Simulate the old buggy caller: passes 16-char doc_id instead
+            # of compute_folder_id. Should flag the legitimate folder as
+            # orphan — this is the data-destroying pathway.
+            await import_cmd._import_archives(
+                tmp_path,
+                {doc_id[:16]},
+                {},
+                changes,
+                dry_run=False,
+                verbose=False,
+            )
+
+        mock_storage.delete_folder.assert_called_once_with(folder_id)
+
+    def test_caller_folder_id_helper_uses_compute_folder_id(self):
+        """The fix is a one-line switch from ``doc_id[:16]`` to
+        ``compute_folder_id(doc_id)`` in ``_import_data``. Lock in the
+        module-level import of ``compute_folder_id`` so a future refactor
+        can't silently revive the 16-char path."""
+        import inspect
+
+        src = inspect.getsource(import_cmd)
+        # Must import + use the 32-char helper.
+        assert "from ..utils import compute_folder_id" in src
+        # The specific orphan-folder site must call compute_folder_id.
+        marker = "local_doc_folder_ids = {"
+        i = src.index(marker)
+        # Look ahead at the set-comprehension body (next ~400 chars).
+        block = src[i : i + 400]
+        assert "compute_folder_id(d[" in block, block
+        # And the old buggy form must be gone from that block.
+        assert 'd["doc_id"][:16]' not in block, block
 
 
 class TestImportArchivesTunables:
