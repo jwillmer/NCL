@@ -1,22 +1,20 @@
-"""Phase 2 orchestrator: read results.jsonl, apply graders, write scores.jsonl.
+"""Phase 2: read results.jsonl, apply auto-graders, write scores.jsonl.
 
-Auto-graders always run (cheap). LLM judge runs only when --judge llm|both.
-Re-running judge over the same results is free thanks to content-hash caching
-in metrics/answer.py.
+Auto-graders only — LLM judge was removed by design. Humans review the
+responses directly against goldens. The auto-grader layer is retained
+because it is cheap and deterministic: citations coverage, response
+format adherence, and (when goldens carry labeled chunk_ids)
+retrieval recall/MRR/nDCG.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import statistics
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List
 
-import yaml
-
-from .metrics.answer import judge as llm_judge
 from .metrics.citation import score_citations
 from .metrics.format import score_format
 from .metrics.retrieval import score_retrieval
@@ -24,7 +22,6 @@ from .runner import load_goldens, load_results
 from .types import (
     AutoScores,
     GoldenQuestion,
-    JudgeScores,
     RunResult,
     ScoreResult,
     ScoreSummary,
@@ -32,13 +29,11 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
-# Weights for the per-question overall score (0-1)
-W_FAITHFULNESS = 0.30
-W_COMPLETENESS = 0.25
-W_RELEVANCE = 0.20
-W_ACTIONABILITY = 0.10
-W_AUTO_CITATION = 0.10  # citations_valid_pct
-W_AUTO_GROUNDING = 0.05  # citation_grounding_score
+# Weights for the per-question overall score (0-1). Auto-grader only —
+# no judge. Kept simple so the number is interpretable as "this fraction
+# of citations were valid, weighted by grounding".
+W_AUTO_CITATION = 0.65
+W_AUTO_GROUNDING = 0.35
 
 
 def _auto_score_one(run: RunResult, golden: GoldenQuestion) -> AutoScores:
@@ -62,36 +57,27 @@ def _auto_score_one(run: RunResult, golden: GoldenQuestion) -> AutoScores:
     )
 
 
-def _overall_score(auto: AutoScores, judge: Optional[JudgeScores]) -> float:
-    """Weighted aggregate, 0-1. Auto-only baseline if judge missing."""
-    auto_part = (
+def _overall_score(auto: AutoScores) -> float:
+    """Auto-only weighted aggregate, 0-1."""
+    return round(
         W_AUTO_CITATION * auto.citations_valid_pct
-        + W_AUTO_GROUNDING * auto.citation_grounding_score
+        + W_AUTO_GROUNDING * auto.citation_grounding_score,
+        4,
     )
-    if judge is None:
-        # Rescale auto-only part to fill 0-1 (otherwise capped at 0.15)
-        denom = W_AUTO_CITATION + W_AUTO_GROUNDING
-        return round(auto_part / denom, 4) if denom else 0.0
-
-    judge_part = (
-        W_FAITHFULNESS * (judge.faithfulness / 5)
-        + W_COMPLETENESS * (judge.completeness / 5)
-        + W_RELEVANCE * (judge.relevance / 5)
-        + W_ACTIONABILITY * (judge.actionability / 5)
-    )
-    return round(auto_part + judge_part, 4)
 
 
 async def execute_judge(
     *,
     run_dir: Path,
     questions_path: Path,
-    judge_mode: Literal["auto", "llm", "both"] = "both",
-    judge_model: Optional[str] = None,
-    use_cache: bool = True,
     concurrency: int = 4,
 ) -> ScoreSummary:
-    """Score every result in `run_dir/results.jsonl`. Writes scores.jsonl + summary.json."""
+    """Score every result in ``run_dir/results.jsonl``. Writes
+    scores.jsonl + summary.json + summary.md.
+
+    (Name kept as ``execute_judge`` for CLI compatibility even though no
+    LLM judging happens anymore — the CLI command is ``mtss eval judge``.)
+    """
     results_path = run_dir / "results.jsonl"
     scores_path = run_dir / "scores.jsonl"
     summary_path = run_dir / "summary.json"
@@ -104,35 +90,31 @@ async def execute_judge(
         g.id: g for g in load_goldens(questions_path)
     }
 
-    use_judge = judge_mode in ("llm", "both")
     sem = asyncio.Semaphore(concurrency)
 
     async def _score_one(run: RunResult) -> ScoreResult:
-        golden = goldens_by_id.get(run.question_id)
-        if golden is None:
-            logger.warning("No golden for %s — auto-scoring with empty reference", run.question_id)
-            golden = GoldenQuestion(
-                id=run.question_id, category="unknown",
-                question=run.question, reference_answer="",
-            )
-        auto = _auto_score_one(run, golden)
-        judge_scores: Optional[JudgeScores] = None
-        if use_judge:
-            async with sem:
-                judge_scores = await llm_judge(
-                    golden, run, judge_model=judge_model, use_cache=use_cache,
+        async with sem:
+            golden = goldens_by_id.get(run.question_id)
+            if golden is None:
+                logger.warning(
+                    "No golden for %s — auto-scoring with empty reference",
+                    run.question_id,
                 )
-        overall = _overall_score(auto, judge_scores)
-        return ScoreResult(
-            question_id=run.question_id,
-            auto=auto,
-            judge=judge_scores,
-            overall=overall,
-        )
+                golden = GoldenQuestion(
+                    id=run.question_id,
+                    category="unknown",
+                    question=run.question,
+                    reference_answer="",
+                )
+            auto = _auto_score_one(run, golden)
+            return ScoreResult(
+                question_id=run.question_id,
+                auto=auto,
+                overall=_overall_score(auto),
+            )
 
     score_results = await asyncio.gather(*(_score_one(r) for r in runs))
 
-    # Write scores.jsonl
     with scores_path.open("w", encoding="utf-8") as f:
         for s in score_results:
             f.write(s.model_dump_json() + "\n")
@@ -140,10 +122,11 @@ async def execute_judge(
     summary = _build_summary(run_id=run_dir.name, runs=runs, scores=score_results)
     summary_path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
 
-    # Also write a human-readable markdown summary
     md_path = run_dir / "summary.md"
-    md_path.write_text(_render_summary_md(summary, runs, score_results, goldens_by_id),
-                       encoding="utf-8")
+    md_path.write_text(
+        _render_summary_md(summary, runs, score_results, goldens_by_id),
+        encoding="utf-8",
+    )
     return summary
 
 
@@ -156,23 +139,23 @@ def _build_summary(
     overall_vals = [s.overall for s in scores]
     overall_mean = statistics.mean(overall_vals) if overall_vals else 0.0
     p50 = statistics.median(overall_vals) if overall_vals else 0.0
-    p10 = statistics.quantiles(overall_vals, n=10)[0] if len(overall_vals) >= 10 else min(overall_vals or [0])
+    p10 = (
+        statistics.quantiles(overall_vals, n=10)[0]
+        if len(overall_vals) >= 10
+        else min(overall_vals or [0])
+    )
 
     auto_aggregates = {
-        "citations_valid_pct_mean": _mean(s.auto.citations_valid_pct for s in scores),
-        "citation_grounding_score_mean": _mean(s.auto.citation_grounding_score for s in scores),
-        "follows_response_format_pct": _mean(float(s.auto.follows_response_format) for s in scores),
+        "citations_valid_pct_mean": _mean(
+            s.auto.citations_valid_pct for s in scores
+        ),
+        "citation_grounding_score_mean": _mean(
+            s.auto.citation_grounding_score for s in scores
+        ),
+        "follows_response_format_pct": _mean(
+            float(s.auto.follows_response_format) for s in scores
+        ),
     }
-    judged = [s for s in scores if s.judge is not None]
-    judge_aggregates = None
-    if judged:
-        judge_aggregates = {
-            "faithfulness_mean": _mean(s.judge.faithfulness for s in judged),
-            "completeness_mean": _mean(s.judge.completeness for s in judged),
-            "relevance_mean": _mean(s.judge.relevance for s in judged),
-            "actionability_mean": _mean(s.judge.actionability for s in judged),
-            "judge_cost_usd_total": sum(s.judge.judge_cost_usd for s in judged),
-        }
 
     failures = [r.question_id for r in runs if r.error]
     return ScoreSummary(
@@ -180,7 +163,6 @@ def _build_summary(
         question_count=len(runs),
         scored_count=len(scores),
         auto_aggregates=auto_aggregates,
-        judge_aggregates=judge_aggregates,
         overall_mean=round(overall_mean, 4),
         overall_p50=round(p50, 4),
         overall_p10=round(p10, 4),
@@ -204,8 +186,10 @@ def _render_summary_md(
     lines: List[str] = [
         f"# Eval run `{summary.run_id}`",
         "",
-        f"- Questions: **{summary.question_count}** ({summary.scored_count} scored, {len(summary.failures)} failed)",
-        f"- Overall mean: **{summary.overall_mean}** (p50 {summary.overall_p50}, p10 {summary.overall_p10})",
+        f"- Questions: **{summary.question_count}** "
+        f"({summary.scored_count} scored, {len(summary.failures)} failed)",
+        f"- Overall mean: **{summary.overall_mean}** "
+        f"(p50 {summary.overall_p50}, p10 {summary.overall_p10})",
         f"- Total agent cost: ${summary.total_cost_usd:.4f}",
         f"- Total agent latency: {summary.total_latency_ms / 1000:.1f}s",
         "",
@@ -214,26 +198,23 @@ def _render_summary_md(
     ]
     for k, v in summary.auto_aggregates.items():
         lines.append(f"- {k}: {v}")
-    if summary.judge_aggregates:
-        lines += ["", "## Judge aggregates", ""]
-        for k, v in summary.judge_aggregates.items():
-            lines.append(f"- {k}: {v}")
 
-    lines += ["", "## Per question", "",
-              "| ID | Overall | Faith | Compl | Rel | Act | Citations | Latency |",
-              "|----|---------|-------|-------|-----|-----|-----------|---------|"]
+    lines += [
+        "",
+        "## Per question",
+        "",
+        "| ID | Overall | Citations | Format | Chars | Latency |",
+        "|----|---------|-----------|--------|-------|---------|",
+    ]
     score_by_qid = {s.question_id: s for s in scores}
     run_by_qid = {r.question_id: r for r in runs}
     for qid, s in sorted(score_by_qid.items()):
         r = run_by_qid.get(qid)
-        j = s.judge
         lines.append(
             f"| {qid} | {s.overall:.2f} | "
-            f"{j.faithfulness if j else '-'} | "
-            f"{j.completeness if j else '-'} | "
-            f"{j.relevance if j else '-'} | "
-            f"{j.actionability if j else '-'} | "
             f"{s.auto.citations_valid_count}/{s.auto.citations_count} | "
+            f"{'ok' if s.auto.follows_response_format else 'no'} | "
+            f"{s.auto.response_length_chars} | "
             f"{r.metrics.latency_ms if r else '-'}ms |"
         )
     if summary.failures:

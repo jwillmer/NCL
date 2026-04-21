@@ -294,6 +294,16 @@ async def run_questions(
     orchestrator uses it to append-write results.jsonl as it goes, so a
     crashed run still produces partial output.
     """
+    # Pre-warm process-wide caches (topics + vessels) so the first query
+    # doesn't pay the ~5-7s cold load latency on top of its normal budget.
+    try:
+        from mtss.processing.entity_cache import warm_caches
+        from mtss.storage.supabase_client import SupabaseClient
+
+        await warm_caches(SupabaseClient())
+    except Exception as exc:  # pragma: no cover — warming is best-effort
+        logger.warning("Cache pre-warm failed (non-fatal): %s", exc)
+
     sem = asyncio.Semaphore(concurrency)
     results: List[RunResult] = []
 

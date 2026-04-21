@@ -27,8 +27,9 @@ class GoldenQuestion(BaseModel):
     reference_answer: str
     expected_facts: List[str] = Field(
         default_factory=list,
-        description="Bulleted key claims used by both completeness scoring and "
-        "the LLM judge's missing_facts check. Each fact is one sentence.",
+        description="Bulleted key claims used by the human reviewer as a "
+        "checklist when comparing the agent's response to the reference. "
+        "Each fact is one sentence.",
     )
     vessel_filter: Optional[Dict[str, str]] = Field(
         default=None,
@@ -157,29 +158,14 @@ class AutoScores(BaseModel):
     format_violations: List[str] = Field(default_factory=list)
 
 
-class JudgeScores(BaseModel):
-    """LLM-as-judge scores. Optional, expensive."""
-
-    model: str
-    faithfulness: int = Field(ge=1, le=5, description="No fabricated info beyond cited chunks")
-    completeness: int = Field(ge=1, le=5, description="Covers expected_facts vs reference")
-    relevance: int = Field(ge=1, le=5, description="Directly answers the question")
-    actionability: int = Field(ge=1, le=5, description="Provides concrete steps when asked")
-    missing_facts: List[str] = Field(default_factory=list)
-    fabricated_claims: List[str] = Field(default_factory=list)
-    rationale: str = ""
-    judge_cost_usd: float = 0.0
-
-
 class ScoreResult(BaseModel):
     """One question's full scoring. One per line in scores.jsonl."""
 
     question_id: str
     auto: AutoScores
-    judge: Optional[JudgeScores] = None
     overall: float = Field(
         default=0.0,
-        description="Weighted aggregate, 0-1. Auto-only if judge missing.",
+        description="Weighted aggregate of auto-grader signals, 0-1.",
     )
 
 
@@ -190,7 +176,6 @@ class ScoreSummary(BaseModel):
     question_count: int
     scored_count: int
     auto_aggregates: Dict[str, float]
-    judge_aggregates: Optional[Dict[str, float]] = None
     overall_mean: float = 0.0
     overall_p50: float = 0.0
     overall_p10: float = 0.0

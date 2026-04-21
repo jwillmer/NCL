@@ -64,11 +64,20 @@ def _render_diff_md(
         f"| Latency (ms) | {base_s.total_latency_ms} | {cand_s.total_latency_ms} | {_delta(cand_s.total_latency_ms, base_s.total_latency_ms)} |",
     ]
 
-    if base_s.judge_aggregates and cand_s.judge_aggregates:
-        lines += ["", "## Judge deltas", "", "| Metric | Base | Candidate | Δ |", "|---|---|---|---|"]
-        for k in sorted(base_s.judge_aggregates.keys() | cand_s.judge_aggregates.keys()):
-            b = base_s.judge_aggregates.get(k, 0)
-            c = cand_s.judge_aggregates.get(k, 0)
+    # Auto-aggregate deltas (citations, format, retrieval metrics)
+    if base_s.auto_aggregates or cand_s.auto_aggregates:
+        lines += [
+            "",
+            "## Auto-grader deltas",
+            "",
+            "| Metric | Base | Candidate | Δ |",
+            "|---|---|---|---|",
+        ]
+        for k in sorted(
+            base_s.auto_aggregates.keys() | cand_s.auto_aggregates.keys()
+        ):
+            b = base_s.auto_aggregates.get(k, 0)
+            c = cand_s.auto_aggregates.get(k, 0)
             lines.append(f"| {k} | {b} | {c} | {_delta(c, b)} |")
 
     # Settings diff

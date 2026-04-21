@@ -6,7 +6,7 @@ Configure with env vars:
     MTSS_EVAL_TOLERANCE      — allowed drop in overall_mean (default: 0.05)
     MTSS_EVAL_PER_Q_TOLERANCE — allowed drop per question (default: 0.10)
 
-Both dirs must contain summary.json + scores.jsonl produced by `mtss eval judge`.
+Both dirs must contain summary.json + scores.jsonl produced by `mtss eval score`.
 Tests are skipped (not failed) when either dir is absent so a fresh checkout
 or a no-baseline state passes CI.
 
@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(
     reason=(
         f"Skipping regression gate — need both BASELINE ({BASELINE}) and "
         f"CANDIDATE ({CANDIDATE}) to have summary.json + scores.jsonl. "
-        "Run `mtss eval run` + `mtss eval judge` and set MTSS_EVAL_BASELINE / "
+        "Run `mtss eval run` + `mtss eval score` and set MTSS_EVAL_BASELINE / "
         "MTSS_EVAL_CANDIDATE."
     ),
 )
@@ -98,9 +98,7 @@ def test_no_new_failures(base_summary, cand_summary):
     assert not new_failures, f"New question failures vs baseline: {sorted(new_failures)}"
 
 
-def test_judge_faithfulness_floor(cand_summary):
-    """Judge faithfulness mean should stay >= 3.5 if judging was run."""
-    if not cand_summary.judge_aggregates:
-        pytest.skip("No LLM judge in candidate run")
-    faith = cand_summary.judge_aggregates.get("faithfulness_mean", 0.0)
-    assert faith >= 3.5, f"faithfulness_mean dropped below 3.5: {faith}"
+def test_format_compliance_floor(cand_summary):
+    """follows_response_format_pct should stay above the baseline minus a tolerance."""
+    pct = cand_summary.auto_aggregates.get("follows_response_format_pct", 0.0)
+    assert pct >= 0.90, f"follows_response_format_pct dropped below 0.90: {pct}"

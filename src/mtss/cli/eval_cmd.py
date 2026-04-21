@@ -4,7 +4,7 @@ Workflow:
     mtss eval seed    ...  # push local data/output/ingest.db → test Supabase
     mtss eval verify       # ping test instance, compare row counts vs local
     mtss eval run     ...  # Phase 1: execute goldens, log everything
-    mtss eval judge   ...  # Phase 2: score logs (auto + LLM judge), no agent calls
+    mtss eval score   ...  # Phase 2: run auto-graders (humans judge responses)
     mtss eval diff    ...  # Phase 3: side-by-side delta vs another run
     mtss eval list         # show prior runs
     mtss eval show    ...  # cat one run's summary
@@ -245,21 +245,23 @@ def register(app: typer.Typer) -> None:
         console.print(f"[green]Done[/green] · {manifest.question_count} questions · {out}/results.jsonl")
 
     # ------------------------------------------------------------------
-    # JUDGE — Phase 2
+    # SCORE — Phase 2 (auto-graders only; humans judge responses manually)
     # ------------------------------------------------------------------
 
-    @eval_app.command("judge")
-    def judge_cmd(
+    @eval_app.command("score")
+    def score_cmd(
         run_dir: str = typer.Argument(..., help="Path to a runs/<id>/ directory"),
         env_file: str = typer.Option(DEFAULT_ENV_FILE, "--env-file"),
         questions: str = typer.Option(DEFAULT_QUESTIONS, "--questions"),
-        mode: str = typer.Option("both", "--judge", help="auto | llm | both"),
-        judge_model: Optional[str] = typer.Option(None, "--judge-model"),
-        no_cache: bool = typer.Option(False, "--no-cache"),
         concurrency: int = typer.Option(4, "--concurrency", "-c"),
         allow_prod: bool = typer.Option(False, "--allow-prod", hidden=True),
     ) -> None:
-        """Phase 2: score a previously executed run. No agent calls."""
+        """Phase 2: apply auto-graders to a run. No LLM calls.
+
+        Humans judge response quality directly against the goldens —
+        this just computes citation coverage, format adherence, and
+        (when goldens carry labeled chunk_ids) retrieval metrics.
+        """
         _resolve_target(env_file, allow_prod, enable_langfuse=False)
 
         from tests.eval.scoring import execute_judge
@@ -268,17 +270,11 @@ def register(app: typer.Typer) -> None:
         if not run_dir_path.exists():
             console.print(f"[red]Run dir not found: {run_dir_path}[/red]")
             raise typer.Exit(1)
-        if mode not in ("auto", "llm", "both"):
-            console.print(f"[red]--judge must be auto|llm|both, got {mode!r}[/red]")
-            raise typer.Exit(1)
 
-        console.print(f"[cyan]Judge[/cyan] {run_dir_path} mode={mode}")
+        console.print(f"[cyan]Score[/cyan] {run_dir_path}")
         summary = asyncio.run(execute_judge(
             run_dir=run_dir_path,
             questions_path=Path(questions),
-            judge_mode=mode,  # type: ignore[arg-type]
-            judge_model=judge_model,
-            use_cache=not no_cache,
             concurrency=concurrency,
         ))
         console.print(
