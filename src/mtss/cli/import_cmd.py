@@ -781,14 +781,29 @@ async def _import_archives(
                     logger.warning(f"Could not list existing archive files in {subfolder!r}: {e}")
                 progress.advance(task_id)
 
-    # Build set of expected local keys for orphan detection
-    local_keys = {rel_key for files in local_by_folder.values() for _, rel_key in files}
+    # Build set of expected local keys for orphan detection. Must use the
+    # *sanitized* form — ``existing_keys`` from the remote listing contains
+    # sanitized names for any file whose raw local name had unsafe chars.
+    # Comparing raw against sanitized would mark every sanitized remote
+    # file as orphan and queue it for deletion (same class of bug as the
+    # doc_id[:16] folder-id mismatch, just one level down).
+    local_keys = {
+        sanitize_storage_key(rel_key)
+        for files in local_by_folder.values()
+        for _, rel_key in files
+    }
 
+    # Compare against the *sanitized* form: files with unsafe chars in
+    # the local name are uploaded under a safe key (sanitize_storage_key)
+    # and so appear in ``existing_keys`` under that sanitized form. Using
+    # the raw rel_key here would re-queue every sanitized file on every
+    # subsequent run (upload is idempotent via upsert, but the waste
+    # compounds: repeat TLS handshake, repeat URI UPDATE, log spam).
     files_to_upload = [
         (local_path, rel_key)
         for files in local_by_folder.values()
         for local_path, rel_key in files
-        if rel_key not in existing_keys
+        if sanitize_storage_key(rel_key) not in existing_keys
     ]
 
     # Orphan detection is unsafe in wave mode: the local view is a subset

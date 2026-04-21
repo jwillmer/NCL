@@ -351,6 +351,103 @@ class TestImportArchivesAsyncFanout:
         assert changes["failed"] == 0
 
 
+class TestImportArchivesSanitizedKeyMatching:
+    """Remote keys for files with unsafe chars are stored sanitized. Both
+    the "already uploaded?" check and orphan-file detection must compare
+    against the sanitized form, not the raw on-disk rel_key — otherwise
+    every import re-uploads the same files AND flags the valid remote
+    copies as orphan."""
+
+    async def test_already_uploaded_sanitized_file_is_not_requeued(
+        self, tmp_path, monkeypatch
+    ):
+        folder_id = "f" * 32
+        folder = tmp_path / folder_id / "attachments"
+        folder.mkdir(parents=True)
+        raw_name = "2%_sds.pdf"
+        safe_name = "2__sds.pdf"
+        (folder / raw_name).write_bytes(b"payload")
+
+        calls = _install_fake_upload_many(monkeypatch)
+
+        mock_storage = _make_mock_archive_storage()
+
+        def fake_list_folder(folder_arg, *args, **kwargs):
+            if folder_arg == "":
+                return [{"name": folder_id, "id": None}]
+            if folder_arg == f"{folder_id}/attachments":
+                # Remote holds the SANITIZED name — previous run uploaded
+                # under safe_name.
+                return [{"name": safe_name, "id": f"id-{safe_name}"}]
+            return []
+
+        mock_storage.list_folder.side_effect = fake_list_folder
+
+        with patch(
+            "mtss.storage.archive_storage.ArchiveStorage",
+            return_value=mock_storage,
+        ):
+            changes: dict = {
+                "new_archive files": 0, "failed": 0, "orphans_removed": 0,
+            }
+            await import_cmd._import_archives(
+                tmp_path,
+                {folder_id},
+                {},
+                changes,
+                dry_run=False,
+                verbose=False,
+            )
+
+        # Must NOT re-upload the file.
+        assert len(calls) == 0 or len(calls[0]["items"]) == 0
+        assert changes["new_archive files"] == 0
+        mock_storage.bucket.remove.assert_not_called()
+
+    async def test_sanitized_remote_file_not_flagged_orphan(
+        self, tmp_path, monkeypatch
+    ):
+        """The sanitized remote file matches the local raw file after
+        sanitization → must not trigger ``bucket.remove``."""
+        folder_id = "e" * 32
+        folder = tmp_path / folder_id / "attachments"
+        folder.mkdir(parents=True)
+        (folder / "2%_sds.pdf").write_bytes(b"payload")
+
+        _install_fake_upload_many(monkeypatch)
+
+        mock_storage = _make_mock_archive_storage()
+
+        def fake_list_folder(folder_arg, *args, **kwargs):
+            if folder_arg == "":
+                return [{"name": folder_id, "id": None}]
+            if folder_arg == f"{folder_id}/attachments":
+                return [{"name": "2__sds.pdf", "id": "id-1"}]
+            return []
+
+        mock_storage.list_folder.side_effect = fake_list_folder
+
+        with patch(
+            "mtss.storage.archive_storage.ArchiveStorage",
+            return_value=mock_storage,
+        ):
+            changes: dict = {
+                "new_archive files": 0, "failed": 0, "orphans_removed": 0,
+            }
+            await import_cmd._import_archives(
+                tmp_path,
+                {folder_id},
+                {},
+                changes,
+                dry_run=False,
+                verbose=False,
+            )
+
+        # No orphan deletion — sanitize-aware matching found it.
+        mock_storage.bucket.remove.assert_not_called()
+        assert changes["orphans_removed"] == 0
+
+
 class TestImportArchivesOrphanFolderKeyspace:
     """Regression: archive folders live under ``compute_folder_id(doc_id)``
     (32-char), not ``doc_id[:16]``. Passing the wrong keyspace in
