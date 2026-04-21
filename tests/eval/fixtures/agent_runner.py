@@ -29,6 +29,7 @@ from mtss.observability import (
     get_langfuse_handler,
     set_session_id,
 )
+from mtss.observability.step_timing import start_capture, stop_capture
 
 from ..types import (
     CitationOccurrence,
@@ -112,6 +113,10 @@ async def run_question(
     # (the agent clears citation_map before END, so .ainvoke() loses the retrieval list)
     citation_map_data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    # Opt-in per-step latency capture. ContextVars propagate into tasks spawned
+    # by graph.astream / asyncio.gather, so step timings recorded inside nodes
+    # accumulate here without agent-side awareness.
+    step_buf = start_capture()
     started = time.monotonic()
 
     try:
@@ -122,8 +127,20 @@ async def run_question(
     except Exception as exc:
         logger.exception("Agent run failed for question %s", question.id)
         error = f"{type(exc).__name__}: {exc}"
+    finally:
+        stop_capture()
 
     latency_ms = int((time.monotonic() - started) * 1000)
+
+    # Aggregate step timings: a key can fire multiple times (e.g. chat_llm1_ms
+    # on a multi-turn conversation); summing is cheaper for consumers than
+    # preserving the list and still preserves total time in that step.
+    step_latencies_ms: Optional[Dict[str, int]] = None
+    if step_buf:
+        agg: Dict[str, int] = {}
+        for name, ms in step_buf:
+            agg[name] = agg.get(name, 0) + ms
+        step_latencies_ms = agg
 
     # Pull final state to extract response + ToolMessage trace
     final_state = await graph.aget_state(config)
@@ -148,6 +165,7 @@ async def run_question(
         output_tokens=token_counter.output_tokens,
         cost_usd=round(token_counter.cost_usd, 6),
         tool_calls=token_counter.tool_calls,
+        step_latencies_ms=step_latencies_ms,
     )
 
     # Best-effort flush so traces are visible in Langfuse before next question

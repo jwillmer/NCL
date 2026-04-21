@@ -39,6 +39,7 @@ from ..config import get_settings
 from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..models.chunk import RetrievalResult
 from ..models.vessel import Vessel
+from ..observability.step_timing import record_step
 from ..processing.topics import TopicExtractor, TopicMatcher
 from ..rag.citation_processor import CitationProcessor
 from ..rag.intent_classifier import (
@@ -181,6 +182,9 @@ class AgentState(MessagesState):
     selected_vessel_class: Optional[str] = None
     # Citation map for response validation (internal use)
     citation_map: Optional[Dict[str, Any]] = None
+    # Set by set_filter_node so the next chat_node turn still forces search.
+    # Without this, the filter would be applied but no retrieval would run.
+    filter_pending_search: bool = False
 
 
 async def emit_state(config: RunnableConfig, state: Dict[str, Any]) -> None:
@@ -196,6 +200,29 @@ async def emit_state(config: RunnableConfig, state: Dict[str, Any]) -> None:
     await adispatch_custom_event(
         name="manually_emit_state",
         data=state,
+        config=config,
+    )
+
+
+async def emit_filter_update(
+    config: RunnableConfig,
+    vessel_id: Optional[str],
+    vessel_type: Optional[str],
+    vessel_class: Optional[str],
+) -> None:
+    """Emit a filter-change notification to the frontend.
+
+    streaming.py converts this to a `data-filter` part on the UI message stream
+    so the React client can repaint its dropdowns + persist to the conversation
+    row. Only one field should be non-null — frontend enforces mutual exclusion.
+    """
+    await adispatch_custom_event(
+        name="emit_filter_update",
+        data={
+            "vessel_id": vessel_id,
+            "vessel_type": vessel_type,
+            "vessel_class": vessel_class,
+        },
         config=config,
     )
 
@@ -277,12 +304,18 @@ def _build_system_prompt(vessel: Optional[Vessel] = None) -> str:
     base_prompt = _load_system_prompt()
 
     if vessel:
+        # Vessel model fields: name, vessel_type, vessel_class. No IMO number
+        # is stored on Vessel today (see models/vessel.py) — historical prompt
+        # referenced a non-existent ``vessel.imo`` attribute, which would
+        # crash on any query with a resolved vessel. Surface what we actually
+        # have so the model can still anchor its response to the right ship.
         vessel_context = f"""
 ## Current Vessel Filter
 
 You are currently searching within documents related to a specific vessel:
 - **Vessel Name:** {vessel.name}
-- **IMO Number:** {vessel.imo}
+- **Vessel Type:** {vessel.vessel_type}
+- **Vessel Class:** {vessel.vessel_class}
 
 All search results are filtered to this vessel. When responding:
 - Acknowledge that information is specific to {vessel.name}
@@ -332,9 +365,102 @@ SEARCH_TOOL = {
 }
 
 
+SET_FILTER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "set_filter",
+        "description": (
+            "Set or clear the active retrieval filter when the user's question "
+            "names a specific vessel, vessel type (e.g. VLCC, SUEZMAX, AFRAMAX), "
+            "or vessel class (e.g. 'Canopus Class'). Call this BEFORE "
+            "search_documents — the new filter applies to the next search. "
+            "Filters are mutually exclusive: setting one clears the others. "
+            "Use kind='clear' to remove the current filter (e.g. user asks "
+            "for a fleet-wide view). Do NOT call if no specific vessel/type/"
+            "class is mentioned — leave the user's existing filter alone."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["vessel", "vessel_type", "vessel_class", "clear"],
+                    "description": "Filter field to set, or 'clear' to remove any active filter.",
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Vessel name / type / class as written by the user. Ignored when kind='clear'.",
+                },
+            },
+            "required": ["kind"],
+        },
+    },
+}
+
+
+async def _resolve_filter_value(
+    kind: str, value: Optional[str]
+) -> tuple[Optional[str], Optional[str], Optional[str], str]:
+    """Resolve a set_filter tool call into (vessel_id, vessel_type, vessel_class, message).
+
+    Returns a tuple where exactly one of the first three is set (or all None for
+    'clear' / failure). The string is a human-readable result the tool reports
+    back to the LLM so it can acknowledge the change in the final answer.
+
+    Vessel names go through VesselCache (fuzzy on normalized name + aliases).
+    Type/class values validate against the distinct values in the cached vessel
+    table — no DB round-trip.
+    """
+    from ..processing.entity_cache import get_vessel_cache
+
+    kind_norm = (kind or "").strip().lower()
+    if kind_norm == "clear":
+        return None, None, None, "Filter cleared."
+
+    v = (value or "").strip()
+    if not v:
+        return None, None, None, f"Cannot set {kind_norm} filter: value is empty."
+
+    vessel_cache = get_vessel_cache()
+    try:
+        await vessel_cache.ensure_loaded(SupabaseClient())
+    except Exception as e:
+        logger.warning("Failed to load vessel cache for set_filter: %s", e)
+        return None, None, None, "Could not load vessel registry — filter unchanged."
+
+    if kind_norm == "vessel":
+        vessel = vessel_cache.get_by_name(v)
+        if not vessel:
+            return None, None, None, (
+                f"No vessel matches '{v}'. Filter unchanged. "
+                f"Ask the user to confirm the vessel name."
+            )
+        return str(vessel.id), None, None, f"Filter set to vessel: {vessel.name}."
+
+    if kind_norm in ("vessel_type", "vessel_class"):
+        attr = "vessel_type" if kind_norm == "vessel_type" else "vessel_class"
+        target = v.casefold()
+        match: Optional[str] = None
+        for vessel in vessel_cache.list_all():
+            candidate = getattr(vessel, attr, None)
+            if candidate and candidate.casefold() == target:
+                match = candidate
+                break
+        if not match:
+            label = "type" if kind_norm == "vessel_type" else "class"
+            return None, None, None, (
+                f"No vessel {label} matches '{v}'. Filter unchanged."
+            )
+        if kind_norm == "vessel_type":
+            return None, match, None, f"Filter set to vessel type: {match}."
+        return None, None, match, f"Filter set to vessel class: {match}."
+
+    return None, None, None, f"Unknown filter kind: '{kind}'."
+
+
 async def chat_node(
     state: AgentState, config: RunnableConfig
-) -> Command[Literal["search_node", "__end__"]]:
+) -> Command[Literal["search_node", "set_filter_node", "__end__"]]:
     """Main chat node - routes to search tool or returns final response.
 
     On fresh user turns we first classify intent (factual / exploratory /
@@ -378,6 +504,12 @@ async def chat_node(
     system_prompt = base_system
     force_search = False
     bind_search_tool = True
+    bind_filter_tool = True
+
+    # If the filter-setting tool just ran, force the next turn to actually
+    # retrieve — otherwise the LLM may reply in text without searching.
+    if state.get("filter_pending_search"):
+        force_search = True
 
     if (
         settings.intent_classifier_enabled
@@ -389,7 +521,8 @@ async def chat_node(
             state["search_progress"] = "Understanding your question"
             await emit_state(config, state)
             classifier = IntentClassifier()
-            result = await classifier.classify(user_text)
+            async with record_step("intent_ms"):
+                result = await classifier.classify(user_text)
             intent = result.intent
             logger.info(
                 "Intent classified: %s (confidence=%.2f, reasoning=%s)",
@@ -401,35 +534,62 @@ async def chat_node(
                 force_search = True
             elif intent is QueryIntent.EXPLORATORY:
                 bind_search_tool = False
+                bind_filter_tool = False
                 system_prompt = base_system + _EXPLORATORY_ADDENDUM
             elif intent is QueryIntent.OFF_TOPIC:
                 bind_search_tool = False
+                bind_filter_tool = False
                 system_prompt = base_system + _OFF_TOPIC_ADDENDUM
             elif intent is QueryIntent.GREETING:
                 bind_search_tool = False
+                bind_filter_tool = False
                 system_prompt = base_system + _GREETING_ADDENDUM
             state["search_progress"] = ""
             await emit_state(config, state)
 
     system_message = SystemMessage(content=system_prompt)
 
-    if bind_search_tool:
+    if bind_search_tool or bind_filter_tool:
+        available_tools = []
+        if bind_search_tool:
+            available_tools.append(SEARCH_TOOL)
+        if bind_filter_tool:
+            available_tools.append(SET_FILTER_TOOL)
+        # force_search pins the choice to search_documents specifically —
+        # the filter tool must have already run (or not be relevant) on this
+        # turn, so there's no reason to let the model pick it again.
+        if force_search and bind_search_tool:
+            tool_choice: Any = "search_documents"
+        else:
+            tool_choice = "auto"
         invoker = model.bind_tools(
-            [SEARCH_TOOL],
+            available_tools,
             parallel_tool_calls=False,
-            tool_choice="search_documents" if force_search else "auto",
+            tool_choice=tool_choice,
         )
     else:
         invoker = model
 
-    response = await invoker.ainvoke(
-        [system_message, *sanitized_messages],
-        config,
-    )
+    # chat_llm1_ms = first-pass call that picks a tool; chat_llm2_ms = the
+    # answer-generation call after search_node populated citation_map_data.
+    # Same call site, disambiguated by branch.
+    llm_step = "chat_llm2_ms" if citation_map_data else "chat_llm1_ms"
+    async with record_step(llm_step):
+        response = await invoker.ainvoke(
+            [system_message, *sanitized_messages],
+            config,
+        )
 
-    # Check if the model wants to use a tool
+    # Check if the model wants to use a tool, and route by name.
     if hasattr(response, "tool_calls") and response.tool_calls:
-        return Command(goto="search_node", update={"messages": [response]})
+        tool_name = response.tool_calls[0].get("name")
+        goto_node = "set_filter_node" if tool_name == "set_filter" else "search_node"
+        # Clear the pending-search flag; if we just dispatched another
+        # set_filter call, set_filter_node will re-arm it.
+        return Command(
+            goto=goto_node,
+            update={"messages": [response], "filter_pending_search": False},
+        )
 
     # No tool call - process citations inline before returning
     if citation_map_data:
@@ -444,12 +604,13 @@ async def chat_node(
                 k: _deserialize_retrieval_result(v) for k, v in citation_map_data.items()
             }
             citation_processor = CitationProcessor()
-            validation = citation_processor.process_response(
-                response.content, citation_map
-            )
-            formatted = citation_processor.replace_citation_markers(
-                validation.response, validation.citations
-            )
+            async with record_step("validate_ms"):
+                validation = citation_processor.process_response(
+                    response.content, citation_map
+                )
+                formatted = citation_processor.replace_citation_markers(
+                    validation.response, validation.citations
+                )
             # Create new message with processed citations
             response = AIMessage(content=formatted)
         except Exception as e:
@@ -462,6 +623,62 @@ async def chat_node(
             await emit_state(config, state)
 
     return Command(goto=END, update={"messages": [response], "citation_map": None})
+
+
+async def set_filter_node(
+    state: AgentState, config: RunnableConfig
+) -> Command[Literal["chat_node"]]:
+    """Resolve a set_filter tool call, mutate filter fields, notify the UI.
+
+    Writes the resolved filter to AgentState so downstream search_node picks it
+    up, and emits a `data-filter` annotation so the React client can repaint
+    its dropdowns + persist the change to the conversation row.
+    """
+    ai_message = cast(AIMessage, state["messages"][-1])
+    if not ai_message.tool_calls:
+        return Command(goto="chat_node", update={})
+
+    tool_call = ai_message.tool_calls[0]
+    args = tool_call.get("args") or {}
+    kind = str(args.get("kind") or "").strip()
+    value = args.get("value")
+
+    state["search_progress"] = "Updating filter"
+    await emit_state(config, state)
+
+    vid, vtype, vclass, message = await _resolve_filter_value(kind, value)
+
+    # Emit to frontend regardless of outcome — on failure all three are None,
+    # which the client treats as a no-op.
+    resolved_ok = kind.lower() == "clear" or (vid or vtype or vclass)
+    if resolved_ok:
+        await emit_filter_update(config, vid, vtype, vclass)
+
+    state["search_progress"] = ""
+    await emit_state(config, state)
+
+    tool_response = ToolMessage(
+        content=json.dumps({
+            "ok": bool(resolved_ok),
+            "vessel_id": vid,
+            "vessel_type": vtype,
+            "vessel_class": vclass,
+            "message": message,
+        }),
+        tool_call_id=tool_call["id"],
+    )
+
+    update: Dict[str, Any] = {
+        "messages": [tool_response],
+        "selected_vessel_id": vid,
+        "selected_vessel_type": vtype,
+        "selected_vessel_class": vclass,
+        # Only gate the next turn to force search when the resolution succeeded —
+        # otherwise the LLM should explain the failure and ask the user to
+        # clarify rather than searching with stale filter state.
+        "filter_pending_search": bool(resolved_ok),
+    }
+    return Command(goto="chat_node", update=update)
 
 
 async def search_node(
@@ -536,12 +753,21 @@ async def search_node(
                 topic_matcher=TopicMatcher(engine.retriever.db, engine.retriever.embeddings),
                 db=engine.retriever.db,
             )
-            filter_task = topic_filter.analyze_query(
-                question, vessel_filter, on_progress=on_progress
-            )
-            embed_task = engine.retriever.embed_query(question)
+            # Both branches of the gather are timed individually via record_step;
+            # because ContextVars propagate into tasks spawned by gather, the
+            # inner timings accumulate in the same eval buffer.
+            async def _timed_filter():
+                async with record_step("topic_filter_ms"):
+                    return await topic_filter.analyze_query(
+                        question, vessel_filter, on_progress=on_progress
+                    )
+
+            async def _timed_embed():
+                async with record_step("embed_ms"):
+                    return await engine.retriever.embed_query(question)
+
             filter_result, query_embedding = await asyncio.gather(
-                filter_task, embed_task
+                _timed_filter(), _timed_embed()
             )
 
         # EARLY RETURN: Skip RAG if no results possible
@@ -580,15 +806,19 @@ async def search_node(
             if vessel_filter:
                 metadata_filter.update(vessel_filter)
 
-        # Get raw search results (pass pre-computed embedding when available)
-        retrieval_results = await engine.search_only(
-            question=question,
-            top_k=settings.retrieval_top_k,
-            use_rerank=settings.rerank_enabled,
-            metadata_filter=metadata_filter,
-            on_progress=on_progress,
-            query_embedding=query_embedding,
-        )
+        # Get raw search results (pass pre-computed embedding when available).
+        # Covers vector search + Cohere rerank (the two inner phases aren't
+        # cleanly separable without reworking search_only; we time the pair
+        # together as ``search_rerank_ms`` and can split later if needed).
+        async with record_step("search_rerank_ms"):
+            retrieval_results = await engine.search_only(
+                question=question,
+                top_k=settings.retrieval_top_k,
+                use_rerank=settings.rerank_enabled,
+                metadata_filter=metadata_filter,
+                on_progress=on_progress,
+                query_embedding=query_embedding,
+            )
 
         if not retrieval_results:
             # No results found
@@ -701,6 +931,7 @@ def create_graph(checkpointer: BaseCheckpointSaver) -> StateGraph:
     # Add nodes
     graph.add_node("chat_node", chat_node)
     graph.add_node("search_node", search_node)
+    graph.add_node("set_filter_node", set_filter_node)
 
     # Set entry point
     graph.set_entry_point("chat_node")

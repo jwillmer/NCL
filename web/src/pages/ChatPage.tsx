@@ -349,6 +349,38 @@ function ChatPageContent() {
     }
   }, [conversation, threadId]);
 
+  // React to filter changes pushed by the agent mid-stream.
+  // The server emits `2:["filter", {...}]` via emit_filter_update in set_filter_node;
+  // the Vercel AI SDK exposes that as a `data-filter` part on the last assistant
+  // message. We diff against current UI state to avoid re-triggering the DB
+  // write loop when our own handleFilterChange caused the update.
+  const lastAppliedAgentFilterRef = useRef<string>("");
+  useEffect(() => {
+    if (!messages.length) return;
+    const last = messages[messages.length - 1];
+    if (last.role !== "assistant") return;
+    const parts = (last as unknown as { parts?: Array<{ type: string; data?: unknown }> }).parts;
+    if (!parts) return;
+    // Walk parts in order; the most recent filter update wins.
+    type FilterPayload = { vessel_id: string | null; vessel_type: string | null; vessel_class: string | null };
+    let latest: FilterPayload | null = null;
+    for (const part of parts) {
+      if (part.type === "data-filter" && part.data) {
+        latest = part.data as FilterPayload;
+      }
+    }
+    if (!latest) return;
+    const key = JSON.stringify(latest);
+    if (key === lastAppliedAgentFilterRef.current) return;
+    lastAppliedAgentFilterRef.current = key;
+    // Exactly one of the three should be non-null (server enforces mutual exclusion);
+    // a full-null payload means "clear".
+    if (latest.vessel_id) handleFilterChange("vessel_id", latest.vessel_id);
+    else if (latest.vessel_type) handleFilterChange("vessel_type", latest.vessel_type);
+    else if (latest.vessel_class) handleFilterChange("vessel_class", latest.vessel_class);
+    else handleFilterChange("vessel_id", null);
+  }, [messages, handleFilterChange]);
+
   const handleViewCitation = useCallback((chunkId: string, lines?: [number, number][]) => {
     setSelectedChunkId(chunkId);
     setLinesToHighlight(lines);

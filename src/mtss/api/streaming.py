@@ -176,6 +176,13 @@ async def _stream_agent(
                 if progress:
                     yield f"2:{json.dumps(['progress', progress])}\n"
 
+            elif kind == "on_custom_event" and event["name"] == "emit_filter_update":
+                # Filter change pushed by set_filter_node — becomes a
+                # `data-filter` part on the client (Vercel AI SDK UI Message
+                # Stream v1 decodes `2:[type, payload]` as type `data-<type>`).
+                filter_data = event["data"]
+                yield f"2:{json.dumps(['filter', filter_data])}\n"
+
         # Finish signal
         yield f'd:{json.dumps({"finishReason": "stop"})}\n'
         yield "data: [DONE]\n\n"
