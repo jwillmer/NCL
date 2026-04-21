@@ -71,6 +71,18 @@ class Settings(BaseSettings):
     rag_llm_model: str | None = Field(
         default=None, validation_alias="RAG_LLM_MODEL"
     )
+    # Intent classifier (chat_node preprocessing). gemini-2.5-flash-lite won
+    # the topic-extractor bake-off on latency/consistency — same ballpark
+    # requirements (short structured JSON output from a short user string).
+    intent_classifier_model: str | None = Field(
+        default="openrouter/google/gemini-2.5-flash-lite",
+        validation_alias="INTENT_CLASSIFIER_MODEL",
+    )
+    # Master switch. Off → chat_node falls back to bind_tools() behavior
+    # (model's discretion on when to call search_documents).
+    intent_classifier_enabled: bool = Field(
+        default=True, validation_alias="INTENT_CLASSIFIER_ENABLED"
+    )
 
     def get_model(self, specific_model: str | None) -> str:
         """Return specific model if set, otherwise fallback to llm_model."""

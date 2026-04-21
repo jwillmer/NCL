@@ -270,17 +270,23 @@ class TestTopicFilter:
     async def test_vessel_filter_no_match(
         self, topic_filter, mock_extractor, mock_matcher, mock_db
     ):
-        """Should skip RAG when vessel filter excludes all results."""
+        """Vessel filter zero-count is advisory, not a hard skip.
+
+        Rationale (regression guard for the baseline-01 fix): the
+        count_chunks_by_topic RPC uses JSONB containment on a narrow
+        schema. The retrieval layer applies a richer vessel filter
+        (ids/classes/type aliases). We no longer early-return on
+        filtered_count=0 — the retriever gets its chance, and returns
+        "no results" itself if genuinely empty.
+        """
         topic = Topic(id=uuid4(), name="cargo damage", display_name="Cargo Damage")
 
         mock_extractor.extract_topics_from_query.return_value = [
             ExtractedTopic(name="Cargo Damage")
         ]
         mock_matcher.find_topic_clusters.return_value = [("Cargo Damage", [topic])]
-        # Total count is 10, but filtered count is 0. With stored chunk_count
-        # skipping the first RPC (migration fix), only the vessel-filtered
-        # call happens. Set topic.chunk_count on the mock to 10.
         topic.chunk_count = 10
+        # Vessel-filter count RPC returns 0 (miss on narrow schema).
         mock_db.get_chunks_count_for_topic.side_effect = [0]
 
         result = await topic_filter.analyze_query(
@@ -288,10 +294,10 @@ class TestTopicFilter:
             vessel_filter={"vessel_types": ["VLCC"]},
         )
 
-        assert result.should_skip_rag is True
+        # RAG must still proceed — retriever will apply its own vessel filter.
+        assert result.should_skip_rag is False
         assert result.total_chunk_count == 10
         assert result.filtered_chunk_count == 0
-        assert "VLCC" in result.message
 
     @pytest.mark.asyncio
     async def test_extraction_error_falls_back_to_broad(

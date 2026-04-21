@@ -41,6 +41,12 @@ from ..models.chunk import RetrievalResult
 from ..models.vessel import Vessel
 from ..processing.topics import TopicExtractor, TopicMatcher
 from ..rag.citation_processor import CitationProcessor
+from ..rag.intent_classifier import (
+    IntentClassifier,
+    QueryIntent,
+    is_fresh_user_turn,
+    latest_user_text,
+)
 from ..rag.query_engine import RAGQueryEngine
 from ..rag.topic_filter import TopicFilter, TopicFilterResult
 from ..storage.supabase_client import SupabaseClient
@@ -228,6 +234,44 @@ async def _get_vessel_info(vessel_id: Optional[str]) -> Optional[Vessel]:
     return vessel_cache.get_by_id(vid)
 
 
+# Prompt addenda appended when the intent classifier routes a turn away
+# from RAG. Kept short — they modulate tone without rewriting the whole
+# system prompt, so vessel context and citation rules still apply if a
+# follow-up turn ends up calling search after all.
+_EXPLORATORY_ADDENDUM = """
+
+## Current turn routing: exploratory
+
+The user is scoping a problem rather than asking a specific lookup question.
+Do NOT call search_documents on this turn. Instead:
+- Ask 1-2 concrete clarifying questions (component, symptom, vessel, time frame).
+- Once the user narrows it down, offer: "Shall I search the knowledge base for similar cases?"
+- Keep the reply short (under 120 words). No headers, no citations.
+"""
+
+_OFF_TOPIC_ADDENDUM = """
+
+## Current turn routing: off-topic
+
+The user's message is outside the maritime technical-support scope of MTSS.
+Do NOT call search_documents. Reply in 1-2 sentences:
+- Politely note you're focused on vessel operations, maintenance, and incident history.
+- Invite them to ask a maritime-related question.
+No headers, no citations.
+"""
+
+_GREETING_ADDENDUM = """
+
+## Current turn routing: greeting
+
+The user sent a greeting or small-talk message.
+Do NOT call search_documents. Reply in 1-2 sentences:
+- Greet them back briefly.
+- Offer an example of what they can ask (e.g., "You can ask me about past incidents, maintenance history, or specific vessels.").
+No headers, no citations.
+"""
+
+
 def _build_system_prompt(vessel: Optional[Vessel] = None) -> str:
     """Build system prompt with optional vessel context."""
     base_prompt = _load_system_prompt()
@@ -291,7 +335,15 @@ SEARCH_TOOL = {
 async def chat_node(
     state: AgentState, config: RunnableConfig
 ) -> Command[Literal["search_node", "__end__"]]:
-    """Main chat node - routes to search tool or returns final response."""
+    """Main chat node - routes to search tool or returns final response.
+
+    On fresh user turns we first classify intent (factual / exploratory /
+    off_topic / greeting). Factual turns force the search tool call
+    (``tool_choice="required"``) — we no longer trust the chat model's
+    discretion, baseline-01 showed gpt-5-mini skipped search on 31/37
+    factual questions. Non-factual turns skip tool binding entirely so we
+    don't waste a round trip on chit-chat or off-topic requests.
+    """
     settings = get_settings()
     model_name = settings.llm_model.removeprefix("openrouter/")
     model = ChatOpenAI(
@@ -300,12 +352,11 @@ async def chat_node(
         api_key=settings.openrouter_api_key,
         extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
     )
-    model_with_tools = model.bind_tools([SEARCH_TOOL], parallel_tool_calls=False)
 
     # Build system prompt with vessel context if a vessel filter is active
     vessel_id = state.get("selected_vessel_id")
     vessel = await _get_vessel_info(vessel_id)
-    system_message = SystemMessage(content=_build_system_prompt(vessel))
+    base_system = _build_system_prompt(vessel)
 
     # Check if we have search context (coming back from search_node)
     citation_map_data = state.get("citation_map")
@@ -321,7 +372,57 @@ async def chat_node(
     # was restored from checkpoint after a tool call but before the response)
     sanitized_messages = _sanitize_messages_for_llm(state["messages"])
 
-    response = await model_with_tools.ainvoke(
+    # Classify intent on fresh user turns only. Returning from search_node
+    # (citation_map_data present) or mid-tool-call states skip this.
+    intent: Optional[QueryIntent] = None
+    system_prompt = base_system
+    force_search = False
+    bind_search_tool = True
+
+    if (
+        settings.intent_classifier_enabled
+        and not citation_map_data
+        and is_fresh_user_turn(sanitized_messages)
+    ):
+        user_text = latest_user_text(sanitized_messages)
+        if user_text:
+            state["search_progress"] = "Understanding your question"
+            await emit_state(config, state)
+            classifier = IntentClassifier()
+            result = await classifier.classify(user_text)
+            intent = result.intent
+            logger.info(
+                "Intent classified: %s (confidence=%.2f, reasoning=%s)",
+                intent.value,
+                result.confidence,
+                result.reasoning,
+            )
+            if intent is QueryIntent.FACTUAL_QUERY:
+                force_search = True
+            elif intent is QueryIntent.EXPLORATORY:
+                bind_search_tool = False
+                system_prompt = base_system + _EXPLORATORY_ADDENDUM
+            elif intent is QueryIntent.OFF_TOPIC:
+                bind_search_tool = False
+                system_prompt = base_system + _OFF_TOPIC_ADDENDUM
+            elif intent is QueryIntent.GREETING:
+                bind_search_tool = False
+                system_prompt = base_system + _GREETING_ADDENDUM
+            state["search_progress"] = ""
+            await emit_state(config, state)
+
+    system_message = SystemMessage(content=system_prompt)
+
+    if bind_search_tool:
+        invoker = model.bind_tools(
+            [SEARCH_TOOL],
+            parallel_tool_calls=False,
+            tool_choice="search_documents" if force_search else "auto",
+        )
+    else:
+        invoker = model
+
+    response = await invoker.ainvoke(
         [system_message, *sanitized_messages],
         config,
     )

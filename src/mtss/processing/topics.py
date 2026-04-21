@@ -326,13 +326,10 @@ class TopicMatcher:
     """Match and deduplicate topics using embeddings.
 
     Thresholds come from ``Settings`` (``TOPIC_DEDUP_THRESHOLD`` and
-    ``TOPIC_QUERY_MATCH_THRESHOLD``). The class-level attributes below are
-    kept as module-load defaults so existing callers and tests that read
-    them directly keep working; the instance-level overrides win at runtime.
+    ``TOPIC_QUERY_MATCH_THRESHOLD``) and are read into per-instance
+    attributes on construction, so env overrides win without touching
+    class state (safer under pytest where multiple matchers coexist).
     """
-
-    SIMILARITY_THRESHOLD = 0.80  # For ingest deduplication (strict)
-    QUERY_SIMILARITY_THRESHOLD = 0.70  # For query-time matching (lenient)
 
     def __init__(self, db: "SupabaseClient", embeddings: "EmbeddingGenerator"):
         """Initialize the topic matcher.
@@ -512,7 +509,7 @@ class TopicMatcher:
 
         Args:
             name: Topic name to search for
-            threshold: Override similarity threshold (default: QUERY_SIMILARITY_THRESHOLD)
+            threshold: Override similarity threshold (default: ``query_similarity_threshold`` from Settings)
 
         Returns:
             Matching topic or None

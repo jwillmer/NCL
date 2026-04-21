@@ -277,39 +277,18 @@ CREATE TABLE chunks (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Vector similarity search index
+-- Vector similarity search index (HNSW — see migrations/000_schema.sql)
 CREATE INDEX chunks_embedding_idx ON chunks
-USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+USING hnsw (embedding vector_cosine_ops);
 ```
 
 ### match_chunks function
-```sql
-CREATE FUNCTION match_chunks(
-    query_embedding vector(1536),
-    match_threshold float,
-    match_count int
-) RETURNS TABLE (
-    id UUID,
-    document_id UUID,
-    content TEXT,
-    similarity float,
-    -- ... joined document fields
-) AS $$
-    SELECT
-        c.id,
-        c.document_id,
-        c.content,
-        1 - (c.embedding <=> query_embedding) as similarity,
-        d.file_path,
-        d.document_type,
-        -- ... more fields
-    FROM chunks c
-    JOIN documents d ON c.document_id = d.id
-    WHERE 1 - (c.embedding <=> query_embedding) > match_threshold
-    ORDER BY similarity DESC
-    LIMIT match_count;
-$$ LANGUAGE sql;
-```
+
+See `migrations/000_schema.sql` for the canonical definition and
+`migrations/002_topic_query_perf.sql` for the HNSW-aware query-time
+topic RPC (`find_similar_topics`). The chunk search RPC is structured
+as an inner `ORDER BY ... LIMIT` (which hits the HNSW index) followed
+by an outer threshold filter, so the index is actually used.
 
 ## Technology Stack
 

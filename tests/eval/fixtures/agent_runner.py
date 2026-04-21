@@ -43,7 +43,13 @@ from .callbacks import TokenCounterCallback
 
 logger = logging.getLogger(__name__)
 
-CITATION_RE = re.compile(r"\[C:([a-f0-9]+)\]")
+# Matches either the pre-validate marker ``[C:chunk_id]`` *or* the
+# post-validate HTML tag ``<cite id="chunk_id" ...>N</cite>`` that the
+# validate_response_node writes. We count both so the eval regex stays
+# correct regardless of whether validation has run.
+CITATION_RE = re.compile(
+    r"\[C:([a-f0-9]+)\]|<cite[^>]*\bid=\"([a-f0-9]+)\""
+)
 
 
 async def run_question(
@@ -265,7 +271,9 @@ def _extract_citations(
     valid_ids = set((citation_map_data or {}).keys())
     occurrences: List[CitationOccurrence] = []
     for match in CITATION_RE.finditer(response):
-        chunk_id = match.group(1)
+        # One of the two capture groups will be populated depending on
+        # whether the match was [C:...] or <cite id="...">.
+        chunk_id = match.group(1) or match.group(2)
         occurrences.append(CitationOccurrence(
             chunk_id=chunk_id,
             char_offset=match.start(),

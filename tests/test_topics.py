@@ -467,10 +467,11 @@ class TestTopicMatcher:
 class TestTopicMatcherSettingsThresholds:
     """Ensure TopicMatcher picks up per-instance thresholds from Settings.
 
-    Regression guard: the class-level constants
-    (``SIMILARITY_THRESHOLD`` / ``QUERY_SIMILARITY_THRESHOLD``) used to be the
-    only source of truth. The switch to Settings-driven thresholds means
-    env-tuned deployments must win over the class defaults per instance.
+    Regression guard: these used to be hardcoded class-level constants,
+    which meant env-tuned deployments had no way to override them without
+    monkey-patching the class. Per-instance attributes read from Settings
+    on construction let ``TOPIC_DEDUP_THRESHOLD`` /
+    ``TOPIC_QUERY_MATCH_THRESHOLD`` work as documented.
     """
 
     def test_topic_matcher_reads_thresholds_from_settings(self, monkeypatch):

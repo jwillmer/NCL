@@ -361,20 +361,17 @@ class TopicFilter:
                 ],
             )
 
-        # Step 4: Check vessel filter - ALL matched topics have 0 after filter
-        if vessel_filter and total_filtered == 0:
-            vessel_desc = self._describe_vessel_filter(vessel_filter)
-            return TopicFilterResult(
-                should_skip_rag=True,
-                detected_topics=detected_names,
-                matched_topics=matched_topics,
-                unmatched_topics=unmatched_names,
-                total_chunk_count=total_chunks,
-                filtered_chunk_count=0,
-                message=TopicMessages.no_vessel_match(
-                    matched_names, total_chunks, vessel_desc
-                ),
-            )
+        # Step 4 (vessel-filter skip) intentionally removed.
+        #
+        # The previous behavior — "skip RAG if total_filtered == 0" — used
+        # the `count_chunks_by_topic($topic, $vessel_filter)` RPC as a hard
+        # veto. That RPC does a JSONB containment check
+        # (`chunks.metadata @> vessel_filter`), which matches on a narrow
+        # schema. The retrieval layer downstream applies a richer vessel
+        # filter (ids, classes, type aliases). Baseline-01 (2026-04-21)
+        # showed this false-skipping queries where the topic had 32+
+        # chunks — users were told "no records" when plenty existed.
+        # We now defer to the retriever to decide if nothing matches.
 
         # Step 5: Proceed with RAG (some results exist)
         # Build appropriate message
