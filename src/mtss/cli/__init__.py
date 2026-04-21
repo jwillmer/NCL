@@ -44,6 +44,7 @@ from . import (
     admin_cmd,
     backup_cmd,
     entities_cmd,
+    eval_cmd,
     import_cmd,
     ingest_cmd,
     maintenance_cmd,
@@ -63,6 +64,7 @@ validate_cmd.register(app)
 reembed_cmd.register(app)
 review_modes_cmd.register(app)
 backup_cmd.register(app)
+eval_cmd.register(app)
 
 if __name__ == "__main__":
     app()

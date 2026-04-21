@@ -58,6 +58,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "langfuse>=3.0.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.0.0",
+    "scikit-learn>=1.7.2",
 ]
 
 [project.optional-dependencies]

@@ -23,6 +23,9 @@ wheels/
 
 # Virtual environments
 .env
+.env.*
+!.env.template
+!.env.example
 .venv
 env/
 venv/
@@ -69,3 +72,9 @@ tmpclaude*
 /data/output
 data/output.7z
 /data/test_ingest
+
+# Eval harness transient outputs (per-invocation runs/reports)
+tests/eval/runs/*
+!tests/eval/runs/.gitkeep
+tests/eval/reports/*
+!tests/eval/reports/.gitkeep

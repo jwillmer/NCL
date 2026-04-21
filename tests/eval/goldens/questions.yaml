@@ -1,0 +1,740 @@
+questions:
+  - id: q01-canopus-open-maintenance-issues
+    category: Vessel Operations & Status
+    question: What maintenance issues are currently open for MARAN CANOPUS?
+    reference_answer: |
+      CANOPUS has two key issues:
+
+      1. **Main engine governor failure** — governor not regulating RPM correctly (RPM remains higher than setpoints, fuel index at 45%). A quotation for repair has been requested (CRM:0504838) and spare parts shipment is being coordinated.
+      2. **SOx scrubber/EGCS internal inspection** — CANOPUS is one of multiple vessels (along with Arcturus, Cleo, Plato class) flagged for fleet-wide EGCS internal inspection covering leakage in bellows, structural integrity of steel plating, and deposits/contamination checks.
+    expected_facts:
+      - CANOPUS has a main engine governor failure.
+      - The governor is not regulating RPM correctly, with RPM higher than setpoints and fuel index at 45%.
+      - A repair quotation has been requested under CRM:0504838.
+      - Spare parts shipment for the governor repair is being coordinated.
+      - CANOPUS is flagged for fleet-wide EGCS/SOx scrubber internal inspection.
+      - The EGCS inspection covers Arcturus, Canopus, Cleo, and Plato classes.
+      - Inspection scope includes bellows leakage, structural integrity of steel plating, and deposits/contamination checks.
+    vessel_filter:
+      vessel_class: Canopus
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q02-fleet-equipment-failures-last-month
+    category: Vessel Operations & Status
+    question: Which vessels have reported equipment failures in the last month?
+    reference_answer: |
+      Equipment failures reported across the fleet:
+
+      - **DANAE** (Angelicoussis class) — ICMS RCP-X32 control system failure
+      - **CANOPUS** — Main engine governor malfunction, RPM regulation issue
+      - **ARTEMIS** (Apollo class) — Tank remote level system error
+      - **THETIS** (Arcturus class) — EGCS bellows leakage during internal inspection
+      - **THALEIA** (Arcturus class) — Gas detection system malfunction for ballast tanks, caused by water ingress through cracked inlet air pipe
+      - **MIRA** (Aphrodite class) — RADAR/ECDIS target acquisition display failure
+      - **ANTONIS I. ANGELICOUSSIS** — Defective Inmarsat-C No.1 antenna
+      - **CLEO** — Service air compressor drive belt failure; BWTS water chiller PLC malfunction with main breaker trip
+      - **MARAN HERCULES** (Hermione class) — S-Band radar software issues, communication failure to ARPA/VDR/ECDIS
+      - **ARES** (Ajax class) — Vapour & manifold pressure monitoring system audible alarm failure
+      - **MARAN APOLLO** — TeamTec PLC/HMI failure, urgent spare parts order
+      - **MARAN ARETE** (Apollo class) — Service air compressor malfunction
+      - **ARIADNE** (Apollo class) — Main air compressor failures, fleet experience sharing bulletin No.18-22
+    expected_facts:
+      - DANAE reported an ICMS RCP-X32 control system failure.
+      - CANOPUS reported a main engine governor malfunction with RPM regulation issue.
+      - ARTEMIS reported a tank remote level system error.
+      - THETIS reported EGCS bellows leakage during internal inspection.
+      - THALEIA reported a gas detection system malfunction caused by water ingress through a cracked inlet air pipe.
+      - MIRA reported a RADAR/ECDIS target acquisition display failure.
+      - ANTONIS I. ANGELICOUSSIS reported a defective Inmarsat-C No.1 antenna.
+      - CLEO reported a service air compressor drive belt failure and a BWTS water chiller PLC malfunction.
+      - MARAN HERCULES reported S-Band radar software issues with communication failure to ARPA/VDR/ECDIS.
+      - ARES reported a vapour and manifold pressure monitoring system audible alarm failure.
+      - MARAN APOLLO reported a TeamTec PLC/HMI failure.
+      - MARAN ARETE reported a service air compressor malfunction.
+      - ARIADNE reported main air compressor failures.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "reference answer based on 483-doc snapshot; current corpus is ~17k docs so concrete numbers (chunk counts, top-N rankings) may differ"
+
+  - id: q03-upcoming-statutory-surveys
+    category: Vessel Operations & Status
+    question: Which vessels have upcoming statutory surveys or certification renewals due?
+    reference_answer: |
+      The ANTONIS I. ANGELICOUSSIS vessel status report shows multiple inspection items due by 02-Jan-2028, including Inert Gas Blowers No.02 and No.03 examinations, and SCR system components (burner gas oil pump, SCR chambers for generator engines 1-3). Additionally, MARAN HELEN has a Lloyd's Register remote survey in progress for an incinerator issue (class LR), with Dr. Andreas Ioannou from LR Cyprus coordinating. Three documents relate to Cargo Ship Safety Construction Certificate issuances following vessel surveys in Greece.
+    expected_facts:
+      - ANTONIS I. ANGELICOUSSIS has inspection items due by 02-Jan-2028.
+      - Due items include Inert Gas Blowers No.02 and No.03 examinations.
+      - Due items include SCR system components (burner gas oil pump, SCR chambers for generator engines 1-3).
+      - MARAN HELEN has a Lloyd's Register remote survey in progress for an incinerator issue.
+      - Dr. Andreas Ioannou from LR Cyprus is coordinating the MARAN HELEN survey.
+      - Three documents relate to Cargo Ship Safety Construction Certificate issuances following vessel surveys in Greece.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "reference answer based on 483-doc snapshot; current corpus is ~17k docs so concrete numbers (chunk counts, top-N rankings) may differ"
+
+  - id: q04-rejected-purchase-orders
+    category: Procurement & Supply Chain
+    question: What purchase orders have been rejected and why?
+    reference_answer: |
+      PO 4500497660 was rejected. Poulopoulou Sofia from Angelicoussis Group Accounting/Accounts Payable notified Mr. Lionakis on 2025-07-01 that the PO is rejected and they cannot proceed with invoice posting. The specific rejection reason is not stated in the email — it requests verification of the PO before further processing.
+    expected_facts:
+      - PO 4500497660 was rejected.
+      - Rejection was notified by Poulopoulou Sofia from Angelicoussis Group Accounting/Accounts Payable.
+      - Mr. Lionakis was the recipient of the rejection notification.
+      - Rejection notification was sent on 2025-07-01.
+      - Invoice posting cannot proceed for the rejected PO.
+      - The specific rejection reason is not stated in the email.
+      - The email requests verification of the PO before further processing.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q05-active-spare-parts-sourcing
+    category: Procurement & Supply Chain
+    question: What spare parts are currently being sourced for the fleet?
+    reference_answer: |
+      Active procurement includes:
+
+      - **HP LNG pump discharge thermal relief valve TSV212** — replacement being coordinated with shipping to Netherlands warehouse, 6-8 week lead time (PO 274050, FTR 24-0261)
+      - **Cargo valve HRM882V spare parts** — clarification on part numbers and actuator types (PAC80U-04P/05P) for correct matching
+      - **High-pressure fuel oil pipe union nipples** (part 4272-0100-0105) — upgrade advisory, not immediately required
+      - **NT1765 temperature sensor** — decision needed on version for 8000HRS maintenance kit SPH806
+      - **TeamTec spare parts for MARAN APOLLO** — urgent PLC/HMI components (APL1014 order)
+      - **MARAN THALEIA** — new PO 4500561906 from Erma First ESK Engineering Solutions for CHEMS & GASES
+      - **MARAN ATHENA** — urgent PO via ATT Electric & Machinery Pte Ltd (TA0202506000234)
+    expected_facts:
+      - HP LNG pump discharge thermal relief valve TSV212 is being sourced via PO 274050 / FTR 24-0261 with 6-8 week lead time and Netherlands warehouse shipping.
+      - Cargo valve HRM882V spare parts are being clarified for part numbers and actuator types (PAC80U-04P/05P).
+      - High-pressure fuel oil pipe union nipples (part 4272-0100-0105) are under an upgrade advisory, not immediately required.
+      - NT1765 temperature sensor requires a decision on the version for 8000HRS maintenance kit SPH806.
+      - TeamTec PLC/HMI spare parts for MARAN APOLLO are being ordered urgently under APL1014.
+      - MARAN THALEIA has a new PO 4500561906 from Erma First ESK Engineering Solutions for CHEMS & GASES.
+      - MARAN ATHENA has an urgent PO via ATT Electric & Machinery Pte Ltd (TA0202506000234).
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q06-liferaft-exchange-singapore
+    category: Procurement & Supply Chain
+    question: What are the liferaft exchange costs and logistics for Singapore?
+    reference_answer: |
+      Per the vendor's response for MARAN MARS liferaft exchange at Singapore Roads:
+
+      - **Lead time:** 5 working days to prepare liferafts; overtime charges apply if shorter
+      - **Overtime:** USD 187 per liferaft
+      - **Delivery expenses at Singapore:** USD 353
+      - **Barge/crane service** must be arranged by customer through local agent
+      - Vendor requires approval before preparing/reserving the requested liferafts
+      - Local agent details needed to check vessel ETA and apply permit
+    expected_facts:
+      - Liferaft exchange is for MARAN MARS at Singapore Roads.
+      - Lead time is 5 working days to prepare liferafts.
+      - Overtime charge is USD 187 per liferaft when shorter than 5 working days.
+      - Delivery expenses at Singapore are USD 353.
+      - Barge/crane service must be arranged by the customer through a local agent.
+      - Vendor requires approval before preparing or reserving the requested liferafts.
+      - Local agent details are needed to check vessel ETA and apply permit.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q07-scheduled-crew-changes
+    category: Crew & Logistics
+    question: What crew changes are scheduled and for which vessels?
+    reference_answer: |
+      MT MARAN ATHENA has a crew change in Yeosu (June 2025):
+
+      - **4 on-signers** (21 June via boat): MST Delidakis Ioannis, C/O Sopiropoulos Dionysios, 2/O Kostopoulos Panagiotis, 3/E Tsilipanis Alexandros. Flight route: ATH to AUH (EY0190, 19 June) to ICN (EY0822, 20 June) to RSU (OZ8735, 21 June)
+      - **3 off-signers** (22 June via boat): C/O Karakonstantakis Stylianos, 2/O Dimitriou Christos, 3/E Pailas Kyriakos. Flight route: RSU to GMP (OZ8734, 23 June) to AUH (EY0823) to ATH (EY0187, 24 June)
+      - Superintendent Mr. Asproulis Georgios also aboard for the port call
+    expected_facts:
+      - MT MARAN ATHENA has a crew change scheduled in Yeosu in June 2025.
+      - 4 on-signers board on 21 June via boat.
+      - On-signers include MST Delidakis Ioannis, C/O Sopiropoulos Dionysios, 2/O Kostopoulos Panagiotis, and 3/E Tsilipanis Alexandros.
+      - On-signer flight route is ATH -> AUH (EY0190, 19 June) -> ICN (EY0822, 20 June) -> RSU (OZ8735, 21 June).
+      - 3 off-signers disembark on 22 June via boat.
+      - Off-signers include C/O Karakonstantakis Stylianos, 2/O Dimitriou Christos, and 3/E Pailas Kyriakos.
+      - Superintendent Mr. Asproulis Georgios is also aboard for the port call.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q08-airfreight-shipments-tracked
+    category: Crew & Logistics
+    question: What airfreight shipments are being tracked?
+    reference_answer: |
+      There is an active airfreight booking with flight schedule and cargo manifest for an international shipment. Related topics include documentation and pre-alert requirements, with pending pre-alert documents and final cargo list preparation. The shipment involves an AWB (air waybill) 16 8156 1114 for 1kg from Maran Ship Supplies PTE LTD as part of the MARAN ATHENA owner's matters in Yeosu.
+    expected_facts:
+      - There is an active airfreight booking with flight schedule and cargo manifest.
+      - The shipment has AWB 16 8156 1114 for 1kg.
+      - The shipper is Maran Ship Supplies PTE LTD.
+      - The shipment is part of MARAN ATHENA owner's matters in Yeosu.
+      - Pre-alert documents and final cargo list preparation are pending.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q09-egcs-scrubber-inspection-findings
+    category: Technical & Maintenance
+    question: What EGCS/scrubber inspection findings have been reported across the fleet?
+    reference_answer: |
+      Fleet-wide EGCS internal inspection covers vessels from Arcturus, Canopus, Cleo, and Plato classes. Key findings and inspection areas:
+
+      - **THETIS** (Arcturus) — bellows leakage in the EGCS tower identified
+      - **Fleet VDL maintenance** — inspection scope includes: steel plating wastage/cracks in Chinese hat plates, weld joint integrity, soot accumulation, salt deposits, water ingress indicators, and demister panel condition
+      - The inspection requires port-side attendance with a detailed report and representative photographs
+      - Multiple related topics tracked: SOx Scrubber internal inspection, leakage in EGCS components, structural integrity of scrubber components, deposits and contamination checks
+    expected_facts:
+      - Fleet-wide EGCS inspection covers Arcturus, Canopus, Cleo, and Plato classes.
+      - THETIS (Arcturus) had bellows leakage identified in the EGCS tower.
+      - Inspection scope includes steel plating wastage/cracks in Chinese hat plates.
+      - Inspection scope includes weld joint integrity, soot accumulation, salt deposits, water ingress indicators, and demister panel condition.
+      - Inspection requires port-side attendance with a detailed report and representative photographs.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q10-cleo-bwts-situation
+    category: Technical & Maintenance
+    question: What is the BWTS situation on CLEO?
+    reference_answer: |
+      CLEO has a BWTS water chiller PLC malfunction. The main breaker tripped affecting the BWTS, and the water chiller cannot auto/remote start. There is both an electrical power supply interruption issue and a PLC control failure. Multiple email threads are tracking this across the Cleo vessel class.
+    expected_facts:
+      - CLEO has a BWTS water chiller PLC malfunction.
+      - The main breaker tripped affecting the BWTS.
+      - The water chiller cannot auto/remote start.
+      - The issue involves both an electrical power supply interruption and a PLC control failure.
+      - Multiple email threads track the issue across the Cleo vessel class.
+    vessel_filter:
+      vessel_class: Cleo
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q11-aspasia-iccp-mgps-report
+    category: Technical & Maintenance
+    question: Summarize the ICCP MGPS monthly report feedback for MARAN ASPASIA.
+    reference_answer: |
+      A request was sent to review and provide comments/feedback on MARAN ASPASIA's June 2025 ICCP MGPS monthly report. This is one of the highest-coverage topics in the dataset (2 documents, 14 chunks). Related topics include regulatory reporting for ICCP MGPS and a feedback/review request cycle. Monthly ICCP MGPS report submission is part of the vessel's compliance documentation workflow.
+    expected_facts:
+      - A request was sent to review MARAN ASPASIA's June 2025 ICCP MGPS monthly report.
+      - The request asks for comments/feedback on the report.
+      - ICCP MGPS reporting falls under regulatory reporting topics.
+      - Monthly ICCP MGPS report submission is part of the vessel's compliance documentation workflow.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "reference answer based on 483-doc snapshot; current corpus is ~17k docs so concrete numbers (chunk counts, top-N rankings) may differ"
+
+  - id: q12-boiler-auxiliary-maintenance-logs
+    category: Technical & Maintenance
+    question: What boiler and auxiliary system maintenance logs have been submitted?
+    reference_answer: |
+      Monthly vessel maintenance/inspection logs for boilers and water analysis have been submitted for review. The related topics include maintenance documentation submission and external report review requests. The workflow involves reviewing monthly maintenance/operational logs (boilers and auxiliary systems) and providing a report, which involves document exchange between vessel crew and shore-side technical management.
+    expected_facts:
+      - Monthly vessel maintenance/inspection logs for boilers have been submitted for review.
+      - Water analysis logs have been submitted for review.
+      - The workflow involves reviewing monthly maintenance/operational logs for boilers and auxiliary systems.
+      - The workflow involves document exchange between vessel crew and shore-side technical management.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q13-psc-deficiencies
+    category: Compliance & Classification
+    question: Which vessels have had PSC deficiencies identified?
+    reference_answer: |
+      A Korean Register PSC information circular (I45-670754) flagged lifesaving equipment deficiencies — specifically issues with lifeboat release mechanisms and lifeboats identified during Port State Control inspections. This is a fleet-wide advisory rather than a single-vessel finding.
+    expected_facts:
+      - A Korean Register PSC information circular was issued with reference I45-670754.
+      - The circular flagged lifesaving equipment deficiencies.
+      - Specific issues concern lifeboat release mechanisms and lifeboats.
+      - The deficiencies were identified during Port State Control inspections.
+      - This is a fleet-wide advisory rather than a single-vessel finding.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q14-recent-safety-certificates
+    category: Compliance & Classification
+    question: What safety certificates have been issued recently?
+    reference_answer: |
+      Three documents relate to Cargo Ship Safety Construction Certificate issuance. Certificates were issued following vessel surveys/audits in Greece (Greece B and Greece C designations). This is the highest-coverage topic in the dataset with 3 documents and 12 chunks. The certificates were published following completion of regulatory compliance surveys.
+    expected_facts:
+      - Three documents relate to Cargo Ship Safety Construction Certificate issuance.
+      - Certificates were issued following vessel surveys/audits in Greece.
+      - Survey designations include Greece B and Greece C.
+      - Certificates were published following completion of regulatory compliance surveys.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "reference answer based on 483-doc snapshot; current corpus is ~17k docs so concrete numbers (chunk counts, top-N rankings) may differ"
+
+  - id: q15-regulatory-fee-changes
+    category: Compliance & Classification
+    question: Are there any regulatory fee changes that affect our operations?
+    reference_answer: |
+      Yes. A circular notification was issued regarding an increase in transit sanitary dues charged per NRT, effective 01/07/2025. This impacts transit costs for all vessels in the fleet passing through the affected jurisdiction.
+    expected_facts:
+      - A circular notification announced an increase in transit sanitary dues.
+      - The dues are charged per NRT.
+      - The increase is effective 01/07/2025.
+      - The change impacts transit costs for all vessels in the fleet passing through the affected jurisdiction.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q16-bunker-fuel-prices-by-port
+    category: Bunker & Fuel
+    question: What are the latest bunker fuel prices by port?
+    reference_answer: |
+      Per the Spectra Fuels Bunker Price Report dated 01.07.2025 (USD/PMT):
+
+      | Port | VLSFO 0.5% | HSFO 3.5% | LSMGO 0.1% |
+      |------|-----------|-----------|------------|
+      | Busan | 559 | 473 | 689 |
+      | Hong Kong | 533 | 462 | 652 |
+      | Shanghai | 572 | 475 | 686 |
+      | Tokyo | 543 | 470 | 797 |
+      | Singapore | (continues in full report) | | |
+    expected_facts:
+      - Prices are from the Spectra Fuels Bunker Price Report dated 01.07.2025.
+      - Prices are quoted in USD/PMT.
+      - Busan VLSFO 0.5% is 559, HSFO 3.5% is 473, LSMGO 0.1% is 689.
+      - Hong Kong VLSFO 0.5% is 533, HSFO 3.5% is 462, LSMGO 0.1% is 652.
+      - Shanghai VLSFO 0.5% is 572, HSFO 3.5% is 475, LSMGO 0.1% is 686.
+      - Tokyo VLSFO 0.5% is 543, HSFO 3.5% is 470, LSMGO 0.1% is 797.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "Singapore row is truncated in the source snippet with '(continues in full report)'; verify against the full report if tighter grading is needed."
+
+  - id: q17-urea-supply-scr-tier-iii
+    category: Bunker & Fuel
+    question: What is the status of urea supply procurement for SCR-equipped Tier III engines?
+    reference_answer: |
+      Coordination and approval of urea supply for SCR-equipped Tier III engines is in progress, including Rotterdam delivery. The vessel status report for ANTONIS I. ANGELICOUSSIS shows SCR system components (SCR Burner Marine Gas Oil Pump, SCR Chambers for Generator Engines No.01-03) with examinations due by 02-Jan-2028. Supplier evaluation is ongoing.
+    expected_facts:
+      - Coordination and approval of urea supply for SCR-equipped Tier III engines is in progress.
+      - Rotterdam delivery is part of the coordination.
+      - ANTONIS I. ANGELICOUSSIS vessel status report shows SCR system components.
+      - SCR Burner Marine Gas Oil Pump and SCR Chambers for Generator Engines No.01-03 are listed with examinations due by 02-Jan-2028.
+      - Supplier evaluation is ongoing.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q18-dione-network-troubleshooting
+    category: IT & Connectivity
+    question: What network issues have been reported on MARAN DIONE and what are the troubleshooting steps?
+    reference_answer: |
+      MARAN DIONE (Angelicoussis class) has a SHI Smartship BIG System connectivity issue to cloud services. The troubleshooting steps from the engineer:
+
+      1. Check LAN cable A75-1-1 between port No.0 of SMARTSHIP Firewall and VSAT rack — verify proper connection and LED blinking
+      2. Have vessel IT engineer verify IP configuration: IP 172.16.1.138, Subnet 255.255.255.248, Gateway 172.16.1.137, DNS 172.16.1.137
+      3. Confirm whitelist includes teamviewer.com and amazonaws.com (required for ship data transmission to AWS)
+      4. If cable is connected and LEDs are normal, run nslookup diagnostics, disconnect/reconnect VSAT, and test domain resolution
+    expected_facts:
+      - MARAN DIONE has a SHI Smartship BIG System connectivity issue to cloud services.
+      - Step 1 is to check LAN cable A75-1-1 between port No.0 of SMARTSHIP Firewall and VSAT rack for proper connection and LED blinking.
+      - Step 2 is to verify IP configuration (IP 172.16.1.138, Subnet 255.255.255.248, Gateway 172.16.1.137, DNS 172.16.1.137).
+      - Step 3 is to confirm whitelist includes teamviewer.com and amazonaws.com for AWS data transmission.
+      - Step 4 is to run nslookup diagnostics, disconnect/reconnect VSAT, and test domain resolution if the cable and LEDs are normal.
+    vessel_filter:
+      vessel_class: Angelicoussis
+    expected_chunk_ids: []
+    notes: null
+
+  - id: q19-vessel-classes-most-operational-issues
+    category: Cross-Cutting / Analytics
+    question: Which vessel classes have the most operational issues?
+    reference_answer: |
+      By topic-linked chunk count:
+
+      1. **Angelicoussis** — 53 chunks (ICMS failure, Inmarsat antenna, DANAE issues)
+      2. **Apollo** — 47 chunks (tank level error, air compressor, PLC/HMI failure, crew changes)
+      3. **Hermione** — 41 chunks (S-band radar software, Helen class/incinerator survey)
+      4. **Arcturus** — 39 chunks (EGCS inspections, gas detection malfunction, THETIS bellows leakage)
+      5. **Phoebe** — 27 chunks
+      6. **Canopus** — 22 chunks (governor failure, scrubber inspection)
+      7. **Cleo** — 18 chunks (air compressor belt, BWTS PLC malfunction)
+      8. **Ajax** — 17 chunks
+      9. **Aphrodite** — 16 chunks
+      10. **Lupus** — 8 chunks
+      11. **Antiope** — 5 chunks
+      12. **Atlas** — 5 chunks
+    expected_facts:
+      - Angelicoussis is the top class by topic-linked chunk count at 53 chunks.
+      - Apollo is second with 47 chunks.
+      - Hermione is third with 41 chunks.
+      - Arcturus is fourth with 39 chunks.
+      - Canopus has 22 chunks linked to governor failure and scrubber inspection.
+      - Cleo has 18 chunks linked to air compressor belt and BWTS PLC malfunction.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "reference answer based on 483-doc snapshot; current corpus is ~17k docs so concrete numbers (chunk counts, top-N rankings) may differ"
+
+  - id: q20-active-external-parties
+    category: Cross-Cutting / Analytics
+    question: Who are the most active external parties in fleet communications?
+    reference_answer: |
+      Top external parties by email volume:
+
+      - **technical@marantankers.gr** — 71 emails (primary internal technical team)
+      - **spares@angelicoussisgroup.com** — 11 emails (group spare parts procurement)
+      - **sales@seascapetec.com** — 8 emails (equipment vendor)
+      - **noreply.maritime@dnv.com** — 6 emails (DNV classification/certification)
+      - **info@sealegend.com.cn** — 4 emails (Chinese supplier)
+      - **support@sl-sail.com** — 4 emails (maritime service provider)
+      - **noreply@angelicoussisgroup.com** — 4 emails (group notifications)
+
+      Plus 104 unique email domains representing vendors, port agents, classification societies, and suppliers across Korea, Singapore, Greece, China, and more.
+    expected_facts:
+      - technical@marantankers.gr is the top external party with 71 emails.
+      - spares@angelicoussisgroup.com had 11 emails.
+      - sales@seascapetec.com had 8 emails.
+      - noreply.maritime@dnv.com had 6 emails.
+      - info@sealegend.com.cn had 4 emails.
+      - support@sl-sail.com had 4 emails.
+      - noreply@angelicoussisgroup.com had 4 emails.
+      - There are 104 unique external email domains across vendors, port agents, classification societies, and suppliers.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "reference answer based on 483-doc snapshot; current corpus is ~17k docs so concrete numbers (chunk counts, top-N rankings) may differ"
+
+  - id: q21-top-operational-concerns-fleet
+    category: Cross-Cutting / Analytics
+    question: What are the top operational concerns across the fleet right now?
+    reference_answer: |
+      Based on topic coverage and severity:
+
+      1. **Equipment failures** — multiple vessels with control system, radar, gas detection, and compressor failures requiring urgent parts and service attendance
+      2. **EGCS/scrubber integrity** — fleet-wide internal inspection program across 4 vessel classes with confirmed leakage on THETIS
+      3. **Spare parts procurement bottlenecks** — several urgent POs, one rejected PO blocking invoice processing, 6-8 week lead times on critical valves
+      4. **IT/connectivity** — Smartship cloud connectivity issues affecting data transmission to AWS
+      5. **Compliance/certification** — ongoing Lloyd's Register surveys, PSC deficiency advisories on lifesaving equipment, transit fee increases
+    expected_facts:
+      - Equipment failures across multiple vessels (control system, radar, gas detection, compressor) are a top concern.
+      - EGCS/scrubber integrity is a fleet-wide concern with inspections across 4 vessel classes and confirmed leakage on THETIS.
+      - Spare parts procurement bottlenecks include urgent POs, a rejected PO blocking invoice processing, and 6-8 week lead times on critical valves.
+      - IT/connectivity concerns include Smartship cloud connectivity issues affecting data transmission to AWS.
+      - Compliance/certification concerns include Lloyd's Register surveys, PSC advisories on lifesaving equipment, and transit fee increases.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "reference answer based on 483-doc snapshot; current corpus is ~17k docs so concrete numbers (chunk counts, top-N rankings) may differ"
+
+  # ============================================================================
+  # USE-CASE-ALIGNED QUESTIONS (added 2026-04-21)
+  #
+  # These target the actual user workflow: a maritime professional facing a
+  # current issue, looking up how similar problems were handled before, or
+  # checking history/patterns to inform their next move. All reference_answers
+  # below are DRAFT - derived from facts already present in q01-q21 - and need
+  # validation against retrieval after the first baseline run.
+  # ============================================================================
+
+  - id: q22-past-incident-engine-rpm-regulation
+    category: Past-Incident Lookup
+    question: We just had RPM regulation issues on a main engine - fuel index stuck high. How were similar cases resolved on other vessels?
+    reference_answer: |
+      A similar case was reported on **MARAN CANOPUS**: the main engine governor was not regulating RPM correctly (RPM higher than setpoints, fuel index at 45%). The handling steps were:
+
+      1. Repair quotation requested under CRM:0504838.
+      2. Spare parts shipment coordinated.
+
+      No fully closed-out resolution is documented in the corpus - this incident is still in the procurement/coordination phase. Recommend reviewing the CANOPUS thread for the latest on parts availability and any vendor recommendations before applying the same approach.
+    expected_facts:
+      - The response references the MARAN CANOPUS governor incident as a similar case.
+      - The response mentions RPM regulation failure with fuel index at 45%.
+      - The response mentions CRM:0504838 (repair quotation request).
+      - The response mentions spare parts shipment being coordinated.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - past-incident-lookup pattern. Validate against retrieval after first baseline; corpus may contain additional governor/RPM cases not covered in q01."
+
+  - id: q23-past-incident-bwts-plc-recovery
+    category: Past-Incident Lookup
+    question: Our BWTS water chiller PLC failed to auto-start after a main breaker trip. Any past incidents we can learn from?
+    reference_answer: |
+      A directly comparable incident was reported on **CLEO**: the main breaker tripped, affecting the BWTS, and the water chiller could not auto/remote start. Two combined faults were diagnosed:
+
+      1. Electrical power supply interruption.
+      2. PLC control failure.
+
+      Multiple email threads tracked this across the Cleo vessel class. Recommend reviewing those threads to see whether the resolution involved PLC reload, breaker replacement, or vendor escalation before deciding on local action.
+    expected_facts:
+      - The response references the CLEO BWTS water chiller PLC incident as a comparable case.
+      - The response mentions the main breaker trip affecting BWTS.
+      - The response identifies both electrical power supply interruption and PLC control failure as combined faults.
+      - The response notes the issue was tracked across the Cleo vessel class.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - past-incident-lookup pattern. Validate retrieval covers full CLEO BWTS thread."
+
+  - id: q24-past-incident-smartship-connectivity
+    category: Past-Incident Lookup
+    question: Smartship cloud connectivity is down on one of our vessels. What troubleshooting steps were used in the past?
+    reference_answer: |
+      A connectivity incident was tracked on **MARAN DIONE** (Angelicoussis class) - SHI Smartship BIG System could not reach cloud services. The documented troubleshooting sequence was:
+
+      1. Check LAN cable A75-1-1 between port No.0 of SMARTSHIP Firewall and VSAT rack - verify proper connection and LED blinking.
+      2. Have the vessel IT engineer verify IP configuration: IP 172.16.1.138, Subnet 255.255.255.248, Gateway 172.16.1.137, DNS 172.16.1.137.
+      3. Confirm whitelist includes teamviewer.com and amazonaws.com (required for ship data transmission to AWS).
+      4. If cable is connected and LEDs are normal, run nslookup diagnostics, disconnect/reconnect VSAT, and test domain resolution.
+    expected_facts:
+      - The response references the MARAN DIONE Smartship BIG cloud connectivity incident.
+      - The response includes the LAN cable A75-1-1 check between SMARTSHIP Firewall and VSAT rack.
+      - The response includes the specific IP configuration (172.16.1.138 / 255.255.255.248 / gateway 172.16.1.137 / DNS 172.16.1.137).
+      - The response mentions whitelist for teamviewer.com and amazonaws.com.
+      - The response mentions nslookup diagnostics and VSAT disconnect/reconnect as fallback steps.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - past-incident-lookup with concrete technical steps. High-value test for citation grounding because steps include specific IP addresses + cable identifiers."
+
+  - id: q25-thetis-egcs-history
+    category: Vessel Timeline
+    question: Show me the EGCS scrubber issue history for THETIS.
+    reference_answer: |
+      THETIS (Arcturus class) had EGCS scrubber bellows leakage identified during the fleet-wide internal inspection program. The inspection scope (which applies to multiple vessels but found a positive on THETIS) covered:
+
+      - Steel plating wastage and cracks in Chinese hat plates.
+      - Weld joint integrity.
+      - Soot accumulation and salt deposits.
+      - Water ingress indicators.
+      - Demister panel condition.
+
+      The inspection required port-side attendance with a detailed report and representative photographs. Multiple related topics tracked the SOx scrubber internal inspection, leakage in EGCS components, structural integrity of scrubber components, and deposits/contamination checks.
+    expected_facts:
+      - THETIS had EGCS bellows leakage identified during internal inspection.
+      - THETIS belongs to the Arcturus class.
+      - The inspection scope includes steel plating wastage/cracks, weld integrity, soot, salt deposits, water ingress, and demister panel condition.
+      - The inspection required port-side attendance with photographs.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - vessel-timeline pattern. Question expects narrative across multiple emails; tests retrieval ability to surface a coherent story."
+
+  - id: q26-fleet-air-compressor-pattern
+    category: Cross-Vessel Pattern
+    question: How many vessels have reported air compressor problems in the fleet, and what are the common failure modes?
+    reference_answer: |
+      Three air compressor incidents are documented across the fleet:
+
+      - **CLEO** - service air compressor drive belt failure.
+      - **MARAN ARETE** (Apollo class) - service air compressor malfunction.
+      - **ARIADNE** (Apollo class) - main air compressor failures, captured in fleet experience sharing bulletin No.18-22.
+
+      Two of three are in the Apollo class (ARETE + ARIADNE), suggesting a class-level pattern worth flagging. The fleet experience sharing bulletin No.18-22 likely contains the consolidated pattern analysis and recommendations.
+    expected_facts:
+      - At least three vessels (CLEO, MARAN ARETE, ARIADNE) are referenced for air compressor issues.
+      - CLEO had a service air compressor drive belt failure.
+      - MARAN ARETE had a service air compressor malfunction.
+      - ARIADNE had main air compressor failures with reference to fleet bulletin No.18-22.
+      - The response notes that two of the three are Apollo-class vessels.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - cross-vessel-pattern. Validate that retrieval surfaces all three incidents; rerank threshold may need tuning."
+
+  - id: q27-fleet-control-system-failures-pattern
+    category: Cross-Vessel Pattern
+    question: Are control system failures (PLC, ICMS, SCR) isolated incidents or a recurring pattern across the fleet?
+    reference_answer: |
+      Control system failures are a recurring pattern across multiple vessel classes:
+
+      - **DANAE** (Angelicoussis class) - ICMS RCP-X32 control system failure.
+      - **MARAN APOLLO** - TeamTec PLC/HMI failure (urgent spare parts ordered).
+      - **CLEO** - BWTS water chiller PLC malfunction.
+      - **ARTEMIS** (Apollo class) - Tank remote level system error.
+      - **ANTONIS I. ANGELICOUSSIS** - multiple SCR system components flagged with examinations due 02-Jan-2028.
+
+      Common factor: complex electronic/PLC-driven subsystems are a fleet-wide source of incidents - not isolated to one class or vessel. Recommend a fleet-level review of PLC firmware versions and spare-parts inventory.
+    expected_facts:
+      - Multiple vessels (at least DANAE, MARAN APOLLO, CLEO, ARTEMIS) are referenced for control system or PLC issues.
+      - The response identifies these as a recurring fleet-wide pattern, not isolated incidents.
+      - The response references at least one vessel from more than one class.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - cross-vessel-pattern with synthesis. Tests whether agent groups disparate incidents under a common theme."
+
+  - id: q28-liferaft-singapore-precedent
+    category: Recommendation from Precedent
+    question: We need to coordinate a liferaft exchange in Singapore. What does the procedure look like based on past arrangements?
+    reference_answer: |
+      The most recent Singapore liferaft exchange was on **MARAN MARS** at Singapore Roads. Key parameters from the vendor:
+
+      - **Lead time:** 5 working days to prepare liferafts; overtime charges apply if shorter.
+      - **Overtime:** USD 187 per liferaft.
+      - **Delivery expenses at Singapore:** USD 353.
+      - **Barge/crane service:** must be arranged by customer through local agent.
+      - Vendor requires approval before preparing/reserving the requested liferafts.
+      - Local agent details needed to check vessel ETA and apply permit.
+
+      Recommend providing local agent details + vessel ETA upfront and confirming the 5-day lead time before any urgent timeline commitment.
+    expected_facts:
+      - The response references the MARAN MARS Singapore Roads precedent.
+      - The response includes the 5-working-day lead time.
+      - The response includes the USD 187 per-liferaft overtime charge.
+      - The response includes the USD 353 Singapore delivery expense.
+      - The response notes that the customer must arrange barge/crane service through a local agent.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - recommendation-from-precedent. Concrete dollar amounts make it easy to spot fabrication via citation grounding."
+
+  - id: q29-helen-incinerator-survey-status
+    category: Vessel-Specific Lookup
+    question: What is the status of the Lloyd Register survey for the incinerator on MARAN HELEN?
+    reference_answer: |
+      MARAN HELEN has an ongoing Lloyd Register **remote survey** in progress for an incinerator issue (class LR). **Dr. Andreas Ioannou** from **LR Cyprus** is coordinating the survey.
+
+      The survey is part of the broader regulatory documentation workflow with shore-side technical management. No closed-out date is documented in the corpus.
+    expected_facts:
+      - The response references the MARAN HELEN incinerator issue.
+      - The response identifies it as a Lloyd Register remote survey.
+      - The response names Dr. Andreas Ioannou as the coordinator.
+      - The response mentions LR Cyprus as the involved office.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - vessel-specific lookup with named contact. Tests citation precision."
+
+  - id: q30-no-result-off-topic-tesla
+    category: No Results Expected
+    question: What is the recommended maintenance schedule for a Tesla Model 3 battery?
+    reference_answer: |
+      The MTSS knowledge base contains maritime technical incidents and documentation only - there are no records on Tesla vehicles or automotive battery maintenance. I cannot answer this from the available sources.
+
+      If you intended a maritime question (for example about ship battery banks, BWTS power systems, or UPS units), please rephrase.
+    expected_facts:
+      - The response acknowledges that no relevant documents were found.
+      - The response does not fabricate any specific Tesla maintenance details.
+      - The response invites the user to rephrase or provides scope guidance.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - negative test. The agent must NOT hallucinate. has_no_results_disclaimer auto-check should fire."
+
+  - id: q31-no-result-implausible-vessel
+    category: No Results Expected
+    question: What were the findings from the dry-dock inspection on USS ENTERPRISE last quarter?
+    reference_answer: |
+      The MTSS knowledge base does not contain any records for a vessel named USS ENTERPRISE - the fleet covered by this database consists of Angelicoussis Group commercial tankers (VLCC, Suezmax, Aframax classes). No dry-dock inspection report for that vessel exists in the sources.
+
+      If you meant a different vessel name in the actual fleet, please clarify.
+    expected_facts:
+      - The response acknowledges that USS ENTERPRISE is not in the knowledge base.
+      - The response identifies the actual fleet scope (Angelicoussis commercial tankers).
+      - The response does not fabricate any inspection findings.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - negative test with implausible vessel. Tests robustness against name-based misretrieval."
+
+  - id: q32-danae-issues-vessel-filter
+    category: Vessel-Specific Lookup
+    question: What technical issues have been reported on DANAE?
+    reference_answer: |
+      DANAE (Angelicoussis class) has reported an **ICMS RCP-X32 control system failure**. This is the primary documented technical issue for the vessel in the corpus.
+
+      No fully closed-out resolution is documented; the issue may still be in the troubleshooting/procurement phase. Recommend reviewing the DANAE thread for current status before applying any remediation.
+    expected_facts:
+      - The response identifies the ICMS RCP-X32 control system failure as DANAE documented issue.
+      - The response identifies DANAE as belonging to the Angelicoussis class.
+      - The response does not introduce other vessel incidents as DANAE.
+    vessel_filter:
+      vessel_class: Angelicoussis
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - vessel-filter intent. With Angelicoussis filter active, retrieval should isolate DANAE-related chunks. Tests filter effectiveness."
+
+  - id: q33-urea-scr-supply-precedent
+    category: Recommendation from Precedent
+    question: What is the precedent for coordinating urea supply for SCR-equipped Tier III engines?
+    reference_answer: |
+      Urea supply for SCR Tier III engines is being coordinated with **Rotterdam delivery** as the active arrangement. Supplier evaluation is ongoing.
+
+      The vessel status report for **ANTONIS I. ANGELICOUSSIS** documents specific SCR system components (SCR Burner Marine Gas Oil Pump, SCR Chambers for Generator Engines No.01-03) with examinations due by **02-Jan-2028** - useful for matching delivery timing to compliance deadlines.
+
+      Recommend confirming Rotterdam slot availability against the next vessel ETA in that region and verifying supplier qualification status.
+    expected_facts:
+      - The response references Rotterdam as the documented urea delivery location.
+      - The response notes that supplier evaluation is ongoing.
+      - The response references ANTONIS I. ANGELICOUSSIS SCR component examination dates.
+      - The response mentions the 02-Jan-2028 examination due date.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - recommendation-from-precedent. Tests synthesis across procurement + compliance documents."
+
+  # ============================================================================
+  # CONVERSATIONAL / DOMAIN-REAL QUESTIONS (added 2026-04-21)
+  #
+  # Derived from user-reported real-world query patterns:
+  #   - Time-anchored lookup at multiple granularities (fleet / group / vessel)
+  #   - Comparative "have we seen this before" follow-ups
+  #   - Evaluative "is this OK" framing that risks ungrounded speculation
+  #   - Statistical count + cause-ranking asks
+  #
+  # Corpus coverage is UNCERTAIN for these topics (lube oil analysis, cargo
+  # pumps) - may be partial hits or no-result. That's intentional: tests whether
+  # the agent handles gracefully vs fabricates.
+  # ============================================================================
+
+  - id: q34-fleet-last-lube-oil-analysis
+    category: Conversational Drill-down
+    question: When was the last lube oil analysis performed in the fleet, and what was the result?
+    reference_answer: |
+      This answer should be populated from the first baseline run.
+
+      Expected shape: if lube oil analysis records exist in the corpus, the response should identify the most recent submission (vessel + date + key metrics / grading). If no explicit lube oil analysis records exist, the response should acknowledge absence and suggest adjacent records (monthly boiler + water analysis logs, ICCP MGPS reports on MARAN ASPASIA) that may contain related data.
+
+      The response must NOT fabricate a specific date or acceptance grade if the corpus does not contain one.
+    expected_facts:
+      - The response either identifies a specific vessel + date for the most recent lube oil analysis OR clearly acknowledges that lube oil analysis records are not distinctly present in the corpus.
+      - If no direct records exist, the response suggests related maintenance / analysis workflows present in the corpus (e.g. monthly boiler + water analysis logs).
+      - The response does not fabricate acceptance grades, oil condition values, or specific dates not present in retrieved chunks.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - corpus coverage uncertain. Reference answer is a shape guide, not ground truth. Update after first baseline reveals what retrieval actually surfaces."
+
+  - id: q35-vessel-lube-oil-acceptance
+    category: Evaluative
+    question: Are the latest lube oil analysis results for MARAN CANOPUS within acceptable ranges?
+    reference_answer: |
+      This answer should be populated from the first baseline run.
+
+      Expected shape: if the corpus contains explicit acceptance criteria or prior lube oil results for CANOPUS, the response should quote the measured values, the criteria, and the pass/fail conclusion. If the corpus contains values but no acceptance criteria, the response should state the values AND disclose that no criteria were found in sources. If neither exists, the response should say so explicitly.
+
+      The response must NOT invent "normal" or "acceptable" ranges from general maritime knowledge - only what the retrieved chunks state.
+    expected_facts:
+      - The response either quotes specific measured values AND acceptance criteria from retrieved chunks, or clearly states which part is missing.
+      - The response does not fabricate acceptance thresholds, reference values, or regulatory limits not present in the retrieval.
+      - If no CANOPUS lube oil data exists, the response says so without speculating on acceptability.
+    vessel_filter:
+      vessel_class: Canopus
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - evaluative framing. High hallucination risk: agent may pull general maritime knowledge to judge acceptability. Judge should score faithfulness strictly on this one."
+
+  - id: q36-similar-lube-oil-results-precedent
+    category: Conversational Drill-down
+    question: Have we seen similar lube oil analysis results on other vessels before?
+    reference_answer: |
+      This answer should be populated from the first baseline run.
+
+      Expected shape: the response should search for prior lube oil analysis records across the fleet, cluster them by similarity to a reference set (implicit: the previous question's result), and call out any recurring flags (e.g. elevated iron content, water contamination, viscosity drift). If no such records are retrievable, the response should acknowledge that and stop.
+
+      Note: this question has no explicit referent in a single-turn eval (it assumes a prior "the result" from q34). The agent should either generalise (show all past lube oil patterns) or ask for clarification.
+    expected_facts:
+      - The response either presents a cross-vessel overview of past lube oil analysis patterns or asks the user what prior result to compare against.
+      - The response does not fabricate comparisons to vessels or results that are not in the retrieval.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - conversational follow-up with dangling antecedent ('similar to what?'). Tests whether the agent asks for clarification or generalises gracefully."
+
+  - id: q37-cargo-pump-failures-ranked
+    category: Statistical Ranking
+    question: How many cargo pump failures do we have in the fleet, and rank the failure causes by frequency?
+    reference_answer: |
+      This answer should be populated from the first baseline run.
+
+      Expected shape: the response should count distinct cargo-pump failure incidents retrievable from the corpus, group them by root cause (mechanical, electrical, control-system, seal/gasket, etc.), rank the causes by incident count, and name the most affected vessels per cause. If the corpus has few or no cargo-pump-specific incidents, the response should state the count (possibly zero) and avoid inventing categories.
+
+      Closely related incidents already in the corpus (not necessarily cargo pumps): CLEO service air compressor, MARAN ARETE service air compressor, ARIADNE main air compressor. These are compressors, not pumps - the agent should distinguish.
+    expected_facts:
+      - The response provides an explicit count (or states that no distinct cargo pump failures are retrievable).
+      - If causes are ranked, each cause is backed by at least one citation to a retrieved chunk.
+      - The response does not confuse air compressors with cargo pumps (distinct equipment classes).
+      - The response does not fabricate a cause distribution from general maritime knowledge.
+    vessel_filter: null
+    expected_chunk_ids: []
+    notes: "DRAFT 2026-04-21 - statistical + ranked. Corpus coverage uncertain; could be a no-result or partial-match test. Air-compressor-vs-cargo-pump confusion is a real failure mode to watch for."
