@@ -817,6 +817,7 @@ async def _import_archives(
             # filename at ingest time).
             sanitized_to_original: Dict[str, str] = {}
             upload_items: List[UploadItem] = []
+            safe_key_seen: Dict[str, str] = {}
             for lp, rk in files_to_upload:
                 safe_key = sanitize_storage_key(rk)
                 if safe_key != rk:
@@ -824,6 +825,17 @@ async def _import_archives(
                     logger.warning(
                         f"Sanitized invalid storage key: {rk!r} -> {safe_key!r}"
                     )
+                # Two distinct source filenames can collapse to the same
+                # safe key (e.g. ``a%b`` and ``a_b`` both → ``a_b``). One
+                # would silently overwrite the other in Storage — loud
+                # warn so the operator can rename one at the source.
+                prior = safe_key_seen.get(safe_key)
+                if prior is not None and prior != rk:
+                    logger.warning(
+                        f"Sanitization collision: {rk!r} and {prior!r} both map to "
+                        f"{safe_key!r}; second upload will overwrite the first."
+                    )
+                safe_key_seen[safe_key] = rk
                 upload_items.append(
                     UploadItem(
                         local_path=lp,
@@ -938,6 +950,6 @@ async def _repoint_sanitized_archive_uris(
                     """,
                     original_suffix, safe_suffix, n,
                 )
-    logger.info(
-        "Repointed %d document URIs after key sanitization.", len(patched)
+    console.print(
+        f"Repointed {len(patched)} document URIs after key sanitization."
     )
