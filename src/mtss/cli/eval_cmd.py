@@ -35,6 +35,23 @@ DEFAULT_ENV_FILE = ".env.test"
 DEFAULT_QUESTIONS = "tests/eval/goldens/questions.yaml"
 DEFAULT_RUNS_ROOT = Path("tests/eval/runs")
 
+# Named filter presets for fast iteration. "smoke" deliberately hits each
+# of the three post-baseline-01 fixes plus the new intent-classifier
+# routing path, in ~4 questions (~4 min vs 37 min for the full set).
+#   q01, q32: vessel-filter skip regression (fix #1)
+#   q02:      factual non-vessel — forces search + emits citations (fix #2/#3)
+#   q30:      off-topic — exercises intent classifier short-circuit
+# Keep this small; the whole point is a sub-5-minute feedback loop for
+# code changes. Major changes still need a full `mtss eval run`.
+PRESET_FILTERS: dict[str, str] = {
+    "smoke": (
+        "q01-canopus-open-maintenance-issues,"
+        "q02-fleet-equipment-failures-last-month,"
+        "q30-no-result-off-topic-tesla,"
+        "q32-danae-issues-vessel-filter"
+    ),
+}
+
 # Known production Supabase project refs. Any URL whose host begins with
 # `<ref>.` is treated as prod and rejected by `_resolve_target` unless the
 # caller explicitly passes --allow-prod. Override via comma-separated env var
@@ -220,6 +237,11 @@ def register(app: typer.Typer) -> None:
         out_dir: Optional[str] = typer.Option(None, "--out"),
         concurrency: int = typer.Option(2, "--concurrency", "-c"),
         filter_ids: Optional[str] = typer.Option(None, "--filter", help="Comma-separated question IDs"),
+        preset: Optional[str] = typer.Option(
+            None,
+            "--preset",
+            help=f"Named question filter preset. Available: {', '.join(sorted(PRESET_FILTERS))}",
+        ),
         notes: Optional[str] = typer.Option(None, "--notes"),
         allow_prod: bool = typer.Option(False, "--allow-prod", hidden=True),
     ) -> None:
@@ -227,6 +249,18 @@ def register(app: typer.Typer) -> None:
         _resolve_target(env_file, allow_prod, enable_langfuse=True)
 
         from tests.eval.runner import execute_run
+
+        if preset is not None:
+            if preset not in PRESET_FILTERS:
+                console.print(
+                    f"[red]Unknown preset {preset!r}. Available: "
+                    f"{', '.join(sorted(PRESET_FILTERS))}[/red]"
+                )
+                raise typer.Exit(2)
+            if filter_ids is not None:
+                console.print("[red]--preset and --filter are mutually exclusive.[/red]")
+                raise typer.Exit(2)
+            filter_ids = PRESET_FILTERS[preset]
 
         rid = run_id or datetime.utcnow().strftime("%Y%m%d-%H%M%S")
         out = Path(out_dir) if out_dir else DEFAULT_RUNS_ROOT / rid
