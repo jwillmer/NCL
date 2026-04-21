@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import mimetypes
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,22 +15,26 @@ from uuid import UUID
 import typer
 
 from ._common import console, make_progress
-from .._io import read_bytes_async, retry_with_backoff
 from ..models.serializers import dict_to_chunk as _dict_to_chunk
 from ..models.serializers import dict_to_document as _dict_to_document
 from ..models.serializers import dict_to_topic as _dict_to_topic
+from ..storage.async_upload import UploadItem, upload_many
 
 logger = logging.getLogger(__name__)
 
 # Retry policy for archive uploads. Supabase Storage occasionally returns
 # non-JSON bodies (gateway errors, transient 5xx) which surface as
-# JSONDecodeError in storage3. Retry with exponential backoff.
-_UPLOAD_MAX_ATTEMPTS = 3
-_UPLOAD_BACKOFF_BASE = 1.0  # seconds; delays: 1s, 2s
+# JSONDecodeError in storage3. Retry with exponential backoff. Widened
+# from 3/1.0 to 5/0.5 after the async migration: individual retries are
+# cheaper (no thread spin-up) and 5 gives ~7.5s of backoff headroom for
+# genuinely flaky uploads without blocking the batch.
+_UPLOAD_MAX_ATTEMPTS = 5
+_UPLOAD_BACKOFF_BASE = 0.5  # seconds; delays: 0.5, 1, 2, 4
 
-# Upper bound on concurrent archive uploads. Bounded to avoid saturating
-# the Supabase Storage endpoint or the local disk while still overlapping
-# network I/O. Exposed as a module-level constant so tests can monkeypatch
+# Upper bound on concurrent archive uploads. Runs entirely on asyncio
+# (no threads) via ``storage.async_upload.upload_many``, so the ceiling
+# is the Supabase Storage endpoint's throughput, not the local thread
+# pool. Exposed as a module-level constant so tests can monkeypatch
 # and operators can tune at runtime.
 _ARCHIVE_UPLOAD_CONCURRENCY = 8
 
@@ -662,44 +665,6 @@ async def _remove_db_orphans(db, output_dir: Path, changes, dry_run, verbose):
     changes["orphans_removed"] += len(orphan_doc_ids)
 
 
-def _upload_with_retry(storage, rel_key: str, payload: bytes, content_type: str) -> bool:
-    """Upload one archive file with exponential backoff retry.
-
-    Returns True on success, False after all attempts exhausted. Handles
-    transient Supabase Storage failures (non-JSON gateway responses,
-    temporary 5xx) that surface as JSONDecodeError in storage3.
-    """
-    def _upload() -> None:
-        storage.upload_file(rel_key, payload, content_type)
-
-    def _log_retry(attempt: int, exc: BaseException, delay: float) -> None:
-        logger.warning(
-            f"Upload failed for {rel_key} (attempt {attempt}/{_UPLOAD_MAX_ATTEMPTS}): {exc}. "
-            f"Retrying in {delay:.1f}s..."
-        )
-
-    try:
-        retry_with_backoff(
-            _upload,
-            max_attempts=_UPLOAD_MAX_ATTEMPTS,
-            backoff_base=_UPLOAD_BACKOFF_BASE,
-            # Jitter spreads concurrent-upload retries so 8 workers that hit
-            # the same WSAEWOULDBLOCK don't all wake at t+1.0s and collide
-            # again. See status.txt logs for the thundering-herd symptom.
-            jitter=0.5,
-            on_retry=_log_retry,
-            # Route through the module's `time` attribute so tests that
-            # patch `import_cmd.time` continue to observe sleeps.
-            sleep=lambda d: time.sleep(d),
-        )
-        return True
-    except Exception as last_error:
-        logger.warning(
-            f"Failed to upload {rel_key} after {_UPLOAD_MAX_ATTEMPTS} attempts: {last_error}"
-        )
-        return False
-
-
 async def _import_archives(
     archive_dir: Path,
     local_doc_folder_ids: set,
@@ -833,38 +798,41 @@ async def _import_archives(
         with make_progress() as progress:
             task_id = progress.add_task("Archives", total=len(files_to_upload))
 
-            # Bound concurrent uploads to avoid saturating Supabase Storage.
-            # Read and upload happen on threads via asyncio.to_thread so the
-            # event loop is never blocked on disk or network I/O.
-            semaphore = asyncio.Semaphore(_ARCHIVE_UPLOAD_CONCURRENCY)
-
-            async def _upload_one(local_path: Path, rel_key: str) -> bool:
-                async with semaphore:
-                    content_type = (
-                        mimetypes.guess_type(str(local_path))[0]
+            upload_items = [
+                UploadItem(
+                    local_path=lp,
+                    remote_key=rk,
+                    content_type=(
+                        mimetypes.guess_type(str(lp))[0]
                         or "application/octet-stream"
-                    )
-                    payload = await read_bytes_async(local_path)
-                    success = await asyncio.to_thread(
-                        _upload_with_retry, storage, rel_key, payload, content_type
-                    )
-                    progress.update(task_id, advance=1)
-                    return success
+                    ),
+                )
+                for lp, rk in files_to_upload
+            ]
 
-            results = await asyncio.gather(
-                *(_upload_one(lp, rk) for lp, rk in files_to_upload),
-                return_exceptions=True,
-            )
+            def _on_retry(attempt: int, exc: BaseException, delay: float, rel_key: str) -> None:
+                logger.warning(
+                    f"Upload failed for {rel_key} (attempt {attempt}/{_UPLOAD_MAX_ATTEMPTS}): {exc}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
 
-            for result in results:
-                if result is True:
+            def _on_progress(item: UploadItem, success: bool) -> None:
+                if success:
                     changes["new_archive files"] += 1
                 else:
-                    # False or an exception (gather captured it because of
-                    # return_exceptions=True) — both count as a failed upload.
                     changes["failed"] += 1
-                    if isinstance(result, BaseException):
-                        logger.warning(f"Archive upload raised: {result!r}")
+                progress.update(task_id, advance=1)
+
+            await upload_many(
+                upload_items,
+                bucket_name=storage.bucket_name,
+                max_concurrency=_ARCHIVE_UPLOAD_CONCURRENCY,
+                max_attempts=_UPLOAD_MAX_ATTEMPTS,
+                backoff_base=_UPLOAD_BACKOFF_BASE,
+                jitter=0.5,
+                on_retry=_on_retry,
+                on_progress=_on_progress,
+            )
 
     if orphan_keys:
         console.print(f"Removing {len(orphan_keys)} orphan archive files...")
