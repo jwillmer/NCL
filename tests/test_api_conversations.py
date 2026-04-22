@@ -34,7 +34,11 @@ class TestListConversations:
         assert response.status_code == 200
         data = response.json()
         assert data["items"] == []
-        assert data["total"] == 0
+        # `total` is intentionally None now (count="exact" was dropped for
+        # performance — it forces a full-table scan). Clients should rely
+        # on `has_more` instead.
+        assert data["total"] is None
+        assert data["has_more"] is False
 
     @pytest.mark.asyncio
     async def test_filters_by_user_id(self, client, auth_headers, app):

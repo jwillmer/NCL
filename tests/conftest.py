@@ -701,6 +701,12 @@ def app(comprehensive_mock_settings, test_user, mock_supabase_rest_client):
     comprehensive_mock_settings.cors_origins = "http://localhost:5173"
     comprehensive_mock_settings.langfuse_enabled = False
 
+    # Reset the process-wide SupabaseClient singleton so each test gets a
+    # freshly-patched instance instead of a cached one from a previous test.
+    from mtss.api.deps import get_supabase_client
+
+    get_supabase_client.cache_clear()
+
     with (
         patch("mtss.api.main.get_settings", return_value=comprehensive_mock_settings),
         patch("mtss.config.get_settings", return_value=comprehensive_mock_settings),
@@ -719,6 +725,9 @@ def app(comprehensive_mock_settings, test_user, mock_supabase_rest_client):
         # Store mock for per-test configuration
         test_app.state.mock_supabase_rest_client = mock_supabase_rest_client
         yield test_app
+
+    # Clean up the singleton for the next test.
+    get_supabase_client.cache_clear()
 
 
 @pytest.fixture

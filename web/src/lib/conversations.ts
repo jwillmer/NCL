@@ -25,7 +25,11 @@ export interface Conversation {
 
 export interface ConversationListResponse {
   items: Conversation[];
-  total: number;
+  // Backend no longer emits `count="exact"` for the list query because it
+  // forced a full-table scan. `total` is still wired through the API for
+  // compatibility, but it's now optional and typically `null`. Prefer
+  // `has_more` for pagination UX.
+  total?: number | null;
   has_more: boolean;
 }
 

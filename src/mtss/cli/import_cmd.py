@@ -268,6 +268,13 @@ async def _import_vessels(db, vessels, totals, dry_run, verbose):
                 logger.warning(f"Failed to import vessel {vessel.name}: {e}")
             progress.update(task_id, advance=1)
 
+    # Invalidate the in-process VesselCache so the REST /api/vessels*
+    # endpoints and agent tools see the new rows immediately instead of
+    # waiting out the 5-min TTL.
+    from ..processing.entity_cache import get_vessel_cache
+
+    get_vessel_cache().invalidate()
+
 
 async def _import_topics(db, output_dir, totals, changes, dry_run, verbose):
     """Sync topics from topics.jsonl to Supabase (upsert + prune stale)."""

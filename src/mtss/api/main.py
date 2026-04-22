@@ -16,11 +16,13 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
+from starlette.types import Receive, Scope, Send
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -35,6 +37,7 @@ from ..utils import CHUNK_ID_LENGTH
 from ..version import APP_VERSION, GIT_SHA_SHORT
 from .agent import create_graph
 from .conversations import router as conversations_router
+from .deps import get_supabase_client
 from .feedback import router as feedback_router
 from .middleware.auth import SupabaseJWTBearer
 from .streaming import router as streaming_router
@@ -69,23 +72,91 @@ def _strip_archive_prefix(uri: str) -> str:
     return uri[len(_ARCHIVE_URI_PREFIX):] if uri.startswith(_ARCHIVE_URI_PREFIX) else uri
 
 
-class SPAStaticFiles(StaticFiles):
-    """StaticFiles with SPA fallback: serve index.html for unknown non-asset paths.
+def _apply_spa_cache_headers(response: Response, path: str) -> None:
+    """Set per-path cache headers for SPA assets.
 
-    React Router uses BrowserRouter (HTML5 history API). Deep links like
-    /chat?threadId=... must return index.html so the client-side router can
-    resolve the route. Default StaticFiles returns 404 for unknown paths.
+    - Vite's ``assets/`` directory is content-hashed (``foo.abc123.js``) so
+      those files are effectively immutable — cache them for a year.
+    - ``index.html`` (and the SPA-fallback index) must revalidate every
+      load so new deploys roll out to users immediately.
+    - ``sw.js`` and ``registerSW.js`` are service-worker bootstrappers.
+      Browsers already bypass the normal HTTP cache for these, but we
+      set ``no-cache`` defensively so a misconfigured CDN can't pin an
+      old version. ``Service-Worker-Allowed: /`` lets the SW control
+      the entire origin even if it lives at ``/sw.js``.
+    """
+    # Normalise: Starlette's StaticFiles passes the path through
+    # os.path.normpath, so on Windows we see backslashes. Collapse both
+    # separators into a single forward-slash form for the prefix/suffix
+    # checks below.
+    lower = path.lower().replace("\\", "/").lstrip("/")
+    if lower.startswith("assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif lower in ("sw.js", "registersw.js"):
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Service-Worker-Allowed"] = "/"
+    elif lower == "" or lower == "." or lower.endswith("index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles with SPA fallback + per-path cache headers.
+
+    SPA fallback: React Router uses BrowserRouter (HTML5 history API). Deep
+    links like ``/chat?threadId=...`` must return ``index.html`` so the
+    client-side router can resolve the route. Default StaticFiles returns
+    404 for unknown paths.
+
+    Cache headers: ``assets/*`` is Vite-hashed so it's cached forever;
+    ``index.html`` and the SPA fallback must revalidate on every load;
+    ``sw.js``/``registerSW.js`` get ``no-cache`` + ``Service-Worker-Allowed``
+    for the PWA rollout.
     """
 
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
+            _apply_spa_cache_headers(response, path)
+            return response
         except StarletteHTTPException as exc:
             if exc.status_code == 404:
                 index = Path(self.directory) / "index.html"
                 if index.is_file():
-                    return FileResponse(index)
+                    fallback = FileResponse(index)
+                    # The fallback IS index.html — make sure it revalidates.
+                    fallback.headers["Cache-Control"] = "no-cache"
+                    return fallback
             raise
+
+
+class SSEAwareGZipMiddleware(GZipMiddleware):
+    """GZip middleware that bypasses compression for SSE streams.
+
+    Starlette's stock ``GZipMiddleware`` buffers enough of the response body
+    to decide on compression, which breaks Server-Sent Events — the AI SDK
+    client stalls waiting for tokens that are sitting in the compressor
+    buffer. Vercel AI SDK v6 explicitly documents this as incompatible with
+    transport-level compression.
+
+    The streaming agent endpoint is the only SSE route we expose today
+    (``POST /api/agent``). We bypass gzip whenever the request path matches
+    that prefix — checking the path is cheaper and more reliable than
+    peeking at response headers (which would require buffering + replaying
+    the first ASGI ``http.response.start`` message).
+    """
+
+    # Any request path that starts with one of these prefixes is served
+    # without gzip wrapping. Keep this list narrow so we don't accidentally
+    # disable compression for the bulk of the API.
+    _SSE_PATH_PREFIXES: tuple[str, ...] = ("/api/agent",)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if any(path.startswith(prefix) for prefix in self._SSE_PATH_PREFIXES):
+                await self.app(scope, receive, send)
+                return
+        await super().__call__(scope, receive, send)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -240,12 +311,12 @@ async def lifespan(app: FastAPI):
         logger.debug("Langfuse disabled")
 
     # Pre-warm process-wide caches (topics + vessels) so the first request
-    # doesn't pay cold-load latency on the hot path.
+    # doesn't pay cold-load latency on the hot path. Uses the same singleton
+    # client the request handlers will use, so the asyncpg pool is warm too.
     try:
         from ..processing.entity_cache import warm_caches
-        from ..storage.supabase_client import SupabaseClient
 
-        await warm_caches(SupabaseClient())
+        await warm_caches(get_supabase_client())
         logger.info("Topic + vessel caches pre-warmed")
     except Exception as exc:
         logger.warning("Cache pre-warm failed (non-fatal): %s", exc)
@@ -276,6 +347,13 @@ async def lifespan(app: FastAPI):
 
         logger.info("Shutting down LangGraph checkpointer...")
 
+        # Close the process-wide SupabaseClient singleton so the asyncpg
+        # pool drains cleanly. Ignore errors — shutdown is best-effort.
+        try:
+            await get_supabase_client().close()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Error closing SupabaseClient singleton: %s", exc)
+
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
@@ -293,6 +371,13 @@ def create_app() -> FastAPI:
     # Rate limiting
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    # GZip compression — SSE-aware. Stock GZipMiddleware would break the
+    # /api/agent stream by buffering the response; our subclass short-circuits
+    # on that path. Registered BEFORE CORS so it sits on the outside of the
+    # middleware stack (add_middleware inserts at position 0), meaning it
+    # compresses the response after CORS has set its headers.
+    app.add_middleware(SSEAwareGZipMiddleware, minimum_size=500)
 
     # CORS middleware - allow requests from frontend and runtime
     # In production, this should be restricted appropriately
@@ -428,7 +513,11 @@ def create_app() -> FastAPI:
     # Citation details endpoint for fetching source content
     @app.get("/api/citations/{chunk_id}")
     @limiter.limit("100/minute")
-    async def get_citation(request: Request, chunk_id: str):
+    async def get_citation(
+        request: Request,
+        chunk_id: str,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
         """Get citation details including metadata and markdown content.
 
         Used by the frontend to display source content when user clicks a citation.
@@ -454,8 +543,9 @@ def create_app() -> FastAPI:
                 detail=f"Invalid chunk ID length: {len(chunk_id)} (expected {CHUNK_ID_LENGTH})",
             )
 
-        # Fetch chunk from database (synchronous call, no pool needed)
-        client = SupabaseClient()
+        # Fetch chunk from database (synchronous call, no pool needed).
+        # Uses the process-wide SupabaseClient singleton (see deps.py) to
+        # avoid paying PostgREST bootstrap cost on every citation click.
         chunk = client.get_chunk_by_id(chunk_id)
 
         if not chunk:
@@ -508,70 +598,79 @@ def create_app() -> FastAPI:
             "content": content,
         }
 
-    # Vessels endpoint for dropdown lists
+    # ------------------------------------------------------------------
+    # Vessels endpoints — served from the in-process VesselCache instead
+    # of round-tripping to Supabase on every request. The cache has a 5-min
+    # TTL and is pre-warmed on startup (see ``lifespan``). CLI write paths
+    # call ``VesselCache.invalidate()`` after upsert/delete so within-process
+    # writes propagate immediately; cross-process writes rely on the TTL.
+    # ------------------------------------------------------------------
+    _VESSEL_CACHE_CONTROL = "private, max-age=300, stale-while-revalidate=600"
+
     @app.get("/api/vessels")
     @limiter.limit("60/minute")
-    async def list_vessels(request: Request):
+    async def list_vessels(
+        request: Request,
+        response: Response,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
         """Get all vessels for dropdown selection.
 
         Returns minimal vessel info (id, name, type, class) for filtering.
-
-        Args:
-            request: FastAPI request object (user available in request.state.user)
-
-        Returns:
-            List of vessel summaries ordered by name
         """
-        client = SupabaseClient()
-        try:
-            vessels = await client.get_vessel_summaries()
-            user = getattr(request.state, "user", None)
-            logger.debug(
-                "Serving %d vessels to user %s",
-                len(vessels),
-                getattr(user, "email", "unknown") if user else "unknown",
-            )
-            return [
-                {
-                    "id": str(v.id),
-                    "name": v.name,
-                    "vessel_type": v.vessel_type,
-                    "vessel_class": v.vessel_class,
-                }
-                for v in vessels
-            ]
-        finally:
-            await client.close()
+        from ..processing.entity_cache import get_vessel_cache
+
+        cache = get_vessel_cache()
+        await cache.ensure_loaded(client)
+        vessels = sorted(cache.list_all(), key=lambda v: (v.name or "").lower())
+        user = getattr(request.state, "user", None)
+        logger.debug(
+            "Serving %d vessels (cache) to user %s",
+            len(vessels),
+            getattr(user, "email", "unknown") if user else "unknown",
+        )
+        response.headers["Cache-Control"] = _VESSEL_CACHE_CONTROL
+        return [
+            {
+                "id": str(v.id),
+                "name": v.name,
+                "vessel_type": v.vessel_type,
+                "vessel_class": v.vessel_class,
+            }
+            for v in vessels
+        ]
 
     @app.get("/api/vessel-types")
     @limiter.limit("60/minute")
-    async def list_vessel_types(request: Request):
-        """Get distinct vessel types for filter dropdown.
+    async def list_vessel_types(
+        request: Request,
+        response: Response,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
+        """Get distinct vessel types for filter dropdown."""
+        from ..processing.entity_cache import get_vessel_cache
 
-        Returns:
-            List of unique vessel type strings
-        """
-        client = SupabaseClient()
-        try:
-            types = await client.get_unique_vessel_types()
-            return types
-        finally:
-            await client.close()
+        cache = get_vessel_cache()
+        await cache.ensure_loaded(client)
+        types = sorted({v.vessel_type for v in cache.list_all() if v.vessel_type})
+        response.headers["Cache-Control"] = _VESSEL_CACHE_CONTROL
+        return types
 
     @app.get("/api/vessel-classes")
     @limiter.limit("60/minute")
-    async def list_vessel_classes(request: Request):
-        """Get distinct vessel classes for filter dropdown.
+    async def list_vessel_classes(
+        request: Request,
+        response: Response,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
+        """Get distinct vessel classes for filter dropdown."""
+        from ..processing.entity_cache import get_vessel_cache
 
-        Returns:
-            List of unique vessel class strings
-        """
-        client = SupabaseClient()
-        try:
-            classes = await client.get_unique_vessel_classes()
-            return classes
-        finally:
-            await client.close()
+        cache = get_vessel_cache()
+        await cache.ensure_loaded(client)
+        classes = sorted({v.vessel_class for v in cache.list_all() if v.vessel_class})
+        response.headers["Cache-Control"] = _VESSEL_CACHE_CONTROL
+        return classes
 
     # Include routers under /api prefix to avoid collision with frontend routes
     app.include_router(conversations_router, prefix="/api")

@@ -22,6 +22,7 @@ litellm.drop_params = True
 from ..config import get_settings
 from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..storage.supabase_client import SupabaseClient
+from .deps import get_supabase_client
 from .middleware.auth import UserPayload, get_current_user
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,10 @@ class ConversationListResponse(BaseModel):
     """Paginated list of conversations."""
 
     items: list[ConversationResponse]
-    total: int
+    # `total` is optional: list endpoint no longer runs `count="exact"` because
+    # it forces a full-table scan. Kept in the schema so legacy clients that
+    # expect the key don't fail on JSON validation; populated as None.
+    total: Optional[int] = None
     has_more: bool
 
 
@@ -108,6 +112,12 @@ class MessagesListResponse(BaseModel):
 # ============================================
 
 
+_CONVERSATION_SELECT_COLUMNS = (
+    "id,thread_id,user_id,title,vessel_id,vessel_type,vessel_class,"
+    "is_archived,created_at,updated_at,last_message_at"
+)
+
+
 @router.get("", response_model=ConversationListResponse)
 async def list_conversations(
     q: Optional[str] = Query(default=None, max_length=100, description="Search query"),
@@ -115,14 +125,17 @@ async def list_conversations(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """List user's conversations, ordered by most recent activity."""
-    client = SupabaseClient()
 
-    # Build query
+    # Build query. Explicit column list (not SELECT *) so we don't pay for
+    # columns the response model doesn't use. `count="exact"` is deliberately
+    # NOT requested — the frontend only needs a `has_more` hint, and exact
+    # counts force a full-table scan on Postgres.
     query = (
         client.client.table("conversations")
-        .select("*", count="exact")
+        .select(_CONVERSATION_SELECT_COLUMNS)
         .eq("user_id", user.sub)
         .eq("is_archived", archived)
     )
@@ -158,20 +171,22 @@ async def list_conversations(
         for row in result.data
     ]
 
-    total = result.count or 0
-    has_more = offset + len(conversations) < total
+    # `count="exact"` removed for perf; approximate `has_more` from the page
+    # size. If the page was filled the client can request the next page and
+    # discover the actual end. `total` stays on the schema as Optional so
+    # older clients don't choke on the missing field.
+    has_more = len(conversations) == limit
 
-    return ConversationListResponse(items=conversations, total=total, has_more=has_more)
+    return ConversationListResponse(items=conversations, total=None, has_more=has_more)
 
 
 @router.post("", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
 async def create_conversation(
     data: ConversationCreate = Body(default=ConversationCreate()),
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Create a new conversation."""
-    client = SupabaseClient()
-
     thread_id = data.thread_id or uuid4()
 
     result = (
@@ -260,16 +275,16 @@ async def get_conversation(
     request: Request,
     thread_id: UUID,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Get a specific conversation by thread_id.
 
     Automatically regenerates fallback titles (truncated messages) using LLM.
     """
-    client = SupabaseClient()
 
     result = (
         client.client.table("conversations")
-        .select("*")
+        .select(_CONVERSATION_SELECT_COLUMNS)
         .eq("thread_id", str(thread_id))
         .eq("user_id", user.sub)
         .maybe_single()
@@ -330,9 +345,9 @@ async def update_conversation(
     thread_id: UUID,
     data: ConversationUpdate,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Update conversation metadata (title, vessel_id/type/class, archive status)."""
-    client = SupabaseClient()
 
     # Build update data from explicitly provided fields only
     # This allows setting vessel_id to null (clear filter) vs not providing it (don't change)
@@ -381,9 +396,9 @@ async def update_conversation(
 async def delete_conversation(
     thread_id: UUID,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Delete a conversation and its LangGraph checkpoints."""
-    client = SupabaseClient()
 
     # First verify the conversation exists and belongs to user
     check_result = (
@@ -419,10 +434,9 @@ async def delete_conversation(
 async def touch_conversation(
     thread_id: UUID,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Update last_message_at timestamp (called when a new message is sent)."""
-    client = SupabaseClient()
-
     result = (
         client.client.table("conversations")
         .update({"last_message_at": datetime.utcnow().isoformat()})
@@ -455,6 +469,7 @@ async def get_messages(
     request: Request,
     thread_id: UUID,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Get all messages for a conversation from LangGraph checkpoints.
 
@@ -462,7 +477,6 @@ async def get_messages(
     Returns messages in CopilotKit-compatible format (id, role, content).
     Only returns user and assistant messages with actual content.
     """
-    client = SupabaseClient()
 
     # Verify conversation exists and belongs to user
     check_result = (
@@ -590,10 +604,9 @@ async def generate_title(
     thread_id: UUID,
     data: GenerateTitleRequest = Body(...),
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Generate and set conversation title from first message content using LLM."""
-    client = SupabaseClient()
-
     # Check conversation exists
     check_result = (
         client.client.table("conversations")
@@ -620,7 +633,7 @@ async def generate_title(
         # Return existing conversation without updating
         row = (
             client.client.table("conversations")
-            .select("*")
+            .select(_CONVERSATION_SELECT_COLUMNS)
             .eq("thread_id", str(thread_id))
             .single()
             .execute()
