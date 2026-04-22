@@ -72,22 +72,60 @@ def _strip_archive_prefix(uri: str) -> str:
     return uri[len(_ARCHIVE_URI_PREFIX):] if uri.startswith(_ARCHIVE_URI_PREFIX) else uri
 
 
-class SPAStaticFiles(StaticFiles):
-    """StaticFiles with SPA fallback: serve index.html for unknown non-asset paths.
+def _apply_spa_cache_headers(response: Response, path: str) -> None:
+    """Set per-path cache headers for SPA assets.
 
-    React Router uses BrowserRouter (HTML5 history API). Deep links like
-    /chat?threadId=... must return index.html so the client-side router can
-    resolve the route. Default StaticFiles returns 404 for unknown paths.
+    - Vite's ``assets/`` directory is content-hashed (``foo.abc123.js``) so
+      those files are effectively immutable — cache them for a year.
+    - ``index.html`` (and the SPA-fallback index) must revalidate every
+      load so new deploys roll out to users immediately.
+    - ``sw.js`` and ``registerSW.js`` are service-worker bootstrappers.
+      Browsers already bypass the normal HTTP cache for these, but we
+      set ``no-cache`` defensively so a misconfigured CDN can't pin an
+      old version. ``Service-Worker-Allowed: /`` lets the SW control
+      the entire origin even if it lives at ``/sw.js``.
+    """
+    # Normalise: Starlette's StaticFiles passes the path through
+    # os.path.normpath, so on Windows we see backslashes. Collapse both
+    # separators into a single forward-slash form for the prefix/suffix
+    # checks below.
+    lower = path.lower().replace("\\", "/").lstrip("/")
+    if lower.startswith("assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif lower in ("sw.js", "registersw.js"):
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Service-Worker-Allowed"] = "/"
+    elif lower == "" or lower == "." or lower.endswith("index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles with SPA fallback + per-path cache headers.
+
+    SPA fallback: React Router uses BrowserRouter (HTML5 history API). Deep
+    links like ``/chat?threadId=...`` must return ``index.html`` so the
+    client-side router can resolve the route. Default StaticFiles returns
+    404 for unknown paths.
+
+    Cache headers: ``assets/*`` is Vite-hashed so it's cached forever;
+    ``index.html`` and the SPA fallback must revalidate on every load;
+    ``sw.js``/``registerSW.js`` get ``no-cache`` + ``Service-Worker-Allowed``
+    for the PWA rollout.
     """
 
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
+            _apply_spa_cache_headers(response, path)
+            return response
         except StarletteHTTPException as exc:
             if exc.status_code == 404:
                 index = Path(self.directory) / "index.html"
                 if index.is_file():
-                    return FileResponse(index)
+                    fallback = FileResponse(index)
+                    # The fallback IS index.html — make sure it revalidates.
+                    fallback.headers["Cache-Control"] = "no-cache"
+                    return fallback
             raise
 
 
