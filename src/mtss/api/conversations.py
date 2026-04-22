@@ -77,7 +77,10 @@ class ConversationListResponse(BaseModel):
     """Paginated list of conversations."""
 
     items: list[ConversationResponse]
-    total: int
+    # `total` is optional: list endpoint no longer runs `count="exact"` because
+    # it forces a full-table scan. Kept in the schema so legacy clients that
+    # expect the key don't fail on JSON validation; populated as None.
+    total: Optional[int] = None
     has_more: bool
 
 
@@ -109,6 +112,12 @@ class MessagesListResponse(BaseModel):
 # ============================================
 
 
+_CONVERSATION_SELECT_COLUMNS = (
+    "id,thread_id,user_id,title,vessel_id,vessel_type,vessel_class,"
+    "is_archived,created_at,updated_at,last_message_at"
+)
+
+
 @router.get("", response_model=ConversationListResponse)
 async def list_conversations(
     q: Optional[str] = Query(default=None, max_length=100, description="Search query"),
@@ -120,10 +129,13 @@ async def list_conversations(
 ):
     """List user's conversations, ordered by most recent activity."""
 
-    # Build query
+    # Build query. Explicit column list (not SELECT *) so we don't pay for
+    # columns the response model doesn't use. `count="exact"` is deliberately
+    # NOT requested — the frontend only needs a `has_more` hint, and exact
+    # counts force a full-table scan on Postgres.
     query = (
         client.client.table("conversations")
-        .select("*", count="exact")
+        .select(_CONVERSATION_SELECT_COLUMNS)
         .eq("user_id", user.sub)
         .eq("is_archived", archived)
     )
@@ -159,10 +171,13 @@ async def list_conversations(
         for row in result.data
     ]
 
-    total = result.count or 0
-    has_more = offset + len(conversations) < total
+    # `count="exact"` removed for perf; approximate `has_more` from the page
+    # size. If the page was filled the client can request the next page and
+    # discover the actual end. `total` stays on the schema as Optional so
+    # older clients don't choke on the missing field.
+    has_more = len(conversations) == limit
 
-    return ConversationListResponse(items=conversations, total=total, has_more=has_more)
+    return ConversationListResponse(items=conversations, total=None, has_more=has_more)
 
 
 @router.post("", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
@@ -269,7 +284,7 @@ async def get_conversation(
 
     result = (
         client.client.table("conversations")
-        .select("*")
+        .select(_CONVERSATION_SELECT_COLUMNS)
         .eq("thread_id", str(thread_id))
         .eq("user_id", user.sub)
         .maybe_single()
@@ -618,7 +633,7 @@ async def generate_title(
         # Return existing conversation without updating
         row = (
             client.client.table("conversations")
-            .select("*")
+            .select(_CONVERSATION_SELECT_COLUMNS)
             .eq("thread_id", str(thread_id))
             .single()
             .execute()
