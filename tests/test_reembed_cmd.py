@@ -415,3 +415,144 @@ class TestImageFilter:
             output_dir=output_dir, dry_run=True, include_images=True
         )
         assert stats.docs_considered == 2
+
+
+# ---------- TestTopicPreservation ---------- #
+
+
+def _seed_chunks_with_topics(
+    output_dir: Path, doc_uuid: str, topic_ids: list[str]
+) -> list[str]:
+    """Seed a pre-existing chunk row + chunk_topics junction rows for a doc.
+
+    Returns the list of chunk PK ids that got inserted.
+    """
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        conn = client._conn
+        # Topics must exist for the FK on chunk_topics to hold.
+        for tid in topic_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO topics(id, name, display_name, description, "
+                "chunk_count, document_count, created_at, updated_at) "
+                "VALUES (?,?,?,?,0,0,datetime('now'),datetime('now'))",
+                (tid, f"topic-{tid[:6]}", f"Topic {tid[:6]}", "seeded"),
+            )
+
+        chunk_pk = str(uuid4())
+        conn.execute(
+            "INSERT INTO chunks(id, chunk_id, document_id, content, chunk_index, "
+            "created_at) VALUES (?,?,?,?,?,datetime('now'))",
+            (chunk_pk, f"ck-{chunk_pk[:8]}", doc_uuid, "seed content", 0),
+        )
+        for tid in topic_ids:
+            conn.execute(
+                "INSERT INTO chunk_topics(chunk_id, topic_id) VALUES (?,?)",
+                (chunk_pk, tid),
+            )
+        conn.commit()
+        return [chunk_pk]
+    finally:
+        conn.close()
+
+
+def _topic_ids_for_doc(output_dir: Path, doc_id: str) -> set[str]:
+    """Return the distinct topic_ids currently linked to any chunk of doc_id."""
+    from mtss.storage.sqlite_client import SqliteStorageClient
+
+    client = SqliteStorageClient(output_dir=output_dir)
+    try:
+        rows = client._conn.execute(
+            "SELECT DISTINCT ct.topic_id "
+            "FROM chunk_topics ct "
+            "JOIN chunks c ON c.id = ct.chunk_id "
+            "JOIN documents d ON d.id = c.document_id "
+            "WHERE d.doc_id = ?",
+            (doc_id,),
+        ).fetchall()
+        return {r["topic_id"] for r in rows}
+    finally:
+        client._conn.close()
+
+
+class TestTopicPreservation:
+    @pytest.mark.asyncio
+    async def test_preserves_topic_ids_on_regenerated_chunks(
+        self, output_dir, mocked_storage_and_llm
+    ):
+        """Re-embed must re-stamp the pre-existing topic set onto the new
+        chunks — otherwise 10k+ attachment chunks go invisible to the topic
+        filter (see regression backfilled in Apr 2026)."""
+        from mtss.cli import reembed_cmd
+
+        doc_uuid = str(uuid4())
+        docs = [_make_doc_row("doc_t", doc_uuid, "doc_t/x.md")]
+        _write_jsonl(output_dir / "documents.jsonl", docs)
+
+        topic_a = str(uuid4())
+        topic_b = str(uuid4())
+        _seed_chunks_with_topics(output_dir, doc_uuid, [topic_a, topic_b])
+
+        captured: list[tuple[str, list[str]]] = []
+
+        real_update = None
+
+        async def _wrap_update(self, document_id, topic_ids):
+            captured.append((str(document_id), sorted(str(t) for t in topic_ids)))
+            return await real_update(self, document_id, topic_ids)
+
+        from mtss.storage.sqlite_client import SqliteStorageClient
+        real_update = SqliteStorageClient.update_chunks_topic_ids
+
+        with patch.object(
+            SqliteStorageClient, "update_chunks_topic_ids", _wrap_update
+        ):
+            stats = await reembed_cmd.reembed_run(
+                output_dir=output_dir, doc_id="doc_t", mode="full"
+            )
+
+        assert stats.docs_committed == 1
+
+        # Exactly one call for this doc, with the snapshotted topic set
+        # (order-independent — snapshot uses DISTINCT + sorted).
+        matching = [c for c in captured if c[0] == doc_uuid]
+        assert len(matching) == 1, f"Expected one update for {doc_uuid}, got {captured}"
+        assert matching[0][1] == sorted([topic_a, topic_b])
+
+        # And the live junction table reflects the re-stamped set on the new chunks.
+        assert _topic_ids_for_doc(output_dir, "doc_t") == {topic_a, topic_b}
+
+    @pytest.mark.asyncio
+    async def test_skips_re_stamp_when_doc_had_no_topics(
+        self, output_dir, mocked_storage_and_llm
+    ):
+        """If the pre-existing doc had no topic_ids, we must NOT fabricate a
+        set — skip the update_chunks_topic_ids call entirely."""
+        from mtss.cli import reembed_cmd
+
+        doc_uuid = str(uuid4())
+        docs = [_make_doc_row("doc_empty", doc_uuid, "doc_empty/x.md")]
+        _write_jsonl(output_dir / "documents.jsonl", docs)
+        # NOTE: no _seed_chunks_with_topics call — the doc exists but has
+        # no chunks / no topic links yet.
+
+        captured: list[tuple[str, list[str]]] = []
+
+        async def _wrap_update(self, document_id, topic_ids):
+            captured.append((str(document_id), list(topic_ids)))
+            return 0
+
+        from mtss.storage.sqlite_client import SqliteStorageClient
+        with patch.object(
+            SqliteStorageClient, "update_chunks_topic_ids", _wrap_update
+        ):
+            stats = await reembed_cmd.reembed_run(
+                output_dir=output_dir, doc_id="doc_empty", mode="full"
+            )
+
+        assert stats.docs_committed == 1
+        # No calls for this doc — snapshot was empty, so re-stamp is skipped.
+        matching = [c for c in captured if c[0] == doc_uuid]
+        assert matching == []

@@ -123,6 +123,12 @@ async def reembed_run(
     doc_ids_to_replace: set[str] = set()
     new_chunks_serialized: List[str] = []
     updated_docs_by_id: Dict[str, Dict[str, Any]] = {}
+    # Snapshot of existing topic_ids per document — captured BEFORE we DELETE
+    # the old chunks so we can re-stamp the same set onto the regenerated
+    # chunks. Topic extraction is NOT re-run; we preserve whatever the
+    # previous ingest decided. Mirrors the hardening applied to the
+    # attachment-handler path.
+    topic_ids_by_doc: Dict[str, List[str]] = {}
 
     sem = asyncio.Semaphore(max(1, get_settings().max_concurrent_files))
 
@@ -204,13 +210,31 @@ async def reembed_run(
                 stats.docs_failed += 1
                 return
 
-            doc_ids_to_replace.add(str(doc_obj.id))
+            doc_id_str = str(doc_obj.id)
+            # Snapshot the topic set BEFORE the pending DELETE wipes
+            # chunk_topics via FK CASCADE. Query the junction directly so
+            # we don't depend on in-memory chunk metadata (which may be
+            # stale or empty on a fresh db handle).
+            existing_topic_ids = sorted({
+                r["topic_id"]
+                for r in db._conn.execute(
+                    "SELECT DISTINCT ct.topic_id "
+                    "FROM chunk_topics ct "
+                    "JOIN chunks c ON c.id = ct.chunk_id "
+                    "WHERE c.document_id = ?",
+                    (doc_id_str,),
+                )
+            })
+            if existing_topic_ids:
+                topic_ids_by_doc[doc_id_str] = existing_topic_ids
+
+            doc_ids_to_replace.add(doc_id_str)
             for ch in chunks:
                 new_chunks_serialized.append(
                     json.dumps(chunk_to_dict(ch), ensure_ascii=False)
                 )
             row["embedding_mode"] = decided_mode.value
-            updated_docs_by_id[str(doc_obj.id)] = row
+            updated_docs_by_id[doc_id_str] = row
 
             stats.docs_committed += 1
             stats.total_chunks_written += len(chunks)
@@ -224,7 +248,13 @@ async def reembed_run(
             pass
         return stats
 
-    await _apply_reembed_writes(db, doc_ids_to_replace, new_chunks_serialized, updated_docs_by_id)
+    await _apply_reembed_writes(
+        db,
+        doc_ids_to_replace,
+        new_chunks_serialized,
+        updated_docs_by_id,
+        topic_ids_by_doc,
+    )
     try:
         await db.close()
     except Exception:  # noqa: BLE001
@@ -237,6 +267,7 @@ async def _apply_reembed_writes(
     doc_ids_to_replace: set[str],
     new_chunks_serialized: List[str],
     updated_docs_by_id: Dict[str, Dict[str, Any]],
+    topic_ids_by_doc: Optional[Dict[str, List[str]]] = None,
 ) -> None:
     """Apply re-embed results to SQLite atomically.
 
@@ -244,6 +275,10 @@ async def _apply_reembed_writes(
     2. INSERT new chunks via ``insert_chunks`` (roundtrips through the normal
        ``Chunk`` model so metadata stamping and topic sync match the ingest path).
     3. UPDATE documents SET embedding_mode = ? for each re-embedded doc.
+    4. Re-stamp the pre-snapshot ``topic_ids`` onto the fresh chunks so the
+       topic filter keeps seeing the document (re-embed does NOT re-extract
+       topics — we preserve whatever the previous ingest decided). Docs that
+       had no topics are skipped; we don't fabricate a set.
     """
     from ..models.serializers import dict_to_chunk
 
@@ -267,6 +302,14 @@ async def _apply_reembed_writes(
     # resolve cleanly via INSERT OR REPLACE inside insert_chunks.
     if new_chunks:
         await db.insert_chunks(new_chunks)
+
+    # Re-stamp preserved topic_ids onto the freshly-inserted chunks. Must run
+    # AFTER insert_chunks so update_chunks_topic_ids sees the new chunk rows.
+    if topic_ids_by_doc:
+        for did, topic_ids in topic_ids_by_doc.items():
+            if not topic_ids:
+                continue
+            await db.update_chunks_topic_ids(did, topic_ids)
 
 
 def register(app: "typer.Typer") -> None:

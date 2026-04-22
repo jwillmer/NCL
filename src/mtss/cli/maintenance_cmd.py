@@ -423,6 +423,17 @@ async def _reindex_chunks(
                     markdown_text = content_bytes.decode("utf-8")
                     vprint(f"Downloaded {len(markdown_text)} chars from {relative_path}", "")
 
+                    # Capture parent email's topic_ids BEFORE deletion so the
+                    # regenerated chunks can be stamped with the same set.
+                    # Without this, reindexed docs silently lose their
+                    # pgvector topic-filter coverage (metadata->'topic_ids'
+                    # is unset on the new chunks).
+                    parent_topic_ids = await _get_parent_email_topic_ids(db, doc)
+                    vprint(
+                        f"Captured {len(parent_topic_ids)} parent topic_ids",
+                        "",
+                    )
+
                     # Delete existing chunks for this document
                     deleted = await db.delete_chunks_by_document(doc_uuid)
                     vprint(f"Deleted {deleted} existing chunks", "")
@@ -485,6 +496,25 @@ async def _reindex_chunks(
                     await db.insert_chunks(chunks)
                     vprint(f"Inserted {len(chunks)} chunks", "")
 
+                    # Restamp topic_ids on the regenerated chunks so the
+                    # pgvector topic filter keeps working. Skip when the
+                    # parent email legitimately has no topics so we don't
+                    # touch the chunk_topics junction for a no-op.
+                    if parent_topic_ids:
+                        updated = await db.update_chunks_topic_ids(
+                            doc_uuid, parent_topic_ids
+                        )
+                        vprint(
+                            f"Stamped topic_ids on {updated} chunks "
+                            f"({len(parent_topic_ids)} topics)",
+                            "",
+                        )
+                    else:
+                        vprint(
+                            "Skipped topic_ids stamp: parent email has no topics",
+                            "",
+                        )
+
                     stats["success"] += 1
                     stats["chunks_created"] += len(chunks)
 
@@ -503,10 +533,16 @@ async def _reindex_chunks(
         await db.close()
 
 
+_REINDEX_DOC_FIELDS = (
+    "id, doc_id, source_id, source_title, archive_browse_uri, "
+    "archive_download_uri, depth, root_id"
+)
+
+
 async def _get_documents_by_id(db, doc_id: str) -> list[dict]:
     """Get a single document by ID."""
     result = db.client.table("documents").select(
-        "id, doc_id, source_id, source_title, archive_browse_uri, archive_download_uri"
+        _REINDEX_DOC_FIELDS
     ).eq("id", doc_id).execute()
     return result.data or []
 
@@ -526,10 +562,45 @@ async def _get_documents_missing_lines(db, limit: int) -> list[dict]:
 
     # Fetch document details (only those with archive URIs)
     docs_result = db.client.table("documents").select(
-        "id, doc_id, source_id, source_title, archive_browse_uri, archive_download_uri"
+        _REINDEX_DOC_FIELDS
     ).in_("id", doc_ids).not_.is_("archive_browse_uri", "null").execute()
 
     return docs_result.data or []
+
+
+async def _get_parent_email_topic_ids(db, doc: dict) -> list[str]:
+    """Resolve the parent email's ``topic_ids`` for a reindex target.
+
+    For an email body (``depth == 0``) the "parent email" is the document
+    itself; for an attachment (``depth > 0``) we walk ``root_id`` to find the
+    email. Topic IDs are read from the existing chunks' ``metadata.topic_ids``
+    set by the ingest pipeline (see ``_apply_vessel_metadata_to_chunks``).
+
+    Returns an empty list if no topic_ids are found (3.9% of v=6 emails have
+    none legitimately).
+    """
+    depth = doc.get("depth") or 0
+    if depth == 0:
+        source_doc_id = doc["id"]
+    else:
+        source_doc_id = doc.get("root_id") or doc["id"]
+
+    # Read one chunk from the source document; topic_ids are replicated across
+    # all chunks of a document so any chunk has the authoritative set.
+    result = (
+        db.client.table("chunks")
+        .select("metadata")
+        .eq("document_id", source_doc_id)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        return []
+    metadata = rows[0].get("metadata") or {}
+    raw = metadata.get("topic_ids") or []
+    # Normalize to list[str]
+    return [str(t) for t in raw if t]
 
 
 async def _ingest_update(
