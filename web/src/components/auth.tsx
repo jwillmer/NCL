@@ -16,6 +16,7 @@ import { ThemeSupa } from "@supabase/auth-ui-shared";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { LogOut } from "lucide-react";
 import { getSupabase } from "@/lib/supabase";
+import { clearAuthCache } from "@/lib/authCache";
 import { Button } from "./ui";
 
 // =============================================================================
@@ -49,9 +50,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Listen for auth changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
+      // Invalidate the cached access token on any identity-relevant change.
+      // TOKEN_REFRESHED swaps the JWT so the cached bearer is stale; SIGNED_OUT
+      // and USER_UPDATED likewise require re-reading the session.
+      if (
+        event === "SIGNED_OUT" ||
+        event === "TOKEN_REFRESHED" ||
+        event === "USER_UPDATED"
+      ) {
+        clearAuthCache();
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -59,6 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     await getSupabase().auth.signOut();
+    clearAuthCache();
   };
 
   return (
