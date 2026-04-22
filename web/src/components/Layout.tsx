@@ -139,10 +139,10 @@ export function MainLayout({ children }: MainLayoutProps) {
           <div className="flex flex-col items-end leading-tight">
             <span>MTSS v1.0.0</span>
             <span
-              className="font-mono"
+              className="font-mono text-[10px] text-MTSS-gray/70"
               title={`Git SHA: ${gitSha}\nBuild: ${formatBuildTime(buildTime)}`}
             >
-              Build: {gitShaShort}
+              {gitShaShort}
             </span>
           </div>
         </div>
