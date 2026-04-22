@@ -255,6 +255,14 @@ class SupabaseClient:
     async def list_all_topics_lightweight(self) -> List[Topic]:
         return await self._domain.list_all_topics_lightweight()
 
+    async def get_topics_fingerprint(self) -> tuple[int, Optional[str]]:
+        """(count, max(updated_at)) — cheap change-detector for TopicCache."""
+        return await self._domain.get_topics_fingerprint()
+
+    async def get_vessels_fingerprint(self) -> tuple[int, Optional[str]]:
+        """(count, max(updated_at)) — cheap change-detector for VesselCache."""
+        return await self._domain.get_vessels_fingerprint()
+
     async def get_chunks_count_for_topic(
         self, topic_id: UUID, vessel_filter: Optional[Dict] = None
     ) -> int:

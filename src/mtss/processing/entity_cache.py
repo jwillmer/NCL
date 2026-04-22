@@ -44,7 +44,12 @@ logger = logging.getLogger(__name__)
 
 # Reload from DB if the cache is older than this, even if not explicitly
 # invalidated. Protects against cross-process staleness.
-_DEFAULT_TTL_SECONDS = 300.0
+# Long backstop TTL. Primary freshness path is the background refresh task
+# started by `start_cache_refresh_loop` at API startup — the TTL only kicks
+# in if that task crashes and nobody notices. Keeping it generous means
+# users never pay the ~4.5 s topics reload on the hot path.
+_DEFAULT_TTL_SECONDS = 3600.0
+_DEFAULT_REFRESH_INTERVAL_SECONDS = 600.0
 
 
 def _normalize_topic_name(name: str) -> str:
@@ -254,4 +259,53 @@ async def warm_caches(db: "SupabaseClient") -> None:
     await asyncio.gather(
         _topic_cache.ensure_loaded(db),
         _vessel_cache.ensure_loaded(db),
+    )
+
+
+async def _refresh_loop(
+    db: "SupabaseClient",
+    interval_seconds: float,
+) -> None:
+    """Keep both caches current by polling a cheap change-fingerprint.
+
+    Topics rarely change (~monthly, only on new ingest) so a full 4.5 s
+    reload every tick would be wasteful. Instead we poll
+    `(count, max(updated_at))` on each tick (~5 ms query) and only trigger
+    a full `_load` when the fingerprint changes. Vessels get the same
+    treatment.
+
+    The per-cache `_load` builds a fresh dict locally, then rebinds
+    `self._by_id` / `self._by_norm`. In CPython that rebind is atomic, so
+    readers on the hot path always see a consistent snapshot.
+
+    Failures are logged and swallowed; the long TTL on `ensure_loaded` is
+    the backstop if this task dies.
+    """
+    last_topics_fp: Optional[Tuple[int, Optional[str]]] = None
+    last_vessels_fp: Optional[Tuple[int, Optional[str]]] = None
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            tfp = await db.get_topics_fingerprint()
+            if tfp != last_topics_fp:
+                await _topic_cache._load(db)
+                last_topics_fp = tfp
+            vfp = await db.get_vessels_fingerprint()
+            if vfp != last_vessels_fp:
+                await _vessel_cache._load(db)
+                last_vessels_fp = vfp
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Cache background refresh failed: %s", exc)
+
+
+def start_cache_refresh_loop(
+    db: "SupabaseClient",
+    interval_seconds: float = _DEFAULT_REFRESH_INTERVAL_SECONDS,
+) -> asyncio.Task:
+    """Spawn the background refresh task. Caller owns cancellation."""
+    return asyncio.create_task(
+        _refresh_loop(db, interval_seconds),
+        name="entity-cache-refresh",
     )

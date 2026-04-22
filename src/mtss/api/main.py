@@ -8,13 +8,15 @@ Conversation history is persisted via LangGraph's AsyncPostgresSaver checkpointe
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import mimetypes
 import os
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -313,11 +315,18 @@ async def lifespan(app: FastAPI):
     # Pre-warm process-wide caches (topics + vessels) so the first request
     # doesn't pay cold-load latency on the hot path. Uses the same singleton
     # client the request handlers will use, so the asyncpg pool is warm too.
+    refresh_task: Optional[asyncio.Task] = None
     try:
-        from ..processing.entity_cache import warm_caches
+        from ..processing.entity_cache import start_cache_refresh_loop, warm_caches
 
         await warm_caches(get_supabase_client())
         logger.info("Topic + vessel caches pre-warmed")
+
+        # Keep caches current in the background so users never pay the
+        # ~4.5 s topics reload on a request. Atomic dict-swap inside
+        # each cache's `_load` means readers always see a consistent view.
+        refresh_task = start_cache_refresh_loop(get_supabase_client())
+        logger.info("Topic + vessel cache background refresh task started")
     except Exception as exc:
         logger.warning("Cache pre-warm failed (non-fatal): %s", exc)
 
@@ -346,6 +355,12 @@ async def lifespan(app: FastAPI):
         yield
 
         logger.info("Shutting down LangGraph checkpointer...")
+
+        # Stop the cache refresh task before closing the DB pool it uses.
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await refresh_task
 
         # Close the process-wide SupabaseClient singleton so the asyncpg
         # pool drains cleanly. Ignore errors — shutdown is best-effort.

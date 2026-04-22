@@ -437,6 +437,29 @@ class DomainRepository(BaseRepository):
             )
         return [self._row_to_topic(dict(row)) for row in rows]
 
+    async def get_topics_fingerprint(self) -> tuple[int, Optional[str]]:
+        """Return `(count, max(updated_at))` for the topics table.
+
+        Used by the entity-cache refresh loop as a cheap change-detector:
+        the ~4.5 s full reload is skipped whenever the fingerprint matches
+        the previously observed value. Single aggregate query, sub-10 ms.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT count(*) AS c, max(updated_at)::text AS m FROM topics"
+            )
+        return (int(row["c"] or 0), row["m"])
+
+    async def get_vessels_fingerprint(self) -> tuple[int, Optional[str]]:
+        """Return `(count, max(updated_at))` for the vessels table."""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT count(*) AS c, max(updated_at)::text AS m FROM vessels"
+            )
+        return (int(row["c"] or 0), row["m"])
+
     async def get_chunks_count_for_topic(
         self, topic_id: UUID, vessel_filter: Optional[Dict] = None
     ) -> int:
