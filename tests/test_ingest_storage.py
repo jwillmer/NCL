@@ -900,6 +900,33 @@ class TestHealArchiveCommand:
         with pytest.raises(_typer.Exit):
             _heal_archive(tmp_path / "nope", dry_run=True, limit=0)
 
+    def test_local_filenames_are_sanitized_before_comparison(self, tmp_path):
+        """Regression: `mtss import` uploads under the ``async_upload``
+        sanitizer (`%` → `_`, keeps spaces). `heal-archive` must apply the
+        same sanitizer to local names before diffing against the bucket,
+        or every file containing `%` looks "missing" even though it's
+        already uploaded under the sanitized key.
+        """
+        from unittest.mock import patch
+
+        from mtss.cli.maintenance_cmd import _heal_archive
+
+        output = tmp_path / "output"
+        folder = output / "archive" / "abc123" / "attachments"
+        folder.mkdir(parents=True)
+        # Local disk name still has `%` (ingest-time sanitizer preserves it).
+        (folder / "report_10%.xlsx").write_bytes(b"x")
+
+        # Bucket has the import-time sanitized version (`%` → `_`).
+        storage, uploaded = self._storage_stub(
+            {"abc123/attachments": ["report_10_.xlsx"]}
+        )
+        with patch("mtss.storage.archive_storage.ArchiveStorage", return_value=storage):
+            _heal_archive(output, dry_run=False, limit=0)
+
+        # No upload — the file is already present under its sanitized key.
+        assert uploaded == []
+
 
 class TestDeleteDocumentForReprocessClearsIndexes:
     """Regression: prior-loaded docs must be evicted from the in-memory

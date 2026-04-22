@@ -256,10 +256,18 @@ def _heal_archive(output_dir: Optional[Path], *, dry_run: bool, limit: int) -> N
     One folder listing per unique local folder prefix; uploads go through
     `ArchiveStorage.upload_file` which already uses upsert. Guesses the
     content-type from the file extension.
+
+    Local keys are run through ``sanitize_storage_key`` (the import-time
+    sanitizer in ``storage/async_upload.py``, which rejects `%`, spaces,
+    and a wider set than the ingest-time helper) before diffing against
+    the bucket listing. ``mtss import`` uploads under the sanitized key
+    and repoints DB URIs accordingly, so the bucket never holds the raw
+    local name — skipping this step makes every such file look "missing".
     """
     import mimetypes
 
     from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
+    from ..storage.async_upload import sanitize_storage_key
 
     resolved_output = output_dir or Path("data/output")
     archive_dir = resolved_output / "archive"
@@ -267,13 +275,16 @@ def _heal_archive(output_dir: Optional[Path], *, dry_run: bool, limit: int) -> N
         console.print(f"[red]No archive directory at {archive_dir}[/red]")
         raise typer.Exit(1)
 
-    # Gather local files grouped by their bucket-relative parent folder.
+    # Gather local files grouped by their (sanitized) bucket-relative folder.
+    # The sanitizer operates on the whole key (slashes are safe), so we
+    # apply it once to the full relative path.
     local_by_folder: dict[str, set[str]] = {}
     local_path_by_key: dict[str, Path] = {}
     for p in archive_dir.rglob("*"):
         if not p.is_file():
             continue
-        key = p.relative_to(archive_dir).as_posix()
+        raw_key = p.relative_to(archive_dir).as_posix()
+        key = sanitize_storage_key(raw_key)
         folder, _, name = key.rpartition("/")
         local_by_folder.setdefault(folder, set()).add(name)
         local_path_by_key[key] = p
