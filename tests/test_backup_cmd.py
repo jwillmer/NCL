@@ -58,7 +58,13 @@ def test_backup_creates_timestamped_snapshot_with_db_and_zip(
 
     dest = tmp_path / "backup"
 
-    _run_backup(output_dir=staged_output, dest=dest, compression_level=1, dry_run=False)
+    _run_backup(
+        output_dir=staged_output,
+        dest=dest,
+        compression_level=1,
+        split_size_mb=0,
+        dry_run=False,
+    )
 
     snapshots = list(dest.iterdir())
     assert len(snapshots) == 1, "exactly one timestamped snapshot dir expected"
@@ -95,7 +101,13 @@ def test_backup_dry_run_writes_nothing(staged_output: Path, tmp_path: Path):
 
     dest = tmp_path / "backup"
 
-    _run_backup(output_dir=staged_output, dest=dest, compression_level=1, dry_run=True)
+    _run_backup(
+        output_dir=staged_output,
+        dest=dest,
+        compression_level=1,
+        split_size_mb=0,
+        dry_run=True,
+    )
 
     assert not dest.exists(), "dry-run must not create backup root"
 
@@ -111,6 +123,7 @@ def test_backup_missing_db_exits_nonzero(tmp_path: Path):
             output_dir=empty_output,
             dest=tmp_path / "backup",
             compression_level=1,
+            split_size_mb=0,
             dry_run=False,
         )
     assert exc.value.exit_code == 1
@@ -125,7 +138,13 @@ def test_backup_skips_zip_when_archive_dir_missing(tmp_path: Path):
     # No archive/ directory on purpose.
 
     dest = tmp_path / "backup"
-    _run_backup(output_dir=output_dir, dest=dest, compression_level=1, dry_run=False)
+    _run_backup(
+        output_dir=output_dir,
+        dest=dest,
+        compression_level=1,
+        split_size_mb=0,
+        dry_run=False,
+    )
 
     snapshot = next(dest.iterdir())
     assert (snapshot / "ingest.db").exists()
@@ -173,9 +192,98 @@ def test_backup_store_mode_uses_no_compression(staged_output: Path, tmp_path: Pa
     from mtss.cli.backup_cmd import _run_backup
 
     dest = tmp_path / "backup"
-    _run_backup(output_dir=staged_output, dest=dest, compression_level=0, dry_run=False)
+    _run_backup(
+        output_dir=staged_output,
+        dest=dest,
+        compression_level=0,
+        split_size_mb=0,
+        dry_run=False,
+    )
 
     snapshot = next(dest.iterdir())
     with zipfile.ZipFile(snapshot / "archive.zip") as zf:
         for info in zf.infolist():
             assert info.compress_type == zipfile.ZIP_STORED
+
+
+def test_backup_splits_artifacts_and_concat_restores_originals(
+    staged_output: Path, tmp_path: Path
+):
+    """Split both artifacts into small chunks; confirm concat restores bytes."""
+    from mtss.cli.backup_cmd import _run_backup, REASSEMBLE_README
+
+    # Grow the archive so the zip is big enough to actually span multiple chunks.
+    big = staged_output / "archive" / "folder_a" / "big.bin"
+    big.write_bytes(b"X" * (300 * 1024))  # 300 KB raw; with compression_level=0 zip is ~300 KB
+
+    dest = tmp_path / "backup"
+    _run_backup(
+        output_dir=staged_output,
+        dest=dest,
+        compression_level=0,  # uncompressed so zip size stays predictable
+        split_size_mb=1,  # 1 MB per chunk; produces >=1 part for both artifacts
+        dry_run=False,
+    )
+
+    snapshot = next(dest.iterdir())
+
+    # Originals must be gone; at least one .part001 must exist for each artifact.
+    assert not (snapshot / "ingest.db").exists()
+    assert not (snapshot / "archive.zip").exists()
+    db_parts = sorted(snapshot.glob("ingest.db.part*"))
+    zip_parts = sorted(snapshot.glob("archive.zip.part*"))
+    assert db_parts, "expected at least one DB part file"
+    assert zip_parts, "expected at least one archive part file"
+    assert (snapshot / REASSEMBLE_README).exists(), "REASSEMBLE readme missing"
+
+    # Concatenating the parts back must produce a byte-identical DB and zip.
+    reassembled_zip = tmp_path / "reassembled.zip"
+    reassembled_zip.write_bytes(b"".join(p.read_bytes() for p in zip_parts))
+    with zipfile.ZipFile(reassembled_zip) as zf:
+        names = set(zf.namelist())
+        assert "folder_a/big.bin" in names
+        assert zf.read("folder_a/doc.md") == b"content-of-doc.md"
+
+    reassembled_db = tmp_path / "reassembled.db"
+    reassembled_db.write_bytes(b"".join(p.read_bytes() for p in db_parts))
+    conn = sqlite3.connect(reassembled_db)
+    try:
+        rows = conn.execute("SELECT doc_id FROM documents ORDER BY doc_id").fetchall()
+    finally:
+        conn.close()
+    assert [r[0] for r in rows] == ["a", "b", "c"]
+
+
+def test_split_file_small_input_produces_single_part(tmp_path: Path):
+    """Files smaller than one chunk still get a .part001 so glob patterns work."""
+    from mtss.cli.backup_cmd import _split_file
+
+    src = tmp_path / "tiny.bin"
+    payload = b"hello world"
+    src.write_bytes(payload)
+
+    parts = _split_file(src, chunk_mb=1)
+
+    assert len(parts) == 1
+    assert parts[0].name == "tiny.bin.part001"
+    assert parts[0].read_bytes() == payload
+    assert not src.exists()
+
+
+def test_split_size_zero_disables_splitting(staged_output: Path, tmp_path: Path):
+    from mtss.cli.backup_cmd import _run_backup, REASSEMBLE_README
+
+    dest = tmp_path / "backup"
+    _run_backup(
+        output_dir=staged_output,
+        dest=dest,
+        compression_level=1,
+        split_size_mb=0,
+        dry_run=False,
+    )
+
+    snapshot = next(dest.iterdir())
+    assert (snapshot / "ingest.db").exists()
+    assert (snapshot / "archive.zip").exists()
+    assert not list(snapshot.glob("*.part*"))
+    assert not (snapshot / REASSEMBLE_README).exists()
