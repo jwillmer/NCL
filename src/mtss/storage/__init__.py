@@ -1,30 +1,20 @@
-"""Storage layer for mtss."""
+"""Storage layer for mtss.
+
+Only API-runtime-safe modules are re-exported here. Ingest-side storage
+(``SqliteStorageClient``, ``ProgressTracker``, ``LocalBucketStorage``,
+``FailureReport*``, ``UnsupportedFileLogger``) depend on numpy/sklearn/etc.
+which live under the ``ingest`` extras and are absent in the API image —
+importing them eagerly from this package would break API startup.
+
+Ingest-side code imports them directly via their full module path
+(``mtss.storage.sqlite_client`` etc.), so nothing breaks there either.
+"""
 
 from .archive_storage import ArchiveStorage, ArchiveStorageError
-from .failure_report import (
-    FailureRecord,
-    FailureReport,
-    FailureReportGenerator,
-    IngestReportWriter,
-)
-from .local_bucket_storage import LocalBucketStorage
-from .progress_tracker import ProgressTracker
-from .sqlite_client import SqliteStorageClient
-from .sqlite_progress_tracker import SqliteProgressTracker
 from .supabase_client import SupabaseClient
-from .unsupported_file_logger import UnsupportedFileLogger
 
 __all__ = [
     "ArchiveStorage",
     "ArchiveStorageError",
-    "FailureRecord",
-    "FailureReport",
-    "FailureReportGenerator",
-    "IngestReportWriter",
-    "LocalBucketStorage",
-    "ProgressTracker",
-    "SqliteProgressTracker",
-    "SqliteStorageClient",
     "SupabaseClient",
-    "UnsupportedFileLogger",
 ]

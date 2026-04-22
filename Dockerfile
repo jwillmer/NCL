@@ -30,7 +30,7 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # Stage 2: Build backend (Python with uv)
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim AS backend-builder
+FROM python:3.13-slim AS backend-builder
 
 # Install uv for fast dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -40,17 +40,21 @@ WORKDIR /app
 # Copy dependency files first for better caching
 COPY pyproject.toml uv.lock ./
 
-# Create virtual environment and install dependencies
+# Create virtual environment and install runtime-only dependencies.
+# Ingest-side deps (parsers, CLI, sklearn, numpy, HuggingFace) live under
+# the `ingest` extras and are intentionally NOT installed here — ingest
+# always runs from a local checkout, never inside this image.
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
+ENV UV_NO_CACHE=1
 
 RUN uv venv /app/.venv && \
-    uv pip install --python /app/.venv/bin/python ".[api]"
+    uv pip install --no-cache --python /app/.venv/bin/python "."
 
 # -----------------------------------------------------------------------------
 # Stage 3: Runtime
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # Build argument for Git SHA (available at runtime)
 ARG GIT_SHA=development

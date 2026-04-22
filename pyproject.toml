@@ -4,11 +4,6 @@ version = "1.0.0"
 description = "RAG pipeline for email processing with attachments"
 requires-python = ">=3.10"
 dependencies = [
-    # Document parsing
-    "llama-cloud>=2.0.0,<3.0.0",  # LlamaParse v2 SDK (replaces deprecated llama-cloud-services)
-    # Text chunking
-    "langchain-text-splitters>=0.0.1",
-    "tiktoken>=0.5.0",  # Token counting for chunker
     # Database and vector storage
     "supabase>=2.0.0",
     "pgvector>=0.2.0",
@@ -17,51 +12,62 @@ dependencies = [
     "litellm>=1.83.0",
     "openai>=1.0.0",
     "httpx>=0.25.0",
+    "tiktoken>=0.5.0",  # Token counting in embeddings.py (used at query time)
     # Utilities
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
     "python-dateutil>=2.8.0",
-    "typer>=0.9.0",
-    "rich>=13.0.0",
-    "tqdm>=4.65.0",
-    "numpy>=1.26.0",  # Vectorized cosine similarity in topic merging
     # Async support
     "aiofiles>=23.0.0",
     "anyio>=4.0.0",
-    "hf-xet>=1.2.0",
-    # Local document parsing
-    "html2text>=2024.2.26",
-    "openpyxl>=3.1.0",
-    "pymupdf4llm>=0.0.17",
-    "python-docx>=1.0.0",
-    # Outlook .msg attachments (pure-Python OLE parser)
-    "extract-msg>=0.48.0",
-    # 7z archive extraction
-    "py7zr>=0.21.0",
-    # PDF page counting (for estimate command)
-    "pypdf>=4.0.0",
-    # Legacy Office metadata reading (for estimate command)
-    "olefile>=0.47",
-    # Nested async support (required for LlamaParse in async context)
-    "nest-asyncio>=1.6.0",
-    "langgraph-checkpoint-postgres>=3.0.2",
-    "psycopg[binary]>=3.3.2",
-    "opentelemetry-exporter-otlp-proto-http>=1.39.1",
     # API server
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
+    # LangGraph agent + checkpointer
     "langgraph>=0.3.25,<1.0.0",
     "langchain-core>=0.3.0,<1.0.0",
     "langchain-openai>=0.3.0",
+    "langgraph-checkpoint-postgres>=3.0.2",
+    "psycopg[binary]>=3.3.2",
+    # Auth + rate limiting
     "python-jose[cryptography]>=3.3.0",
     "slowapi>=0.1.9",
+    # Observability
     "langfuse>=3.0.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.0.0",
-    "scikit-learn>=1.7.2",
+    "opentelemetry-exporter-otlp-proto-http>=1.39.1",
 ]
 
 [project.optional-dependencies]
+# Ingest-side deps (local CLI + parsers). NOT installed in the API Docker image
+# — ingest always runs locally. Install with `uv sync --extra ingest` or
+# `pip install -e .[ingest]` when you need to ingest/validate/maintain.
+ingest = [
+    # Document parsing
+    "llama-cloud>=2.0.0,<3.0.0",  # LlamaParse v2 SDK
+    "pymupdf4llm>=0.0.17",
+    "html2text>=2024.2.26",
+    "openpyxl>=3.1.0",
+    "python-docx>=1.0.0",
+    "extract-msg>=0.48.0",  # Outlook .msg attachments
+    "py7zr>=0.21.0",
+    "pypdf>=4.0.0",  # PDF page counting (estimate command)
+    "olefile>=0.47",  # Legacy Office metadata (estimate command)
+    "nest-asyncio>=1.6.0",  # LlamaParse async wrapping
+    # Chunking (ingest-side only)
+    "langchain-text-splitters>=0.0.1",
+    # Topic-merge math + local SQLite store
+    "numpy>=1.26.0",
+    "scikit-learn>=1.7.2",
+    # CLI UX
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "tqdm>=4.65.0",
+    # HuggingFace xet transport (only touched by ingest-side model loads)
+    "hf-xet>=1.2.0",
+]
+
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

@@ -9,6 +9,11 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       injectRegister: "auto",
+      devOptions: {
+        enabled: true,
+        type: "module",
+        navigateFallback: "/index.html",
+      },
       manifest: {
         name: "MTSS",
         short_name: "MTSS",
@@ -45,10 +50,15 @@ export default defineConfig({
               expiration: { maxAgeSeconds: 3600, maxEntries: 10 },
             },
           },
-          // NOTE: /api/archive/* runtime caching intentionally omitted (P4.4).
-          // The endpoint requires auth and the per-user authz story has to be
-          // reworked before a CacheFirst strategy is safe across users sharing
-          // a device / installed PWA.
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith("/api/archive/"),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "archive-files",
+              expiration: { maxAgeSeconds: 60 * 60 * 24 * 30, maxEntries: 500 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
         ],
       },
     }),
