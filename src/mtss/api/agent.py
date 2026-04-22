@@ -759,29 +759,16 @@ async def search_node(
                 _timed_filter(), _timed_embed()
             )
 
-        # EARLY RETURN: Skip RAG if no results possible
-        if filter_result.should_skip_rag:
-            state["search_progress"] = ""
-            await emit_state(config, state)
-
-            tool_response = ToolMessage(
-                content=json.dumps({
-                    "context": filter_result.message,
-                    "available_chunk_ids": [],
-                    "topic_info": {
-                        "detected": filter_result.detected_topics,
-                        "matched": filter_result.matched_topic_names,
-                        "unmatched": filter_result.unmatched_topics,
-                        "chunk_count": filter_result.total_chunk_count,
-                        "should_skip": True,
-                    },
-                }),
-                tool_call_id=tool_call["id"],
-            )
-            return Command(
-                goto="chat_node",
-                update={"messages": [tool_response], "citation_map": None},
-            )
+        # NOTE: the `should_skip_rag` early-return used to short-circuit
+        # here when the topic filter couldn't match any stored topics.
+        # That logic misfires on corpora where ingest populates
+        # topic_ids on only a minority of chunks (test DB: ~8%), which
+        # lets the topic filter declare "nothing to search" while the
+        # answer is sitting under an empty-topic chunk a hybrid search
+        # would have found. Off-topic queries are already blocked by
+        # the intent_classifier earlier in chat_node, so skipping this
+        # return just falls through to the normal search path (with
+        # the no-result topic-filter fallback below as a safety net).
 
         # Build combined metadata filter for RAG
         # Uses OR logic across topic_ids (match any topic)
@@ -805,6 +792,28 @@ async def search_node(
                 on_progress=on_progress,
                 query_embedding=query_embedding,
             )
+
+            # Fallback: if the topic-filtered search returned nothing,
+            # retry without the topic_ids filter. Many chunks in the
+            # corpus have empty topic_ids arrays (populated by an LLM
+            # pass during ingest that often no-ops), so the
+            # semantic-matched topic_ids sometimes point to zero
+            # actual chunks. Vessel filters stay applied — they are
+            # structural, not LLM-derived.
+            if not retrieval_results and filter_result.matched_topic_ids:
+                fallback_filter = dict(vessel_filter) if vessel_filter else None
+                logger.info(
+                    "Topic-filtered search returned 0 results; "
+                    "retrying without topic_ids filter"
+                )
+                retrieval_results = await engine.search_only(
+                    question=question,
+                    top_k=settings.retrieval_top_k,
+                    use_rerank=settings.rerank_enabled,
+                    metadata_filter=fallback_filter,
+                    on_progress=on_progress,
+                    query_embedding=query_embedding,
+                )
 
         if not retrieval_results:
             # No results found
