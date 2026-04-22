@@ -92,14 +92,18 @@ def _apply_vessel_metadata_to_chunks(
     vessel_ids: list[str],
     vessel_types: list[str],
     vessel_classes: list[str],
+    topic_ids: list[str] | None = None,
 ) -> None:
-    """Stamp vessel fields onto each chunk's metadata dict.
+    """Stamp vessel + topic fields onto each chunk's metadata dict.
 
     Thin wrapper over ``apply_filter_metadata`` that handles the per-chunk
-    fan-out + ``metadata=None`` initialization. No-op when all three vessel
-    lists are empty.
+    fan-out + ``metadata=None`` initialization. No-op when all four lists
+    are empty. Attachments inherit the parent email's ``topic_ids`` so the
+    pgvector ``match_chunks`` topic filter (``metadata @> {topic_ids: …}``)
+    can retrieve them — without this, attachment chunks are invisible to
+    topic-filtered queries even though ``chunk_topics`` has the link.
     """
-    if not (vessel_ids or vessel_types or vessel_classes):
+    if not (vessel_ids or vessel_types or vessel_classes or topic_ids):
         return
     for chunk in chunks:
         if chunk.metadata is None:
@@ -109,6 +113,7 @@ def _apply_vessel_metadata_to_chunks(
             vessel_ids=vessel_ids,
             vessel_types=vessel_types,
             vessel_classes=vessel_classes,
+            topic_ids=topic_ids,
         )
 
 
@@ -329,6 +334,7 @@ async def process_attachment(
     vessel_ids: list[str] | None = None,
     vessel_types: list[str] | None = None,
     vessel_classes: list[str] | None = None,
+    topic_ids: list[str] | None = None,
     force_reparse: bool = False,
     lenient: bool = False,
     on_verbose: Callable[[str, str | None], None] | None = None,
@@ -349,6 +355,7 @@ async def process_attachment(
     vessel_ids = vessel_ids or []
     vessel_types = vessel_types or []
     vessel_classes = vessel_classes or []
+    topic_ids = topic_ids or []
     file_path = Path(attachment.saved_path)
     # Progress accounting: non-ZIP attachments tick once on function exit,
     # regardless of outcome (skip / success / error). ZIP branch ticks per
@@ -428,6 +435,7 @@ async def process_attachment(
                     vessel_ids=vessel_ids,
                     vessel_types=vessel_types,
                     vessel_classes=vessel_classes,
+                    topic_ids=topic_ids,
                     force_reparse=force_reparse,
                     lenient=lenient,
                     on_verbose=on_verbose,
@@ -454,6 +462,7 @@ async def process_attachment(
             vessel_ids=vessel_ids,
             vessel_types=vessel_types,
             vessel_classes=vessel_classes,
+            topic_ids=topic_ids,
             force_reparse=force_reparse,
             on_verbose=on_verbose,
             issue_tracker=issue_tracker,
@@ -484,7 +493,8 @@ async def _process_non_zip_attachment(
     vessel_ids: list[str],
     vessel_types: list[str],
     vessel_classes: list[str],
-    force_reparse: bool,
+    topic_ids: list[str] | None = None,
+    force_reparse: bool = False,
     on_verbose: Callable[[str, str | None], None] | None,
     issue_tracker: "IssueTracker | None",
     collect_docs: list["Document"] | None,
@@ -499,6 +509,7 @@ async def _process_non_zip_attachment(
     entire non-ZIP code path (for a single progress tick on exit) without
     requiring a single-try-with-body-inside rewrite.
     """
+    topic_ids = topic_ids or []
     # Build attachment document (deferred DB insert - caller persists atomically)
     attach_doc = components.hierarchy_manager.build_attachment_document(
         parent_doc=email_doc,
@@ -751,7 +762,9 @@ async def _process_non_zip_attachment(
 
     # Enrich chunks with document citation metadata (source_id, source_title, archive URIs)
     enrich_chunks_with_document_metadata(chunks, attach_doc)
-    _apply_vessel_metadata_to_chunks(chunks, vessel_ids, vessel_types, vessel_classes)
+    _apply_vessel_metadata_to_chunks(
+        chunks, vessel_ids, vessel_types, vessel_classes, topic_ids=topic_ids
+    )
 
     return chunks
 
@@ -766,6 +779,7 @@ async def process_zip_attachment(
     vessel_ids: list[str] | None = None,
     vessel_types: list[str] | None = None,
     vessel_classes: list[str] | None = None,
+    topic_ids: list[str] | None = None,
     force_reparse: bool = False,
     lenient: bool = False,
     on_verbose: Callable[[str, str | None], None] | None = None,
@@ -786,6 +800,7 @@ async def process_zip_attachment(
     vessel_ids = vessel_ids or []
     vessel_types = vessel_types or []
     vessel_classes = vessel_classes or []
+    topic_ids = topic_ids or []
     member_count = 0
 
     try:
@@ -816,6 +831,7 @@ async def process_zip_attachment(
                         issue_tracker=issue_tracker,
                         trail=trail,
                         zip_filename=zip_filename or attachment.filename,
+                        topic_ids=topic_ids,
                     )
                 finally:
                     if on_member_complete:
@@ -910,6 +926,7 @@ async def _process_zip_member(
     issue_tracker: "IssueTracker | None",
     trail: "ProcessingTrail | None" = None,
     zip_filename: str | None = None,
+    topic_ids: list[str] | None = None,
 ) -> tuple["Document | None", list["Chunk"]]:
     """Process a single ZIP member.
 
@@ -953,6 +970,7 @@ async def _process_zip_member(
     if trail is not None:
         trail.register_attachment_document(attach_doc.id, trail_key)
 
+    topic_ids = topic_ids or []
     attach_chunks: list["Chunk"] = []
     try:
         parsed_content = None
@@ -1056,7 +1074,8 @@ async def _process_zip_member(
 
         enrich_chunks_with_document_metadata(attach_chunks, attach_doc)
         _apply_vessel_metadata_to_chunks(
-            attach_chunks, vessel_ids, vessel_types, vessel_classes
+            attach_chunks, vessel_ids, vessel_types, vessel_classes,
+            topic_ids=topic_ids,
         )
         attach_doc.status = ProcessingStatus.COMPLETED
 

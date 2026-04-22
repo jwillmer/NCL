@@ -1271,6 +1271,65 @@ class TestEmptyAttachmentEventEmission:
 
     @pytest.mark.asyncio
     @pytest.mark.unit
+    async def test_process_attachment_stamps_topic_ids_on_chunks(
+        self, tmp_path, sample_document, sample_attachment_document, sample_document_id
+    ):
+        """Attachment chunks must inherit the parent email's topic_ids.
+
+        Regression guard for the 2026-04-22 bug where
+        ``_apply_vessel_metadata_to_chunks`` did not receive ``topic_ids``,
+        so pgvector's ``match_chunks`` topic filter (``metadata @> {topic_ids}``)
+        missed every attachment row even when the parent email was topic-tagged.
+        """
+        from uuid import uuid4
+        from mtss.models.chunk import Chunk
+        from mtss.models.document import ParsedAttachment
+        from mtss.ingest.attachment_handler import process_attachment
+
+        att_path = tmp_path / "notes.txt"
+        att_path.write_text("something parseable")
+        attachment = ParsedAttachment(
+            filename="notes.txt",
+            content_type="text/plain",
+            size_bytes=att_path.stat().st_size,
+            saved_path=str(att_path),
+        )
+        chunk = Chunk(
+            id=uuid4(),
+            document_id=sample_document_id,
+            chunk_id="c1",
+            content="something parseable",
+            chunk_index=0,
+            section_path=[],
+            source_id="test.eml/notes.txt",
+        )
+
+        components = self._build_components(chunks_return=[chunk])
+        components.hierarchy_manager.build_attachment_document = MagicMock(
+            return_value=sample_attachment_document
+        )
+        unsupported_logger = MagicMock()
+        unsupported_logger.log_unsupported_file = AsyncMock()
+
+        topic_ids = [
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+        ]
+        chunks = await process_attachment(
+            attachment=attachment,
+            email_doc=sample_document,
+            source_eml_path="test.eml",
+            file_ctx="test.eml",
+            components=components,
+            unsupported_logger=unsupported_logger,
+            topic_ids=topic_ids,
+        )
+
+        assert chunks, "process_attachment must return at least one chunk"
+        assert (chunks[0].metadata or {}).get("topic_ids") == topic_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_zip_attachment_empty_chunks_emits_event(
         self, tmp_path, sample_document, sample_attachment_document
     ):

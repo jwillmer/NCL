@@ -672,6 +672,7 @@ async def process_email(
             vessel_ids=vessel_ids,
             vessel_types=vessel_types,
             vessel_classes=vessel_classes,
+            topic_ids=topic_ids,
             force_reparse=force_reparse,
             lenient=lenient,
             on_verbose=on_verbose,
