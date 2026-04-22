@@ -239,6 +239,7 @@ def register(app: typer.Typer, vessels_app: typer.Typer, topics_app: typer.Typer
 async def _vessels_import(csv_file: Optional[Path], clear: bool):
     """Async implementation of vessels import command."""
     from ..models.vessel import load_vessels_from_csv
+    from ..processing.entity_cache import get_vessel_cache
     from ..storage.supabase_client import SupabaseClient
 
     vessels_to_import = load_vessels_from_csv(csv_file)
@@ -274,6 +275,11 @@ async def _vessels_import(csv_file: Optional[Path], clear: bool):
                 progress.update(task, advance=1)
 
         console.print(f"[green]Imported {imported_count} vessels[/green]")
+
+        # Invalidate the in-process VesselCache so the next cache consumer
+        # (e.g. an agent tool call or the REST /api/vessels endpoint) sees
+        # the new rows instead of serving stale data up to the 5-min TTL.
+        get_vessel_cache().invalidate()
 
     finally:
         await db.close()

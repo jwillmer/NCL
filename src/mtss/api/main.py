@@ -598,70 +598,79 @@ def create_app() -> FastAPI:
             "content": content,
         }
 
-    # Vessels endpoint for dropdown lists
+    # ------------------------------------------------------------------
+    # Vessels endpoints — served from the in-process VesselCache instead
+    # of round-tripping to Supabase on every request. The cache has a 5-min
+    # TTL and is pre-warmed on startup (see ``lifespan``). CLI write paths
+    # call ``VesselCache.invalidate()`` after upsert/delete so within-process
+    # writes propagate immediately; cross-process writes rely on the TTL.
+    # ------------------------------------------------------------------
+    _VESSEL_CACHE_CONTROL = "private, max-age=300, stale-while-revalidate=600"
+
     @app.get("/api/vessels")
     @limiter.limit("60/minute")
-    async def list_vessels(request: Request):
+    async def list_vessels(
+        request: Request,
+        response: Response,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
         """Get all vessels for dropdown selection.
 
         Returns minimal vessel info (id, name, type, class) for filtering.
-
-        Args:
-            request: FastAPI request object (user available in request.state.user)
-
-        Returns:
-            List of vessel summaries ordered by name
         """
-        client = SupabaseClient()
-        try:
-            vessels = await client.get_vessel_summaries()
-            user = getattr(request.state, "user", None)
-            logger.debug(
-                "Serving %d vessels to user %s",
-                len(vessels),
-                getattr(user, "email", "unknown") if user else "unknown",
-            )
-            return [
-                {
-                    "id": str(v.id),
-                    "name": v.name,
-                    "vessel_type": v.vessel_type,
-                    "vessel_class": v.vessel_class,
-                }
-                for v in vessels
-            ]
-        finally:
-            await client.close()
+        from ..processing.entity_cache import get_vessel_cache
+
+        cache = get_vessel_cache()
+        await cache.ensure_loaded(client)
+        vessels = sorted(cache.list_all(), key=lambda v: (v.name or "").lower())
+        user = getattr(request.state, "user", None)
+        logger.debug(
+            "Serving %d vessels (cache) to user %s",
+            len(vessels),
+            getattr(user, "email", "unknown") if user else "unknown",
+        )
+        response.headers["Cache-Control"] = _VESSEL_CACHE_CONTROL
+        return [
+            {
+                "id": str(v.id),
+                "name": v.name,
+                "vessel_type": v.vessel_type,
+                "vessel_class": v.vessel_class,
+            }
+            for v in vessels
+        ]
 
     @app.get("/api/vessel-types")
     @limiter.limit("60/minute")
-    async def list_vessel_types(request: Request):
-        """Get distinct vessel types for filter dropdown.
+    async def list_vessel_types(
+        request: Request,
+        response: Response,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
+        """Get distinct vessel types for filter dropdown."""
+        from ..processing.entity_cache import get_vessel_cache
 
-        Returns:
-            List of unique vessel type strings
-        """
-        client = SupabaseClient()
-        try:
-            types = await client.get_unique_vessel_types()
-            return types
-        finally:
-            await client.close()
+        cache = get_vessel_cache()
+        await cache.ensure_loaded(client)
+        types = sorted({v.vessel_type for v in cache.list_all() if v.vessel_type})
+        response.headers["Cache-Control"] = _VESSEL_CACHE_CONTROL
+        return types
 
     @app.get("/api/vessel-classes")
     @limiter.limit("60/minute")
-    async def list_vessel_classes(request: Request):
-        """Get distinct vessel classes for filter dropdown.
+    async def list_vessel_classes(
+        request: Request,
+        response: Response,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
+        """Get distinct vessel classes for filter dropdown."""
+        from ..processing.entity_cache import get_vessel_cache
 
-        Returns:
-            List of unique vessel class strings
-        """
-        client = SupabaseClient()
-        try:
-            classes = await client.get_unique_vessel_classes()
-            return classes
-        finally:
-            await client.close()
+        cache = get_vessel_cache()
+        await cache.ensure_loaded(client)
+        classes = sorted({v.vessel_class for v in cache.list_all() if v.vessel_class})
+        response.headers["Cache-Control"] = _VESSEL_CACHE_CONTROL
+        return classes
 
     # Include routers under /api prefix to avoid collision with frontend routes
     app.include_router(conversations_router, prefix="/api")
