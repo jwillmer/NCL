@@ -1,13 +1,16 @@
 """Vercel AI SDK streaming endpoint for LangGraph agent.
 
-Replaces the AG-UI protocol with Vercel AI SDK UI Message Stream v1 format.
-Streams LangGraph events as newline-delimited type-prefixed chunks:
-  0:"text"   - text delta from LLM
-  2:[...]    - data annotation (progress updates)
-  d:{...}    - finish signal
+Emits the AI SDK v6 UI Message Stream protocol (SSE with typed JSON events):
+  data: {"type":"start","messageId":"..."}
+  data: {"type":"text-start","id":"..."}
+  data: {"type":"text-delta","id":"...","delta":"..."}
+  data: {"type":"text-end","id":"..."}
+  data: {"type":"data-<name>","data":...}   # custom parts (progress, filter)
+  data: {"type":"finish"}
+  data: [DONE]
 
-The endpoint validates JWT auth before starting the stream, injects vessel
-filters into LangGraph state, and sets up Langfuse tracing per conversation.
+The legacy v4 `0:/2:/d:` format is silently dropped by v6 clients, which is
+why the assistant message never appeared until the page was reloaded.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import AsyncGenerator, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -156,7 +159,16 @@ async def _stream_agent(
         # New thread — send all messages
         input_state["messages"] = langchain_messages
 
-    # -- Stream LangGraph events as Vercel AI SDK v1 chunks -----------------
+    # -- Stream LangGraph events as AI SDK v6 UI Message Stream chunks ------
+    message_id = f"msg_{uuid4().hex}"
+    text_id = f"txt_{uuid4().hex}"
+    text_started = False
+
+    def _sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj)}\n\n"
+
+    yield _sse({"type": "start", "messageId": message_id})
+
     try:
         async for event in graph.astream_events(
             input_state, config=config, version="v2"
@@ -164,42 +176,41 @@ async def _stream_agent(
             kind = event["event"]
 
             if kind == "on_chat_model_stream":
-                # Text delta from LLM token streaming
                 content = event["data"]["chunk"].content
                 if content:
-                    yield f"0:{json.dumps(content)}\n"
+                    if not text_started:
+                        yield _sse({"type": "text-start", "id": text_id})
+                        text_started = True
+                    yield _sse({"type": "text-delta", "id": text_id, "delta": content})
 
             elif kind == "on_custom_event" and event["name"] == "chat_token":
-                # Per-token delta from our litellm streaming bridge in
-                # agent.py `_call_chat_llm(stream=True)`. Forwarded as a
-                # Vercel AI SDK text chunk so the UI renders progressively
-                # while the citation-validation step still runs server-side
-                # on the full content before the node returns.
+                # Per-token delta from the litellm streaming bridge in
+                # agent.py `_call_chat_llm(stream=True)`.
                 text = event["data"].get("text") or ""
                 if text:
-                    yield f"0:{json.dumps(text)}\n"
+                    if not text_started:
+                        yield _sse({"type": "text-start", "id": text_id})
+                        text_started = True
+                    yield _sse({"type": "text-delta", "id": text_id, "delta": text})
 
             elif kind == "on_custom_event" and event["name"] == "manually_emit_state":
-                # Progress update emitted by emit_state() in agent nodes
-                state_data = event["data"]
-                progress = state_data.get("search_progress", "")
+                progress = event["data"].get("search_progress", "")
                 if progress:
-                    yield f"2:{json.dumps(['progress', progress])}\n"
+                    yield _sse({"type": "data-progress", "data": progress})
 
             elif kind == "on_custom_event" and event["name"] == "emit_filter_update":
-                # Filter change pushed by set_filter_node — becomes a
-                # `data-filter` part on the client (Vercel AI SDK UI Message
-                # Stream v1 decodes `2:[type, payload]` as type `data-<type>`).
-                filter_data = event["data"]
-                yield f"2:{json.dumps(['filter', filter_data])}\n"
+                yield _sse({"type": "data-filter", "data": event["data"]})
 
-        # Finish signal
-        yield f'd:{json.dumps({"finishReason": "stop"})}\n'
+        if text_started:
+            yield _sse({"type": "text-end", "id": text_id})
+        yield _sse({"type": "finish"})
         yield "data: [DONE]\n\n"
 
     except Exception:
         logger.exception("Error streaming agent response for thread %s", thread_id)
-        yield f'd:{json.dumps({"finishReason": "error"})}\n'
+        if text_started:
+            yield _sse({"type": "text-end", "id": text_id})
+        yield _sse({"type": "error", "errorText": "Stream error"})
         yield "data: [DONE]\n\n"
 
     finally:

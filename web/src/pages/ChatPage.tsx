@@ -240,7 +240,6 @@ function ChatPageContent() {
     return map;
   }, [vessels]);
 
-  // Vercel AI SDK transport
   const transport = useMemo(
     () => new DefaultChatTransport({
       api: `${getApiBaseUrl()}/agent`,
