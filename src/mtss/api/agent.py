@@ -898,6 +898,10 @@ async def set_filter_node(
     await emit_state(config, state)
 
     vid, vtype, vclass, message = await _resolve_filter_value(kind, value)
+    logger.info(
+        "set_filter invoked: kind=%s value=%r → vid=%s vtype=%s vclass=%s (%s)",
+        kind, value, vid, vtype, vclass, message,
+    )
 
     # Emit to frontend regardless of outcome — on failure all three are None,
     # which the client treats as a no-op.
