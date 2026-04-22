@@ -22,6 +22,7 @@ litellm.drop_params = True
 from ..config import get_settings
 from ..llm_privacy import OPENROUTER_PRIVACY_EXTRA_BODY
 from ..storage.supabase_client import SupabaseClient
+from .deps import get_supabase_client
 from .middleware.auth import UserPayload, get_current_user
 
 logger = logging.getLogger(__name__)
@@ -115,9 +116,9 @@ async def list_conversations(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """List user's conversations, ordered by most recent activity."""
-    client = SupabaseClient()
 
     # Build query
     query = (
@@ -168,10 +169,9 @@ async def list_conversations(
 async def create_conversation(
     data: ConversationCreate = Body(default=ConversationCreate()),
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Create a new conversation."""
-    client = SupabaseClient()
-
     thread_id = data.thread_id or uuid4()
 
     result = (
@@ -260,12 +260,12 @@ async def get_conversation(
     request: Request,
     thread_id: UUID,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Get a specific conversation by thread_id.
 
     Automatically regenerates fallback titles (truncated messages) using LLM.
     """
-    client = SupabaseClient()
 
     result = (
         client.client.table("conversations")
@@ -330,9 +330,9 @@ async def update_conversation(
     thread_id: UUID,
     data: ConversationUpdate,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Update conversation metadata (title, vessel_id/type/class, archive status)."""
-    client = SupabaseClient()
 
     # Build update data from explicitly provided fields only
     # This allows setting vessel_id to null (clear filter) vs not providing it (don't change)
@@ -381,9 +381,9 @@ async def update_conversation(
 async def delete_conversation(
     thread_id: UUID,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Delete a conversation and its LangGraph checkpoints."""
-    client = SupabaseClient()
 
     # First verify the conversation exists and belongs to user
     check_result = (
@@ -419,10 +419,9 @@ async def delete_conversation(
 async def touch_conversation(
     thread_id: UUID,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Update last_message_at timestamp (called when a new message is sent)."""
-    client = SupabaseClient()
-
     result = (
         client.client.table("conversations")
         .update({"last_message_at": datetime.utcnow().isoformat()})
@@ -455,6 +454,7 @@ async def get_messages(
     request: Request,
     thread_id: UUID,
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Get all messages for a conversation from LangGraph checkpoints.
 
@@ -462,7 +462,6 @@ async def get_messages(
     Returns messages in CopilotKit-compatible format (id, role, content).
     Only returns user and assistant messages with actual content.
     """
-    client = SupabaseClient()
 
     # Verify conversation exists and belongs to user
     check_result = (
@@ -590,10 +589,9 @@ async def generate_title(
     thread_id: UUID,
     data: GenerateTitleRequest = Body(...),
     user: UserPayload = Depends(get_current_user),
+    client: SupabaseClient = Depends(get_supabase_client),
 ):
     """Generate and set conversation title from first message content using LLM."""
-    client = SupabaseClient()
-
     # Check conversation exists
     check_result = (
         client.client.table("conversations")

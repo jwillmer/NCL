@@ -16,7 +16,7 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -35,6 +35,7 @@ from ..utils import CHUNK_ID_LENGTH
 from ..version import APP_VERSION, GIT_SHA_SHORT
 from .agent import create_graph
 from .conversations import router as conversations_router
+from .deps import get_supabase_client
 from .feedback import router as feedback_router
 from .middleware.auth import SupabaseJWTBearer
 from .streaming import router as streaming_router
@@ -240,12 +241,12 @@ async def lifespan(app: FastAPI):
         logger.debug("Langfuse disabled")
 
     # Pre-warm process-wide caches (topics + vessels) so the first request
-    # doesn't pay cold-load latency on the hot path.
+    # doesn't pay cold-load latency on the hot path. Uses the same singleton
+    # client the request handlers will use, so the asyncpg pool is warm too.
     try:
         from ..processing.entity_cache import warm_caches
-        from ..storage.supabase_client import SupabaseClient
 
-        await warm_caches(SupabaseClient())
+        await warm_caches(get_supabase_client())
         logger.info("Topic + vessel caches pre-warmed")
     except Exception as exc:
         logger.warning("Cache pre-warm failed (non-fatal): %s", exc)
@@ -275,6 +276,13 @@ async def lifespan(app: FastAPI):
         yield
 
         logger.info("Shutting down LangGraph checkpointer...")
+
+        # Close the process-wide SupabaseClient singleton so the asyncpg
+        # pool drains cleanly. Ignore errors — shutdown is best-effort.
+        try:
+            await get_supabase_client().close()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Error closing SupabaseClient singleton: %s", exc)
 
 
 def create_app() -> FastAPI:
@@ -428,7 +436,11 @@ def create_app() -> FastAPI:
     # Citation details endpoint for fetching source content
     @app.get("/api/citations/{chunk_id}")
     @limiter.limit("100/minute")
-    async def get_citation(request: Request, chunk_id: str):
+    async def get_citation(
+        request: Request,
+        chunk_id: str,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
         """Get citation details including metadata and markdown content.
 
         Used by the frontend to display source content when user clicks a citation.
@@ -454,8 +466,9 @@ def create_app() -> FastAPI:
                 detail=f"Invalid chunk ID length: {len(chunk_id)} (expected {CHUNK_ID_LENGTH})",
             )
 
-        # Fetch chunk from database (synchronous call, no pool needed)
-        client = SupabaseClient()
+        # Fetch chunk from database (synchronous call, no pool needed).
+        # Uses the process-wide SupabaseClient singleton (see deps.py) to
+        # avoid paying PostgREST bootstrap cost on every citation click.
         chunk = client.get_chunk_by_id(chunk_id)
 
         if not chunk:
