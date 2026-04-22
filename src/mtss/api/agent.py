@@ -833,12 +833,6 @@ async def chat_node(
         tool_choice = None
 
     llm_step = "chat_llm2_ms" if citation_map_data else "chat_llm1_ms"
-    # Stream only the post-search final answer. Turn 1 (chat_llm1) can
-    # still emit tool_calls, and streaming tool_calls complicates the
-    # single-call-per-turn contract; cheap to keep that path unary.
-    # Dynamic intents (EXPLORATORY / GREETING etc) also skip search but
-    # do not need streaming because their wallclock is already <1s.
-    stream_response = bool(citation_map_data and not available_tools)
     async with record_step(llm_step):
         response = await _call_chat_llm(
             base_system=base_system,
@@ -849,7 +843,6 @@ async def chat_node(
             settings=settings,
             config=config,
             cache_phase="post_search" if citation_map_data else "pre_search",
-            stream=stream_response,
         )
 
     # Check if the model wants to use a tool, and route by name.
