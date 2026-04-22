@@ -257,9 +257,31 @@ function ChatPageContent() {
     [threadId, vesselId, vesselTypeId, vesselClassId]
   );
 
+  // Forward ref for the filter-apply callback. The handler itself is defined
+  // further down (it closes over `conversation` + `threadId`), but `onData`
+  // needs to reach it from inside the `useChat` options block. Refs avoid the
+  // effect-diff race the old implementation had: data parts are delivered
+  // here as they stream, not via walking the last message's parts afterwards.
+  const applyAgentFilterRef = useRef<((key: "vessel_id" | "vessel_type" | "vessel_class", value: string | null) => void) | null>(null);
+  const lastAppliedAgentFilterRef = useRef<string>("");
+
   const { messages, sendMessage, status, setMessages, error: chatError } = useChat({
     id: threadId,
     transport,
+    onData: (part) => {
+      if (part.type !== "data-filter" || !part.data) return;
+      const payload = part.data as { vessel_id: string | null; vessel_type: string | null; vessel_class: string | null };
+      const key = JSON.stringify(payload);
+      if (key === lastAppliedAgentFilterRef.current) return;
+      lastAppliedAgentFilterRef.current = key;
+      const apply = applyAgentFilterRef.current;
+      if (!apply) return;
+      // Server enforces mutual exclusion; a full-null payload means "clear".
+      if (payload.vessel_id) apply("vessel_id", payload.vessel_id);
+      else if (payload.vessel_type) apply("vessel_type", payload.vessel_type);
+      else if (payload.vessel_class) apply("vessel_class", payload.vessel_class);
+      else apply("vessel_id", null);
+    },
     onError: () => {
       // Reload from DB on error to resync
       getMessages(threadId)
@@ -341,7 +363,8 @@ function ChatPageContent() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isStreaming]);
 
-  // Filter change handler (unified)
+  // Filter change handler — shared by both the user clicking a FilterDropdown
+  // and the agent pushing `data-filter` events through `onData`.
   const handleFilterChange = useCallback(async (key: "vessel_id" | "vessel_type" | "vessel_class", value: string | null) => {
     const setters = { vessel_id: setVesselId, vessel_type: setVesselTypeId, vessel_class: setVesselClassId };
     // Set selected, clear others (mutual exclusivity)
@@ -353,37 +376,9 @@ function ChatPageContent() {
     }
   }, [conversation, threadId]);
 
-  // React to filter changes pushed by the agent mid-stream.
-  // The server emits `2:["filter", {...}]` via emit_filter_update in set_filter_node;
-  // the Vercel AI SDK exposes that as a `data-filter` part on the last assistant
-  // message. We diff against current UI state to avoid re-triggering the DB
-  // write loop when our own handleFilterChange caused the update.
-  const lastAppliedAgentFilterRef = useRef<string>("");
-  useEffect(() => {
-    if (!messages.length) return;
-    const last = messages[messages.length - 1];
-    if (last.role !== "assistant") return;
-    const parts = (last as unknown as { parts?: Array<{ type: string; data?: unknown }> }).parts;
-    if (!parts) return;
-    // Walk parts in order; the most recent filter update wins.
-    type FilterPayload = { vessel_id: string | null; vessel_type: string | null; vessel_class: string | null };
-    let latest: FilterPayload | null = null;
-    for (const part of parts) {
-      if (part.type === "data-filter" && part.data) {
-        latest = part.data as FilterPayload;
-      }
-    }
-    if (!latest) return;
-    const key = JSON.stringify(latest);
-    if (key === lastAppliedAgentFilterRef.current) return;
-    lastAppliedAgentFilterRef.current = key;
-    // Exactly one of the three should be non-null (server enforces mutual exclusion);
-    // a full-null payload means "clear".
-    if (latest.vessel_id) handleFilterChange("vessel_id", latest.vessel_id);
-    else if (latest.vessel_type) handleFilterChange("vessel_type", latest.vessel_type);
-    else if (latest.vessel_class) handleFilterChange("vessel_class", latest.vessel_class);
-    else handleFilterChange("vessel_id", null);
-  }, [messages, handleFilterChange]);
+  // Keep the ref handed to `onData` pointing at the latest handleFilterChange
+  // so agent-pushed filter updates see the current conversation/threadId.
+  useEffect(() => { applyAgentFilterRef.current = handleFilterChange; }, [handleFilterChange]);
 
   const handleViewCitation = useCallback((chunkId: string, lines?: [number, number][]) => {
     setSelectedChunkId(chunkId);

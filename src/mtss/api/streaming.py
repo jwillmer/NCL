@@ -13,14 +13,12 @@ The legacy v4 `0:/2:/d:` format is silently dropped by v6 clients, which is
 why the assistant message never appeared until the page was reloaded.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from typing import AsyncGenerator, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -228,7 +226,7 @@ async def _stream_agent(
 @limiter.limit("30/minute")
 async def agent_stream(
     request: Request,
-    body: AgentRequest,
+    body: AgentRequest = Body(...),
     user: UserPayload = Depends(get_current_user),
 ):
     """Streaming agent endpoint using Vercel AI SDK UI Message Stream v1.
