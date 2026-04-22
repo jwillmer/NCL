@@ -377,7 +377,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MTSS Email RAG API",
         description="LangGraph Agent for email document Q&A with streaming progress",
-        version="0.1.0",
+        version=APP_VERSION,
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,

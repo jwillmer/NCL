@@ -50,7 +50,7 @@ export function MainLayout({ children }: MainLayoutProps) {
       </main>
       <footer className="border-t border-MTSS-gray-light bg-white py-4 px-6">
         <div className="flex items-center justify-between text-xs text-MTSS-gray">
-          <span>MTSS v0.1.0</span>
+          <span>MTSS v1.0.0</span>
           <span className="font-mono" title={`Git SHA: ${gitSha}`}>
             Build: {gitShaShort}
           </span>
