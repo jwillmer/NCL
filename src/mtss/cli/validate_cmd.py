@@ -314,10 +314,19 @@ def validate_ingest(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Show detailed per-document info"
     ),
+    check_storage: bool = typer.Option(
+        False,
+        "--check-storage",
+        help=(
+            "Also verify every archive URI resolves in Supabase Storage. "
+            "Off by default — lists every referenced folder in the bucket, "
+            "which is slow on large corpora."
+        ),
+    ),
 ):
     """Validate local ingest output for data integrity issues."""
     resolved = _resolve_output_dir(output_dir)
-    _run_ingest_validation(resolved, verbose)
+    _run_ingest_validation(resolved, verbose, check_storage=check_storage)
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +735,77 @@ def _check_broken_archive_uris(
             issues.append(f"  {fn}: {rel}")
         if len(broken_uris) > 5:
             issues.append(f"  ... and {len(broken_uris) - 5} more")
+    return issues, warnings
+
+
+def _check_remote_archive_uris(
+    docs: List[Dict[str, Any]],
+    chunks: List[Dict[str, Any]],
+    verbose: bool,
+) -> Tuple[List[str], List[str]]:
+    """Check 35 (opt-in): every DB archive URI resolves in Supabase Storage.
+
+    Groups referenced keys by their immediate folder prefix and lists each
+    folder once so this is O(folders) API calls rather than O(URIs). The
+    check is gated behind ``--check-storage`` because on the prod corpus
+    that's still ~6k listings.
+    """
+    from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
+
+    issues: List[str] = []
+    warnings: List[str] = []
+
+    # Collect every key both tables point at. Strip the `/archive/` web prefix
+    # so we compare against bucket-relative keys.
+    referenced_keys: Set[str] = set()
+    for row in (*docs, *chunks):
+        for k in ("archive_browse_uri", "archive_download_uri"):
+            uri = row.get(k)
+            if uri:
+                referenced_keys.add(uri.removeprefix("/archive/"))
+
+    if not referenced_keys:
+        return issues, warnings
+
+    # Group by parent folder to batch the list calls.
+    folders: Dict[str, Set[str]] = {}
+    for key in referenced_keys:
+        prefix, _, name = key.rpartition("/")
+        folders.setdefault(prefix, set()).add(name)
+
+    try:
+        storage = ArchiveStorage()
+    except Exception as e:  # noqa: BLE001 - surface connectivity failures as warnings, not crashes
+        warnings.append(f"[#35] Could not connect to archive storage: {e}")
+        return issues, warnings
+
+    missing_keys: List[str] = []
+    with make_progress() as progress:
+        task = progress.add_task("Listing remote folders", total=len(folders))
+        for prefix, expected in folders.items():
+            try:
+                files = storage.list_folder(prefix)
+            except ArchiveStorageError:
+                # Folder is absent or gated — every key we expected there is missing.
+                missing_keys.extend(sorted(f"{prefix}/{n}" for n in expected))
+                progress.advance(task)
+                continue
+            present = {f["name"] for f in files if f.get("name")}
+            for name in sorted(expected - present):
+                missing_keys.append(f"{prefix}/{name}")
+            progress.advance(task)
+
+    if missing_keys:
+        issues.append(
+            f"{len(missing_keys)} archive URIs point to missing objects in Supabase Storage "
+            f"(bucket={storage.bucket_name})"
+        )
+        preview = missing_keys if verbose else missing_keys[:5]
+        for key in preview:
+            issues.append(f"  {key}")
+        if not verbose and len(missing_keys) > 5:
+            issues.append(f"  ... and {len(missing_keys) - 5} more")
+
     return issues, warnings
 
 
@@ -1412,7 +1492,7 @@ def _check_stale_processing_entries(conn) -> Tuple[List[str], List[str]]:
     return issues, warnings
 
 
-def _run_ingest_validation(output_dir: Path, verbose: bool):
+def _run_ingest_validation(output_dir: Path, verbose: bool, *, check_storage: bool = False):
     if not output_dir.exists():
         console.print(f"[red]Output directory not found: {output_dir}[/red]")
         raise typer.Exit(1)
@@ -1448,6 +1528,7 @@ def _run_ingest_validation(output_dir: Path, verbose: bool):
         _run_ingest_validation_with_conn(
             output_dir, verbose, docs, chunks, topics, events, proc_log,
             run_history, ro_conn, current_ingest_version,
+            check_storage=check_storage,
         )
     finally:
         if ro_conn is not None:
@@ -1468,6 +1549,8 @@ def _run_ingest_validation_with_conn(
     run_history: List[Dict[str, Any]],
     ro_conn,
     current_ingest_version: Optional[int],
+    *,
+    check_storage: bool = False,
 ):
 
     if not docs and not chunks:
@@ -1582,6 +1665,9 @@ def _run_ingest_validation_with_conn(
     if ro_conn is not None:
         _run(34, "stale_processing_entries",
              _check_stale_processing_entries(ro_conn))
+    if check_storage:
+        _run(35, "remote_archive_uris",
+             _check_remote_archive_uris(docs, chunks, verbose))
 
     # === Display results ===
     summary = Table(title="Ingest Validation Summary")

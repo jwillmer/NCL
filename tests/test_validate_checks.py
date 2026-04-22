@@ -42,6 +42,7 @@ from mtss.cli.validate_cmd import (
     _check_orphan_attachments,
     _check_orphan_chunks,
     _check_outdated_ingest_version,
+    _check_remote_archive_uris,
     _check_processing_log,
     _check_residual_image_refs,
     _check_schema_parity,
@@ -615,6 +616,74 @@ def test_check_broken_archive_uris_all_resolve(tmp_path):
         download_uri="/archive/abc/email.eml",
     )
     assert _check_broken_archive_uris([doc], archive_dir) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# Check 35: remote archive URIs resolve in Supabase Storage (opt-in)
+# ---------------------------------------------------------------------------
+
+
+def _remote_check_with_bucket(docs, chunks, bucket_contents, bucket_name="archive-test"):
+    """Run check 35 with an ``ArchiveStorage`` stub whose bucket holds the
+    given ``{folder: [filename, ...]}`` map. Missing folders raise
+    ``ArchiveStorageError`` to mirror real storage behavior."""
+    from unittest.mock import MagicMock, patch
+
+    from mtss.storage.archive_storage import ArchiveStorageError
+
+    storage = MagicMock()
+    storage.bucket_name = bucket_name
+
+    def _list_folder(folder):
+        if folder in bucket_contents:
+            return [{"name": name} for name in bucket_contents[folder]]
+        raise ArchiveStorageError(f"missing: {folder}")
+
+    storage.list_folder.side_effect = _list_folder
+
+    # The check imports ArchiveStorage inside the function, so patch the
+    # canonical class target rather than a module-level alias.
+    with patch("mtss.storage.archive_storage.ArchiveStorage", return_value=storage):
+        return _check_remote_archive_uris(docs, chunks, verbose=False)
+
+
+@pytest.mark.unit
+def test_check_remote_archive_uris_all_present():
+    doc = _make_doc(
+        browse_uri="/archive/abc/email.md",
+        download_uri="/archive/abc/email.eml",
+    )
+    bucket = {"abc": ["email.md", "email.eml"]}
+    issues, warnings = _remote_check_with_bucket([doc], [], bucket)
+    assert issues == []
+    assert warnings == []
+
+
+@pytest.mark.unit
+def test_check_remote_archive_uris_flags_missing_object():
+    doc = _make_doc(
+        browse_uri="/archive/abc/email.md",
+        download_uri="/archive/abc/email.eml",
+    )
+    bucket = {"abc": ["email.md"]}  # email.eml absent
+    issues, _ = _remote_check_with_bucket([doc], [], bucket)
+    assert any("1 archive URIs point to missing objects" in i for i in issues)
+    assert any("abc/email.eml" in i for i in issues)
+
+
+@pytest.mark.unit
+def test_check_remote_archive_uris_flags_missing_folder():
+    doc = _make_doc(browse_uri="/archive/gone/email.md")
+    bucket: dict[str, list[str]] = {}  # folder entirely absent
+    issues, _ = _remote_check_with_bucket([doc], [], bucket)
+    assert any("archive URIs point to missing objects" in i for i in issues)
+    assert any("gone/email.md" in i for i in issues)
+
+
+@pytest.mark.unit
+def test_check_remote_archive_uris_no_uris_is_noop():
+    doc = _make_doc()  # no browse/download URIs
+    assert _check_remote_archive_uris([doc], [], verbose=False) == ([], [])
 
 
 # ---------------------------------------------------------------------------
