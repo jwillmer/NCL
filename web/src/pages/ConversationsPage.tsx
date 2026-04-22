@@ -13,13 +13,13 @@ import { useAuth, LoginForm } from "@/components/auth";
 import { MainLayout } from "@/components/Layout";
 import { Button, Input, ScrollArea, Skeleton } from "@/components/ui";
 import { cn, formatRelativeTime, groupByDate } from "@/lib/utils";
+import { useVessels } from "@/hooks/useVessels";
 import {
   Conversation,
   listConversations,
   deleteConversation,
   updateConversation,
   createConversation,
-  listVessels,
 } from "@/lib/conversations";
 
 // ============================================
@@ -119,7 +119,7 @@ function ConversationsPageContent() {
   const { session, loading: authLoading } = useAuth();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [vesselLookup, setVesselLookup] = useState<Record<string, string>>({});
+  const { lookup: vesselLookup } = useVessels();
   const [loading, setLoading] = useState(true);
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -130,18 +130,6 @@ function ConversationsPageContent() {
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const userId = session?.user?.id;
-
-  // Load vessels for name lookup
-  useEffect(() => {
-    if (!userId) return;
-    listVessels()
-      .then((vessels) => {
-        const lookup: Record<string, string> = {};
-        for (const v of vessels) lookup[v.id] = v.name;
-        setVesselLookup(lookup);
-      })
-      .catch(console.error);
-  }, [userId]);
 
   const LIMIT = 50;
 

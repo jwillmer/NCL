@@ -4,6 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo, type FormEvent, type KeyboardEvent } from "react";
+import { useVessels } from "@/hooks/useVessels";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
@@ -29,7 +30,6 @@ import { cn, transformRawCitations } from "@/lib/utils";
 import { initLangfuse, trackFeedback } from "@/lib/langfuse";
 import {
   Conversation,
-  Vessel,
   getConversation,
   createConversation,
   updateConversation,
@@ -37,9 +37,6 @@ import {
   touchConversation,
   generateTitle,
   submitFeedback,
-  listVessels,
-  listVesselTypes,
-  listVesselClasses,
   getApiBaseUrl,
   getAuthHeaders,
   ConversationApiError,
@@ -217,10 +214,12 @@ function ChatPageContent() {
   const [vesselId, setVesselId] = useState<string | null>(null);
   const [vesselTypeId, setVesselTypeId] = useState<string | null>(null);
   const [vesselClassId, setVesselClassId] = useState<string | null>(null);
-  const [vessels, setVessels] = useState<Vessel[]>([]);
-  const [vesselTypes, setVesselTypes] = useState<string[]>([]);
-  const [vesselClasses, setVesselClasses] = useState<string[]>([]);
-  const [vesselsLoading, setVesselsLoading] = useState(true);
+  const {
+    vessels,
+    types: vesselTypes,
+    classes: vesselClasses,
+    loading: vesselsLoading,
+  } = useVessels();
 
   // Citation dialog state
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
@@ -232,13 +231,6 @@ function ChatPageContent() {
   const prevMessageCount = useRef(0);
   const titleGenerated = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Vessel lookup for badges
-  const vesselLookup = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const v of vessels) map[v.id] = v.name;
-    return map;
-  }, [vessels]);
 
   // Vercel AI SDK transport
   const transport = useMemo(
@@ -265,15 +257,6 @@ function ChatPageContent() {
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
-
-  // Load filters
-  useEffect(() => {
-    if (!userId) return;
-    Promise.all([listVessels(), listVesselTypes(), listVesselClasses()])
-      .then(([v, t, c]) => { setVessels(v); setVesselTypes(t); setVesselClasses(c); })
-      .catch(console.error)
-      .finally(() => setVesselsLoading(false));
-  }, [userId]);
 
   // Load or create conversation
   useEffect(() => {

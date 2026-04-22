@@ -71,6 +71,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = async () => {
     await getSupabase().auth.signOut();
     clearAuthCache();
+    // Drop the shared vessel cache so the next user starts clean.
+    // Key must stay in sync with STORAGE_KEY in hooks/useVessels.tsx.
+    try {
+      sessionStorage.removeItem("mtss.vessels.v1");
+    } catch {
+      /* sessionStorage unavailable — ignore */
+    }
   };
 
   return (

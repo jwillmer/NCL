@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/components/auth";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { VesselProvider } from "@/hooks/useVessels";
 
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
 const ConversationsPage = lazy(() => import("@/pages/ConversationsPage"));
@@ -28,13 +29,15 @@ export function App() {
     <ErrorBoundary>
       <BrowserRouter>
         <AuthProvider>
-          <Suspense fallback={<LoadingSpinner />}>
-            <Routes>
-              <Route path="/" element={<Navigate to="/conversations" replace />} />
-              <Route path="/conversations" element={<ConversationsPage />} />
-              <Route path="/chat" element={<ChatPage />} />
-            </Routes>
-          </Suspense>
+          <VesselProvider>
+            <Suspense fallback={<LoadingSpinner />}>
+              <Routes>
+                <Route path="/" element={<Navigate to="/conversations" replace />} />
+                <Route path="/conversations" element={<ConversationsPage />} />
+                <Route path="/chat" element={<ChatPage />} />
+              </Routes>
+            </Suspense>
+          </VesselProvider>
         </AuthProvider>
       </BrowserRouter>
     </ErrorBoundary>
