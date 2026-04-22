@@ -1,9 +1,58 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: "autoUpdate",
+      injectRegister: "auto",
+      manifest: {
+        name: "MTSS",
+        short_name: "MTSS",
+        description: "Vessel issue history & knowledge base",
+        theme_color: "#0b2545",
+        background_color: "#ffffff",
+        display: "standalone",
+        start_url: "/",
+        scope: "/",
+        icons: [
+          { src: "/icons/mtss-192.png", sizes: "192x192", type: "image/png" },
+          { src: "/icons/mtss-512.png", sizes: "512x512", type: "image/png" },
+          { src: "/icons/mtss-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+        ],
+      },
+      workbox: {
+        globPatterns: ["**/*.{js,css,html,svg,woff2,png,ico}"],
+        navigateFallback: "/index.html",
+        navigateFallbackDenylist: [/^\/api/, /^\/config\.js/, /^\/health/, /^\/docs/, /^\/redoc/],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname === "/config.js",
+            handler: "NetworkFirst",
+            options: { cacheName: "runtime-config", networkTimeoutSeconds: 3 },
+          },
+          {
+            urlPattern: ({ url }) =>
+              url.pathname.startsWith("/api/vessels") ||
+              url.pathname.startsWith("/api/vessel-types") ||
+              url.pathname.startsWith("/api/vessel-classes"),
+            handler: "StaleWhileRevalidate",
+            options: {
+              cacheName: "vessels",
+              expiration: { maxAgeSeconds: 3600, maxEntries: 10 },
+            },
+          },
+          // NOTE: /api/archive/* runtime caching intentionally omitted (P4.4).
+          // The endpoint requires auth and the per-user authz story has to be
+          // reworked before a CacheFirst strategy is safe across users sharing
+          // a device / installed PWA.
+        ],
+      },
+    }),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

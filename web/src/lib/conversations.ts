@@ -3,7 +3,7 @@
  */
 
 import { getConfig } from "./config";
-import { getSupabase } from "./supabase";
+import { getAuthHeaders as _getAuthHeaders, clearAuthCache } from "./authCache";
 
 // ============================================
 // Types
@@ -84,27 +84,23 @@ export function getApiBaseUrl(): string {
 /**
  * Get auth headers from Supabase session.
  * Exported for use by useChat transport.
+ *
+ * Implementation lives in `./authCache` to allow session-change hooks
+ * (onAuthStateChange) to clear the cached token without creating a
+ * circular import with this module. Re-exported here to preserve the
+ * public API surface.
  */
-export async function getAuthHeaders(): Promise<Record<string, string>> {
-  const {
-    data: { session },
-  } = await getSupabase().auth.getSession();
-  if (!session?.access_token) {
-    throw new ConversationApiError("Not authenticated", 401, "UNAUTHENTICATED");
-  }
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${session.access_token}`,
-  };
-}
+export const getAuthHeaders = _getAuthHeaders;
 
 /**
  * Typed fetch helper — handles auth, JSON, and error wrapping.
+ * On 401 the auth-token cache is cleared and the request is retried once.
  */
 async function typedFetch<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  retried = false
 ): Promise<T> {
   const headers = await getAuthHeaders();
   const url = `${getApiBaseUrl()}${path}`;
@@ -114,6 +110,11 @@ async function typedFetch<T>(
     headers,
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
+
+  if (response.status === 401 && !retried) {
+    clearAuthCache();
+    return typedFetch<T>(method, path, body, true);
+  }
 
   if (!response.ok) {
     let message = "An error occurred";
