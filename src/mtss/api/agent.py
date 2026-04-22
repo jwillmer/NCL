@@ -743,26 +743,42 @@ async def search_node(
             filter_result = TopicFilterResult()
             query_embedding = None
         else:
-            # Run topic analysis and query embedding concurrently
             await on_progress("Analyzing query")
             topic_filter = TopicFilter(
                 topic_extractor=TopicExtractor(),
                 topic_matcher=TopicMatcher(engine.retriever.db, engine.retriever.embeddings),
                 db=engine.retriever.db,
             )
-            async def _timed_filter():
-                async with record_step("topic_filter_ms"):
-                    return await topic_filter.analyze_query(
-                        question, vessel_filter, on_progress=on_progress
-                    )
-
-            async def _timed_embed():
+            if settings.topic_filter_embedding_only:
+                # Embed first, then use the same vector for both topic
+                # matching and the downstream search. Topic matching on
+                # the in-memory topic cache is sub-300ms, so sequential
+                # is cheaper than the old parallel-LLM-extraction path.
                 async with record_step("embed_ms"):
-                    return await engine.retriever.embed_query(question)
+                    query_embedding = await engine.retriever.embed_query(question)
+                async with record_step("topic_filter_ms"):
+                    filter_result = await topic_filter.analyze_query(
+                        question,
+                        vessel_filter,
+                        on_progress=on_progress,
+                        query_embedding=query_embedding,
+                    )
+            else:
+                # Legacy path: LLM extracts topic names, matcher embeds
+                # each name, runs in parallel with the query embedding.
+                async def _timed_filter():
+                    async with record_step("topic_filter_ms"):
+                        return await topic_filter.analyze_query(
+                            question, vessel_filter, on_progress=on_progress
+                        )
 
-            filter_result, query_embedding = await asyncio.gather(
-                _timed_filter(), _timed_embed()
-            )
+                async def _timed_embed():
+                    async with record_step("embed_ms"):
+                        return await engine.retriever.embed_query(question)
+
+                filter_result, query_embedding = await asyncio.gather(
+                    _timed_filter(), _timed_embed()
+                )
 
         # NOTE: the `should_skip_rag` early-return used to short-circuit
         # here when the topic filter couldn't match any stored topics.

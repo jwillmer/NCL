@@ -189,13 +189,15 @@ class TopicFilter:
         query: str,
         vessel_filter: Optional[Dict] = None,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
+        query_embedding: Optional[List[float]] = None,
     ) -> TopicFilterResult:
         """Analyze query and determine if RAG should proceed.
 
         Supports multi-topic queries (1-3 topics).
 
         Steps:
-        1. Extract topics from query using LLM (1-3)
+        1. Extract topics from query using LLM (1-3) — skipped in
+           embedding-only mode.
         2. Match each to existing topics via embedding similarity
         3. Pre-check counts for early return decision
         4. Use OR logic: proceed if ANY matched topic has results
@@ -203,11 +205,73 @@ class TopicFilter:
         Args:
             query: User's search question
             vessel_filter: Optional vessel filter dict
+            query_embedding: Pre-computed query embedding. When
+                ``settings.topic_filter_embedding_only`` is True this
+                is used to match topics directly against the topic
+                cache, skipping the LLM extractor (~3s saved per
+                call). The query text is still recorded as the
+                detected name for display.
 
         Returns:
             TopicFilterResult with skip decision and context
         """
         settings = get_settings()
+
+        if settings.topic_filter_embedding_only and query_embedding is not None:
+            # Embedding-only path: skip the LLM extractor. The query
+            # embedding is already computed in search_node's parallel
+            # gather, so this path adds zero new API calls. Trade-off:
+            # multi-topic queries ("cargo damage AND engine problems")
+            # collapse into one cluster instead of N, but the no-result
+            # fallback in search_node already catches over-narrowing.
+            if on_progress:
+                await on_progress("Matching topics")
+            try:
+                from ..processing.entity_cache import get_topic_cache
+
+                topic_cache = get_topic_cache()
+                await topic_cache.ensure_loaded(self.db)
+                sims = await topic_cache.cosine_similar(
+                    self.db,
+                    query_embedding,
+                    threshold=self.matcher.query_similarity_threshold,
+                    limit=settings.topic_query_top_k,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Embedding-only topic matching failed, broad search: %s", e
+                )
+                return TopicFilterResult()
+
+            if not sims:
+                return TopicFilterResult()
+
+            pooled_topics = [t for t, _score in sims]
+            detected_names = [query[:60]]  # surface the query as the label
+            matched_topics: List[MatchedTopic] = []
+            for t in pooled_topics:
+                count = t.chunk_count
+                filtered = count
+                if vessel_filter:
+                    filtered = await self.db.get_chunks_count_for_topic(
+                        t.id, vessel_filter
+                    )
+                matched_topics.append(
+                    MatchedTopic(
+                        id=t.id,
+                        name=t.name,
+                        display_name=t.display_name,
+                        chunk_count=count,
+                        filtered_count=filtered,
+                    )
+                )
+            total_chunks = sum(t.chunk_count for t in matched_topics)
+            return TopicFilterResult(
+                detected_topics=detected_names,
+                matched_topics=matched_topics,
+                unmatched_topics=[],
+                total_chunk_count=total_chunks,
+            )
 
         # Step 1: Extract topics from query (with error handling)
         if on_progress:

@@ -95,6 +95,17 @@ class Settings(BaseSettings):
         default=True, validation_alias="TOPIC_FILTER_ENABLED"
     )
 
+    # When enabled, analyze_query uses the pre-computed query embedding
+    # (already generated in parallel by search_node for the vector search)
+    # to match topics directly against the topic cache. Skips the LLM
+    # topic-name extraction step, saving ~2-3s per call. Default True —
+    # topic matching on the query's own embedding is as accurate as
+    # extracting a label first and embedding that label, since both
+    # resolve to the same semantic neighborhood in topic space.
+    topic_filter_embedding_only: bool = Field(
+        default=True, validation_alias="TOPIC_FILTER_EMBEDDING_ONLY"
+    )
+
     def get_model(self, specific_model: str | None) -> str:
         """Return specific model if set, otherwise fallback to llm_model."""
         return specific_model or self.llm_model
