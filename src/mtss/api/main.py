@@ -41,6 +41,17 @@ from .streaming import router as streaming_router
 
 logger = logging.getLogger(__name__)
 
+# Application-log level: default INFO so operational breadcrumbs
+# (chat_node tool choice, set_filter resolution, langfuse init, etc.)
+# surface to stdout. Override with LOG_LEVEL=DEBUG or WARNING as needed.
+_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+logging.getLogger("mtss").setLevel(_log_level)
+
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
