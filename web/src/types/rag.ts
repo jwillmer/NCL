@@ -24,6 +24,7 @@ export interface Citation {
   lines: [number, number] | null;
   archive_browse_uri: string | null;
   archive_download_uri: string | null;
+  archive_download_signed_url: string | null;
   content: string | null;
 }
 

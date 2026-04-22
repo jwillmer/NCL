@@ -50,9 +50,14 @@ if (typeof window !== "undefined") {
   initLangfuse();
 }
 
-// Allow <cite>, <img-cite>, and <mark> through sanitizer
+// Allow <cite>, <img-cite>, and <mark> through sanitizer.
+// clobberPrefix is disabled so <cite id="..."> round-trips the backend's
+// 12-char hex chunk_id to CiteRenderer / SourceViewDialog untouched.
+// rehype-sanitize's default prepends "user-content-" to every id, which
+// made /api/citations/user-content-<hex> 400 on the backend.
 const sanitizeSchema = {
   ...defaultSchema,
+  clobberPrefix: "",
   tagNames: [...(defaultSchema.tagNames || []), "cite", "img-cite", "mark"],
   attributes: {
     ...defaultSchema.attributes,

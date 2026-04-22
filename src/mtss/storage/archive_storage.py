@@ -165,6 +165,24 @@ class ArchiveStorage:
         content = self.download_file(path)
         return content.decode(encoding)
 
+    def create_signed_url(self, path: str, expires_in: int = 300) -> str:
+        """Produce a short-lived signed URL for an object in the bucket.
+
+        Used so the browser can open a download in a new tab without an
+        Authorization header (the JWT sits on the UI fetch, not on link
+        navigations). expires_in is in seconds; keep it short.
+
+        Raises ArchiveStorageError on failure.
+        """
+        try:
+            resp = self.bucket.create_signed_url(path, expires_in)
+        except StorageException as e:
+            raise ArchiveStorageError(f"Failed to sign {path}: {e}") from e
+        url = resp.get("signedURL") or resp.get("signedUrl") or resp.get("signed_url")
+        if not url:
+            raise ArchiveStorageError(f"Signed URL response missing url field: {resp!r}")
+        return url
+
     def file_exists(self, path: str) -> bool:
         """Check if file exists using Storage list API.
 

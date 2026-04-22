@@ -623,8 +623,13 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
             </div>
             {citation?.archive_download_uri && (
               <a
-                href={`${getApiBaseUrl()}/archive/${stripArchivePrefix(citation.archive_download_uri)}`}
+                href={
+                  citation.archive_download_signed_url
+                  ?? `${getApiBaseUrl()}/archive/${stripArchivePrefix(citation.archive_download_uri)}`
+                }
                 download
+                target="_blank"
+                rel="noopener noreferrer"
                 className="inline-flex items-center justify-center h-9 px-3 rounded-md border border-MTSS-gray-light bg-white text-sm font-medium hover:bg-MTSS-gray-light/20 transition-colors"
               >
                 <Download className="h-4 w-4 mr-2" />

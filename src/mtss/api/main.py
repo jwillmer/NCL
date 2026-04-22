@@ -45,6 +45,19 @@ logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address)
 
 
+_ARCHIVE_URI_PREFIX = "/archive/"
+
+
+def _strip_archive_prefix(uri: str) -> str:
+    """Turn a web-facing archive URI into a bucket-relative key.
+
+    `archive_browse_uri` / `archive_download_uri` are stored with a leading
+    `/archive/` so the UI can hit them via `/api/archive/...`; Supabase
+    Storage keys are bare (`<folder>/attachments/<file>`).
+    """
+    return uri[len(_ARCHIVE_URI_PREFIX):] if uri.startswith(_ARCHIVE_URI_PREFIX) else uri
+
+
 class SPAStaticFiles(StaticFiles):
     """StaticFiles with SPA fallback: serve index.html for unknown non-asset paths.
 
@@ -437,21 +450,32 @@ def create_app() -> FastAPI:
         if not chunk:
             raise HTTPException(status_code=404, detail="Citation not found")
 
-        # Fetch markdown content from Supabase Storage if archive exists
+        # Fetch markdown content from Supabase Storage if archive exists.
+        # Errors are surfaced as logged stack traces (previously they were
+        # swallowed as warnings, which hid real misconfiguration).
         content = None
+        storage: ArchiveStorage | None = None
         if chunk.archive_browse_uri:
-            # Strip /archive/ prefix if present (URI is for web, not filesystem)
-            relative_path = chunk.archive_browse_uri
-            if relative_path.startswith("/archive/"):
-                relative_path = relative_path[len("/archive/"):]
+            relative_path = _strip_archive_prefix(chunk.archive_browse_uri)
             try:
                 storage = ArchiveStorage()
-                content_bytes = storage.download_file(relative_path)
-                content = content_bytes.decode("utf-8")
+                content = storage.download_file(relative_path).decode("utf-8")
             except ArchiveStorageError:
-                logger.warning("Archive file not found: %s", relative_path)
-            except Exception as e:
-                logger.warning("Failed to read archive content: %s", e)
+                logger.exception("Archive .md not found for chunk %s at %s", chunk_id, relative_path)
+            except Exception:
+                logger.exception("Failed to read archive content for chunk %s at %s", chunk_id, relative_path)
+
+        # Sign the download URL so the browser can open it in a new tab
+        # without a Bearer header (link navigations can't send auth).
+        archive_download_signed_url: str | None = None
+        if chunk.archive_download_uri:
+            download_path = _strip_archive_prefix(chunk.archive_download_uri)
+            try:
+                archive_download_signed_url = (storage or ArchiveStorage()).create_signed_url(
+                    download_path, expires_in=300
+                )
+            except ArchiveStorageError:
+                logger.exception("Failed to sign download URL for chunk %s at %s", chunk_id, download_path)
 
         user = getattr(request.state, "user", None)
         logger.debug(
@@ -469,6 +493,7 @@ def create_app() -> FastAPI:
             else None,
             "archive_browse_uri": chunk.archive_browse_uri,
             "archive_download_uri": chunk.archive_download_uri,
+            "archive_download_signed_url": archive_download_signed_url,
             "content": content,
         }
 
