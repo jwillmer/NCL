@@ -457,7 +457,9 @@ function ChatPageContent() {
         const text = userMsg.parts.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join("");
         if (text) {
           titleGenerated.current = true;
-          generateTitle(threadId, text).catch(console.error);
+          generateTitle(threadId, text)
+            .then((updated) => setConversation(updated))
+            .catch(console.error);
         }
       }
     }
