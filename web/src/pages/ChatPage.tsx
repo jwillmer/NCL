@@ -166,11 +166,13 @@ function FilterDropdown({
 // Assistant Message (local subcomponent)
 // ============================================
 
-function AssistantMessage({ content, messageId, threadId, showFeedback }: {
+function AssistantMessage({ content, messageId, threadId, showFeedback, timestamp, durationMs }: {
   content: string;
   messageId: string;
   threadId: string;
   showFeedback: boolean;
+  timestamp?: number;
+  durationMs?: number;
 }) {
   const { onViewCitation } = useCitationContext();
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
@@ -203,21 +205,34 @@ function AssistantMessage({ content, messageId, threadId, showFeedback }: {
         {showFeedback && content && (
           <>
             <div className="mt-3 mb-2"><SourcesAccordion /></div>
-            <div className="flex items-center gap-1 mt-2">
-              <button
-                onClick={() => handleFeedback(1)}
-                aria-pressed={feedback === "up"}
-                aria-label={feedback === "up" ? "Remove positive feedback" : "Mark response as helpful"}
-                className={cn("p-1.5 rounded hover:bg-gray-100 transition-colors",
-                  feedback === "up" ? "text-green-600 bg-green-50" : "text-gray-400 hover:text-gray-600")}
-              ><ThumbsUp className="h-4 w-4" /></button>
-              <button
-                onClick={() => handleFeedback(0)}
-                aria-pressed={feedback === "down"}
-                aria-label={feedback === "down" ? "Remove negative feedback" : "Mark response as unhelpful"}
-                className={cn("p-1.5 rounded hover:bg-gray-100 transition-colors",
-                  feedback === "down" ? "text-red-600 bg-red-50" : "text-gray-400 hover:text-gray-600")}
-              ><ThumbsDown className="h-4 w-4" /></button>
+            <div className="flex items-center justify-between mt-2">
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => handleFeedback(1)}
+                  aria-pressed={feedback === "up"}
+                  aria-label={feedback === "up" ? "Remove positive feedback" : "Mark response as helpful"}
+                  className={cn("p-1.5 rounded hover:bg-gray-100 transition-colors",
+                    feedback === "up" ? "text-green-600 bg-green-50" : "text-gray-400 hover:text-gray-600")}
+                ><ThumbsUp className="h-4 w-4" /></button>
+                <button
+                  onClick={() => handleFeedback(0)}
+                  aria-pressed={feedback === "down"}
+                  aria-label={feedback === "down" ? "Remove negative feedback" : "Mark response as unhelpful"}
+                  className={cn("p-1.5 rounded hover:bg-gray-100 transition-colors",
+                    feedback === "down" ? "text-red-600 bg-red-50" : "text-gray-400 hover:text-gray-600")}
+                ><ThumbsDown className="h-4 w-4" /></button>
+              </div>
+              {(timestamp || durationMs !== undefined) && (
+                <div
+                  className="flex items-center gap-2 text-[10px] text-gray-400"
+                  title={timestamp ? new Date(timestamp).toLocaleString() : undefined}
+                >
+                  {timestamp && <span>{formatClock(timestamp)}</span>}
+                  {durationMs !== undefined && (
+                    <span className="tabular-nums">· {formatDuration(durationMs)}</span>
+                  )}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -566,7 +581,14 @@ function ChatPageContent() {
                 </div>
                 <div className={`flex-1 max-w-[85%] rounded-2xl p-5 shadow-sm ${isAssistant ? "bg-white border border-gray-100 rounded-tl-none" : "bg-MTSS-blue text-white rounded-tr-none ml-auto"}`}>
                   {isAssistant ? (
-                    <AssistantMessage content={text} messageId={msg.id} threadId={threadId} showFeedback={!isCurrentStreaming} />
+                    <AssistantMessage
+                      content={text}
+                      messageId={msg.id}
+                      threadId={threadId}
+                      showFeedback={!isCurrentStreaming}
+                      timestamp={timestamp}
+                      durationMs={durationMs}
+                    />
                   ) : (
                     <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
                   )}
@@ -576,16 +598,12 @@ function ChatPageContent() {
                       {searchProgress && <span className="text-xs">{searchProgress}</span>}
                     </div>
                   )}
-                  {/* Subtle timestamp + duration, right-aligned, low contrast */}
-                  {(timestamp || durationMs) && !isCurrentStreaming && (
+                  {!isAssistant && timestamp && (
                     <div
-                      className={`mt-2 flex items-center gap-2 text-[10px] ${isAssistant ? "text-gray-400" : "text-blue-100"} ${isAssistant ? "justify-start" : "justify-end"}`}
-                      title={timestamp ? new Date(timestamp).toLocaleString() : undefined}
+                      className="mt-2 flex items-center justify-end gap-2 text-[10px] text-blue-100"
+                      title={new Date(timestamp).toLocaleString()}
                     >
-                      {timestamp && <span>{formatClock(timestamp)}</span>}
-                      {isAssistant && durationMs !== undefined && (
-                        <span className="tabular-nums">· {formatDuration(durationMs)}</span>
-                      )}
+                      <span>{formatClock(timestamp)}</span>
                     </div>
                   )}
                 </div>
