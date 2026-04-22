@@ -18,9 +18,11 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
+from starlette.types import Receive, Scope, Send
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -87,6 +89,36 @@ class SPAStaticFiles(StaticFiles):
                 if index.is_file():
                     return FileResponse(index)
             raise
+
+
+class SSEAwareGZipMiddleware(GZipMiddleware):
+    """GZip middleware that bypasses compression for SSE streams.
+
+    Starlette's stock ``GZipMiddleware`` buffers enough of the response body
+    to decide on compression, which breaks Server-Sent Events — the AI SDK
+    client stalls waiting for tokens that are sitting in the compressor
+    buffer. Vercel AI SDK v6 explicitly documents this as incompatible with
+    transport-level compression.
+
+    The streaming agent endpoint is the only SSE route we expose today
+    (``POST /api/agent``). We bypass gzip whenever the request path matches
+    that prefix — checking the path is cheaper and more reliable than
+    peeking at response headers (which would require buffering + replaying
+    the first ASGI ``http.response.start`` message).
+    """
+
+    # Any request path that starts with one of these prefixes is served
+    # without gzip wrapping. Keep this list narrow so we don't accidentally
+    # disable compression for the bulk of the API.
+    _SSE_PATH_PREFIXES: tuple[str, ...] = ("/api/agent",)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if any(path.startswith(prefix) for prefix in self._SSE_PATH_PREFIXES):
+                await self.app(scope, receive, send)
+                return
+        await super().__call__(scope, receive, send)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -301,6 +333,13 @@ def create_app() -> FastAPI:
     # Rate limiting
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    # GZip compression — SSE-aware. Stock GZipMiddleware would break the
+    # /api/agent stream by buffering the response; our subclass short-circuits
+    # on that path. Registered BEFORE CORS so it sits on the outside of the
+    # middleware stack (add_middleware inserts at position 0), meaning it
+    # compresses the response after CORS has set its headers.
+    app.add_middleware(SSEAwareGZipMiddleware, minimum_size=500)
 
     # CORS middleware - allow requests from frontend and runtime
     # In production, this should be restricted appropriately
