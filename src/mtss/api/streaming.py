@@ -15,6 +15,7 @@ why the assistant message never appeared until the page was reloaded.
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import AsyncGenerator, List, Optional
 from uuid import UUID, uuid4
 
@@ -111,10 +112,16 @@ async def _stream_agent(
 
     # -- Build input state --------------------------------------------------
     # Convert frontend messages to LangChain messages
+    now_iso = datetime.now(timezone.utc).isoformat()
     langchain_messages: list = []
     for msg in body.messages:
         if msg.role == "user":
-            langchain_messages.append(HumanMessage(content=msg.content))
+            langchain_messages.append(
+                HumanMessage(
+                    content=msg.content,
+                    additional_kwargs={"sent_at": now_iso},
+                )
+            )
         # System messages from the frontend are passed through; assistant
         # messages are already stored in the checkpoint and do not need to be
         # re-sent.

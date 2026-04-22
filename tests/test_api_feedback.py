@@ -7,7 +7,7 @@ import pytest
 
 
 class TestFeedbackValidation:
-    """POST /api/feedback/ — verify Pydantic validation on request body."""
+    """POST /api/feedback — verify Pydantic validation on request body."""
 
     @pytest.mark.asyncio
     async def test_valid_thumbs_up(self, client, auth_headers, app):
@@ -17,7 +17,7 @@ class TestFeedbackValidation:
 
         with patch("mtss.api.feedback.get_langfuse_client", return_value=None):
             response = await client.post(
-                "/api/feedback/",
+                "/api/feedback",
                 headers=auth_headers,
                 json={
                     "thread_id": str(uuid4()),
@@ -32,7 +32,7 @@ class TestFeedbackValidation:
     async def test_invalid_value_rejected(self, client, auth_headers):
         """Feedback value must be 0 or 1, not 2."""
         response = await client.post(
-            "/api/feedback/",
+            "/api/feedback",
             headers=auth_headers,
             json={
                 "thread_id": str(uuid4()),
@@ -46,7 +46,7 @@ class TestFeedbackValidation:
     async def test_missing_thread_id_rejected(self, client, auth_headers):
         """thread_id is required."""
         response = await client.post(
-            "/api/feedback/",
+            "/api/feedback",
             headers=auth_headers,
             json={"message_id": "msg-001", "value": 1},
         )

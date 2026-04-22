@@ -50,6 +50,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   vessel_id?: string | null;
+  sent_at?: string;
 }
 
 export interface Vessel {

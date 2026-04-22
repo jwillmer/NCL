@@ -94,6 +94,7 @@ class MessageResponse(BaseModel):
     role: str  # "user" | "assistant"
     content: str
     vessel_id: Optional[str] = None  # Vessel filter active when message was sent
+    sent_at: Optional[str] = None  # ISO timestamp (user: stamped on send; assistant: checkpoint ts fallback)
 
 
 class MessagesListResponse(BaseModel):
@@ -492,24 +493,28 @@ async def get_messages(
 
         # Get messages from the properly deserialized checkpoint
         lc_messages = checkpoint_tuple.checkpoint.get("channel_values", {}).get("messages", [])
+        checkpoint_ts = checkpoint_tuple.checkpoint.get("ts") if checkpoint_tuple.checkpoint else None
 
         # Convert LangChain messages to response format
         messages: list[MessageResponse] = []
         for msg in lc_messages:
             msg_id = getattr(msg, "id", None) or str(len(messages))
+            kwargs = getattr(msg, "additional_kwargs", {}) or {}
+            sent_at = kwargs.get("sent_at")
             if isinstance(msg, HumanMessage):
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
                 if content.strip():
-                    # Extract vessel_id from additional_kwargs if present
-                    vessel_id = msg.additional_kwargs.get("vessel_id") if hasattr(msg, "additional_kwargs") else None
-                    messages.append(MessageResponse(id=msg_id, role="user", content=content, vessel_id=vessel_id))
+                    vessel_id = kwargs.get("vessel_id")
+                    messages.append(MessageResponse(id=msg_id, role="user", content=content, vessel_id=vessel_id, sent_at=sent_at))
             elif isinstance(msg, AIMessage):
                 # Skip tool call messages (they have tool_calls but often empty content)
                 if hasattr(msg, "tool_calls") and msg.tool_calls and not msg.content:
                     continue
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
                 if content.strip():
-                    messages.append(MessageResponse(id=msg_id, role="assistant", content=content))
+                    # AIMessages aren't stamped at emit time; fall back to the
+                    # checkpoint's own timestamp so history shows *something*.
+                    messages.append(MessageResponse(id=msg_id, role="assistant", content=content, sent_at=sent_at or checkpoint_ts))
 
         logger.debug("Returning %d messages for thread %s", len(messages), thread_id)
         return MessagesListResponse(messages=messages)

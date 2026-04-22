@@ -29,7 +29,7 @@ class FeedbackResponse(BaseModel):
     status: str
 
 
-@router.post("/", response_model=FeedbackResponse)
+@router.post("", response_model=FeedbackResponse)
 async def submit_feedback(
     request: FeedbackRequest,
     user: UserPayload = Depends(get_current_user),

@@ -50,6 +50,22 @@ if (typeof window !== "undefined") {
   initLangfuse();
 }
 
+/** Clock time, matches common chat-UI convention (HH:MM, 24h, local zone). */
+function formatClock(ms: number): string {
+  const d = new Date(ms);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** "1.2s" / "42s" / "2m 05s" — stays compact so it sits out of the way. */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  const secs = ms / 1000;
+  if (secs < 60) return secs < 10 ? `${secs.toFixed(1)}s` : `${Math.round(secs)}s`;
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60).toString().padStart(2, "0");
+  return `${m}m ${s}s`;
+}
+
 // Allow <cite>, <img-cite>, and <mark> through sanitizer.
 // clobberPrefix is disabled so <cite id="..."> round-trips the backend's
 // 12-char hex chunk_id to CiteRenderer / SourceViewDialog untouched.
@@ -160,8 +176,12 @@ function AssistantMessage({ content, messageId, threadId, showFeedback }: {
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
 
   const handleFeedback = (value: 0 | 1) => {
-    if (feedback) return;
-    setFeedback(value === 1 ? "up" : "down");
+    const next = value === 1 ? "up" : "down";
+    if (feedback === next) {
+      setFeedback(null);
+      return;
+    }
+    setFeedback(next);
     submitFeedback(threadId, messageId, value).catch(console.error);
     trackFeedback(threadId, messageId, value);
   };
@@ -184,15 +204,17 @@ function AssistantMessage({ content, messageId, threadId, showFeedback }: {
             <div className="flex items-center gap-1 mt-2">
               <button
                 onClick={() => handleFeedback(1)}
+                aria-pressed={feedback === "up"}
+                aria-label={feedback === "up" ? "Remove positive feedback" : "Mark response as helpful"}
                 className={cn("p-1.5 rounded hover:bg-gray-100 transition-colors",
                   feedback === "up" ? "text-green-600 bg-green-50" : "text-gray-400 hover:text-gray-600")}
-                disabled={feedback !== null}
               ><ThumbsUp className="h-4 w-4" /></button>
               <button
                 onClick={() => handleFeedback(0)}
+                aria-pressed={feedback === "down"}
+                aria-label={feedback === "down" ? "Remove negative feedback" : "Mark response as unhelpful"}
                 className={cn("p-1.5 rounded hover:bg-gray-100 transition-colors",
                   feedback === "down" ? "text-red-600 bg-red-50" : "text-gray-400 hover:text-gray-600")}
-                disabled={feedback !== null}
               ><ThumbsDown className="h-4 w-4" /></button>
             </div>
           </>
@@ -257,32 +279,69 @@ function ChatPageContent() {
     [threadId, vesselId, vesselTypeId, vesselClassId]
   );
 
-  // Forward ref for the filter-apply callback. The handler itself is defined
-  // further down (it closes over `conversation` + `threadId`), but `onData`
-  // needs to reach it from inside the `useChat` options block. Refs avoid the
-  // effect-diff race the old implementation had: data parts are delivered
-  // here as they stream, not via walking the last message's parts afterwards.
-  const applyAgentFilterRef = useRef<((key: "vessel_id" | "vessel_type" | "vessel_class", value: string | null) => void) | null>(null);
+  // Refs that expose the latest conversation + threadId to the `onData`
+  // closure without re-creating the useChat hook on every change. useState
+  // setters are already referentially stable so they're used directly.
+  const conversationRef = useRef(conversation);
+  useEffect(() => { conversationRef.current = conversation; }, [conversation]);
+  const threadIdRef = useRef(threadId);
+  useEffect(() => { threadIdRef.current = threadId; }, [threadId]);
+
   const lastAppliedAgentFilterRef = useRef<string>("");
+
+  // Live agent status (e.g. "Searching topics...") pushed via `data-progress`
+  // parts. Rendered as a subtle caption under the streaming bubble and
+  // cleared when the stream finishes.
+  const [searchProgress, setSearchProgress] = useState<string>("");
+
+  // Per-message client-side timestamps. Populated as the user sends / the
+  // assistant finishes. Messages loaded from DB history have no timestamp
+  // here; the UI falls back to hiding the badge in that case.
+  const [messageTimestamps, setMessageTimestamps] = useState<Record<string, number>>({});
+  const streamStartedAtRef = useRef<number | null>(null);
+  const [lastAssistantDurationMs, setLastAssistantDurationMs] = useState<Record<string, number>>({});
 
   const { messages, sendMessage, status, setMessages, error: chatError } = useChat({
     id: threadId,
     transport,
     onData: (part) => {
-      if (part.type !== "data-filter" || !part.data) return;
-      const payload = part.data as { vessel_id: string | null; vessel_type: string | null; vessel_class: string | null };
-      const key = JSON.stringify(payload);
-      if (key === lastAppliedAgentFilterRef.current) return;
-      lastAppliedAgentFilterRef.current = key;
-      const apply = applyAgentFilterRef.current;
-      if (!apply) return;
-      // Server enforces mutual exclusion; a full-null payload means "clear".
-      if (payload.vessel_id) apply("vessel_id", payload.vessel_id);
-      else if (payload.vessel_type) apply("vessel_type", payload.vessel_type);
-      else if (payload.vessel_class) apply("vessel_class", payload.vessel_class);
-      else apply("vessel_id", null);
+      if (part.type === "data-progress" && typeof part.data === "string") {
+        setSearchProgress(part.data);
+        return;
+      }
+      if (part.type === "data-filter" && part.data) {
+        const p = part.data as { vessel_id: string | null; vessel_type: string | null; vessel_class: string | null };
+        const key = JSON.stringify(p);
+        if (key === lastAppliedAgentFilterRef.current) return;
+        lastAppliedAgentFilterRef.current = key;
+        // Setters are stable; apply mutual exclusion inline so this doesn't
+        // depend on the identity of handleFilterChange (which changes with
+        // `conversation`).
+        setVesselId(p.vessel_id);
+        setVesselTypeId(p.vessel_type);
+        setVesselClassId(p.vessel_class);
+        if (conversationRef.current) {
+          updateConversation(threadIdRef.current, {
+            vessel_id: p.vessel_id,
+            vessel_type: p.vessel_type,
+            vessel_class: p.vessel_class,
+          }).catch(console.error);
+        }
+      }
+    },
+    onFinish: ({ message }) => {
+      setSearchProgress("");
+      const started = streamStartedAtRef.current;
+      streamStartedAtRef.current = null;
+      if (started && message?.id) {
+        const durationMs = Date.now() - started;
+        setLastAssistantDurationMs((prev) => ({ ...prev, [message.id]: durationMs }));
+        setMessageTimestamps((prev) => ({ ...prev, [message.id]: Date.now() }));
+      }
     },
     onError: () => {
+      setSearchProgress("");
+      streamStartedAtRef.current = null;
       // Reload from DB on error to resync
       getMessages(threadId)
         .then((history) => setMessages(history.map(toUIMessage)))
@@ -291,6 +350,14 @@ function ChatPageContent() {
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  // Stamp stream-start the moment the hook reports "submitted" so onFinish
+  // can compute a real duration. Guarded to the first transition per stream.
+  useEffect(() => {
+    if (status === "submitted" && streamStartedAtRef.current === null) {
+      streamStartedAtRef.current = Date.now();
+    }
+  }, [status]);
 
   // Load filters
   useEffect(() => {
@@ -334,6 +401,15 @@ function ChatPageContent() {
         if (history.length > 0) {
           setMessages(history.map(toUIMessage));
           titleGenerated.current = history.some((m) => m.role === "user");
+          setMessageTimestamps((prev) => {
+            const next = { ...prev };
+            for (const msg of history) {
+              if (!msg.sent_at || next[msg.id]) continue;
+              const parsed = Date.parse(msg.sent_at);
+              if (!Number.isNaN(parsed)) next[msg.id] = parsed;
+            }
+            return next;
+          });
         }
         prevMessageCount.current = history.length;
       })
@@ -341,10 +417,23 @@ function ChatPageContent() {
       .finally(() => setHistoryLoaded(true));
   }, [userId, threadId, historyLoaded, setMessages]);
 
-  // Track messages for title gen and timestamp update
+  // Track messages for title gen, timestamp stamping, and DB touch.
   useEffect(() => {
     if (!threadId || !historyLoaded || messages.length <= prevMessageCount.current) return;
     touchConversation(threadId).catch(console.error);
+    // Stamp a wall-clock timestamp on every message we haven't seen yet so
+    // the UI can render "12:07" next to the bubble. Assistant durations are
+    // filled in by onFinish; this handles user messages + pre-finish
+    // assistants too.
+    const now = Date.now();
+    setMessageTimestamps((prev) => {
+      const next = { ...prev };
+      for (let i = prevMessageCount.current; i < messages.length; i++) {
+        const id = messages[i]?.id;
+        if (id && !next[id]) next[id] = now;
+      }
+      return next;
+    });
     if (!titleGenerated.current) {
       const userMsg = messages.find((m) => m.role === "user");
       if (userMsg) {
@@ -363,8 +452,10 @@ function ChatPageContent() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isStreaming]);
 
-  // Filter change handler — shared by both the user clicking a FilterDropdown
-  // and the agent pushing `data-filter` events through `onData`.
+  // Filter change handler — used by the user clicking a FilterDropdown.
+  // Agent-pushed filter updates run inline in `onData` via the conversation
+  // + threadId refs, so they don't need to go through this closure (which
+  // changes identity whenever `conversation` updates).
   const handleFilterChange = useCallback(async (key: "vessel_id" | "vessel_type" | "vessel_class", value: string | null) => {
     const setters = { vessel_id: setVesselId, vessel_type: setVesselTypeId, vessel_class: setVesselClassId };
     // Set selected, clear others (mutual exclusivity)
@@ -375,10 +466,6 @@ function ChatPageContent() {
       updateConversation(threadId, update).catch(console.error);
     }
   }, [conversation, threadId]);
-
-  // Keep the ref handed to `onData` pointing at the latest handleFilterChange
-  // so agent-pushed filter updates see the current conversation/threadId.
-  useEffect(() => { applyAgentFilterRef.current = handleFilterChange; }, [handleFilterChange]);
 
   const handleViewCitation = useCallback((chunkId: string, lines?: [number, number][]) => {
     setSelectedChunkId(chunkId);
@@ -467,6 +554,8 @@ function ChatPageContent() {
             const text = msg.parts.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join("");
             const isLast = idx === visibleMessages.length - 1;
             const isCurrentStreaming = isStreaming && isLast && isAssistant;
+            const timestamp = messageTimestamps[msg.id];
+            const durationMs = lastAssistantDurationMs[msg.id];
 
             return (
               <div key={msg.id} className={`flex gap-4 max-w-3xl mx-auto ${isAssistant ? "" : "flex-row-reverse"}`}>
@@ -480,21 +569,55 @@ function ChatPageContent() {
                     <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
                   )}
                   {isCurrentStreaming && (
-                    <div className="mt-2 flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin text-gray-400" /></div>
+                    <div className="mt-2 flex items-center gap-2 text-gray-400">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {searchProgress && <span className="text-xs">{searchProgress}</span>}
+                    </div>
+                  )}
+                  {/* Subtle timestamp + duration, right-aligned, low contrast */}
+                  {(timestamp || durationMs) && !isCurrentStreaming && (
+                    <div
+                      className={`mt-2 flex items-center gap-2 text-[10px] ${isAssistant ? "text-gray-400" : "text-blue-100"} ${isAssistant ? "justify-start" : "justify-end"}`}
+                      title={timestamp ? new Date(timestamp).toLocaleString() : undefined}
+                    >
+                      {timestamp && <span>{formatClock(timestamp)}</span>}
+                      {isAssistant && durationMs !== undefined && (
+                        <span className="tabular-nums">· {formatDuration(durationMs)}</span>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
             );
           })}
 
-          {/* Skeleton while waiting for first token */}
-          {status === "submitted" && (!messages.length || messages[messages.length - 1].role !== "assistant") && (
+          {/* Skeleton while waiting for the first assistant text chunk.
+             Covers `submitted` AND the brief window at the start of
+             `streaming` before any text-delta arrives — otherwise the old
+             loader disappears and leaves a blank gap. Progress text (e.g.
+             "Searching topics...") is surfaced here too. */}
+          {isStreaming && (() => {
+            const last = messages[messages.length - 1];
+            const hasAssistantText = last?.role === "assistant"
+              && last.parts.some((p) => (p as { type: string; text?: string }).type === "text"
+                && !!(p as { text: string }).text?.trim());
+            return !hasAssistantText;
+          })() && (
             <div className="flex gap-4 max-w-3xl mx-auto">
               <div className="flex-shrink-0 w-8 h-8 rounded-full bg-MTSS-blue flex items-center justify-center shadow-sm"><span className="text-white text-xs font-semibold">AI</span></div>
               <div className="flex-1 max-w-[85%] bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-none p-5 space-y-2">
-                <div className="h-4 w-48 bg-gray-200 rounded animate-pulse" />
-                <div className="h-4 w-64 bg-gray-200 rounded animate-pulse" />
-                <div className="h-4 w-32 bg-gray-200 rounded animate-pulse" />
+                {searchProgress ? (
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <Loader2 className="h-4 w-4 animate-spin text-MTSS-blue" />
+                    <span>{searchProgress}</span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="h-4 w-48 bg-gray-200 rounded animate-pulse" />
+                    <div className="h-4 w-64 bg-gray-200 rounded animate-pulse" />
+                    <div className="h-4 w-32 bg-gray-200 rounded animate-pulse" />
+                  </>
+                )}
               </div>
             </div>
           )}

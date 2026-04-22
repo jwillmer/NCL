@@ -54,14 +54,19 @@ function stripArchivePrefix(uri: string): string {
   return uri.replace(/^\/archive\//, "");
 }
 
-/** Resolve a relative or absolute archive URL to a full API path. */
+/** Resolve a relative or absolute archive URL to a full API path.
+ *
+ * Archive folder IDs are 32-char MD5 hashes (compute_folder_id). The old
+ * regex only matched 16-char prefixes, so any href already in
+ * ``<folder>/attachments/file`` form fell through to the "relative" branch
+ * and got the folder prefix stapled on twice. Accept any leading hex run of
+ * 16+ chars followed by ``/`` as "already absolute".
+ */
 function resolveArchiveUrl(href: string, browseUri?: string | null): string {
-  // Check if it's already an absolute archive path (starts with folder_id pattern)
-  const isAbsoluteArchivePath = /^[a-f0-9]{16}\//.test(href);
+  const isAbsoluteArchivePath = /^[a-f0-9]{16,}\//.test(href);
   if (isAbsoluteArchivePath) {
     return `${getApiBaseUrl()}/archive/${href}`;
   }
-  // Relative path — resolve from document's directory
   const basePath = browseUri
     ? browseUri.replace(/^\/archive/, "").replace(/\/[^/]+$/, "")
     : "";
@@ -449,7 +454,15 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
 
   return (
     <div className="flex items-center justify-between px-3 py-2 rounded-md hover:bg-MTSS-gray-light/30 group">
-      <div className="flex items-center gap-3 min-w-0 flex-1">
+      {/* Whole row (everything except the download button) is the dialog
+          trigger — clicking the title is the natural move. `button` so
+          keyboard users get focus + Enter/Space behavior for free. */}
+      <button
+        type="button"
+        onClick={onView}
+        className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-MTSS-blue/40 rounded"
+        title="View source"
+      >
         <span className="flex-shrink-0 w-6 h-6 rounded-full bg-MTSS-blue/10 text-MTSS-blue text-xs font-medium flex items-center justify-center">
           {displayIndex}
         </span>
@@ -457,7 +470,7 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
           {citation.titleLoading ? (
             <Skeleton className="h-4 w-48" />
           ) : (
-            <p className="text-sm font-medium text-MTSS-blue-dark truncate">
+            <p className="text-sm font-medium text-MTSS-blue-dark truncate group-hover:underline">
               {citation.title}
             </p>
           )}
@@ -465,7 +478,7 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
             <p className="text-xs text-MTSS-gray">{locationParts.join(" | ")}</p>
           )}
         </div>
-      </div>
+      </button>
 
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <Button
@@ -669,6 +682,18 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
                       }
                       if (!resolved.startsWith("mailto:") && !resolved.startsWith("http")) {
                         resolved = resolveArchiveUrl(resolved, citation?.archive_browse_uri);
+                      }
+                      // "Download Original" inside the rendered .md points at
+                      // the auth-protected /api/archive path; a new-tab click
+                      // can't send the Bearer header and would 401. If the
+                      // resolved URL matches the citation's download_uri, swap
+                      // in the pre-signed URL so the browser can follow it.
+                      if (
+                        citation?.archive_download_signed_url &&
+                        citation.archive_download_uri &&
+                        resolved.endsWith(stripArchivePrefix(citation.archive_download_uri))
+                      ) {
+                        resolved = citation.archive_download_signed_url;
                       }
                       return <a href={resolved} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
                     },
