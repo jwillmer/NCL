@@ -28,9 +28,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, cast
 
 from langchain_core.callbacks.manager import adispatch_custom_event
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages.utils import convert_to_openai_messages
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import Command
@@ -299,12 +299,17 @@ No headers, no citations.
 """
 
 
-def _build_system_prompt(vessel: Optional[Vessel] = None) -> str:
-    """Build system prompt with optional vessel context."""
-    base_prompt = _load_system_prompt()
+def _build_vessel_context(vessel: Optional[Vessel]) -> str:
+    """Build the dynamic vessel-context suffix.
 
-    if vessel:
-        vessel_context = f"""
+    Kept separate from the base system prompt so the base prompt stays
+    byte-stable across turns — OpenAI-family prompt caching keys off an
+    exact prefix match, so any in-prefix drift (vessel name, intent
+    addendum) would invalidate the cache for every other user.
+    """
+    if not vessel:
+        return ""
+    return f"""
 ## Current Vessel Filter
 
 You are currently searching within documents related to a specific vessel:
@@ -317,9 +322,17 @@ All search results are filtered to this vessel. When responding:
 - If the user asks about other vessels, remind them that results are filtered to this vessel
 - Use the vessel name when referencing findings (e.g., "On {vessel.name}, the issue was...")
 """
-        return base_prompt + vessel_context
 
-    return base_prompt
+
+def _build_system_prompt(vessel: Optional[Vessel] = None) -> str:
+    """Build system prompt with optional vessel context.
+
+    Retained for backwards compatibility with callers / tests that want
+    the combined string. Production chat_node splits these so the base
+    prompt can be cached and the vessel block kept out of the prefix.
+    """
+    base_prompt = _load_system_prompt()
+    return base_prompt + _build_vessel_context(vessel)
 
 
 def _serialize_retrieval_result(result: RetrievalResult) -> Dict[str, Any]:
@@ -453,6 +466,182 @@ async def _resolve_filter_value(
     return None, None, None, f"Unknown filter kind: '{kind}'."
 
 
+def _extract_tool_calls(message: Any) -> List[Dict[str, Any]]:
+    """Parse OpenAI-format tool_calls from a LiteLLM response message.
+
+    LiteLLM returns OpenAI-shape tool_calls (``id``, ``type='function'``,
+    ``function.name``, ``function.arguments`` as a JSON string). We
+    translate that into LangChain's AIMessage tool_call dict shape so
+    the rest of the graph (search_node / set_filter_node) can keep
+    reading ``message.tool_calls[0]["args"]["question"]`` unchanged.
+    """
+    raw_calls = getattr(message, "tool_calls", None) or []
+    parsed: List[Dict[str, Any]] = []
+    for call in raw_calls:
+        fn = getattr(call, "function", None) or {}
+        # LiteLLM may return either attribute-style or dict-style.
+        if isinstance(fn, dict):
+            name = fn.get("name", "")
+            args_raw = fn.get("arguments", "") or "{}"
+        else:
+            name = getattr(fn, "name", "") or ""
+            args_raw = getattr(fn, "arguments", "") or "{}"
+        try:
+            args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse tool_call arguments: %r", args_raw)
+            args = {}
+        call_id = getattr(call, "id", None)
+        if isinstance(call, dict):
+            call_id = call.get("id", call_id)
+        parsed.append({
+            "id": call_id or "",
+            "name": name,
+            "args": args,
+            "type": "tool_call",
+        })
+    return parsed
+
+
+async def _call_chat_llm(
+    *,
+    base_system: str,
+    dynamic_suffix: str,
+    history: List[BaseMessage],
+    tools: List[Dict[str, Any]],
+    tool_choice: Any,
+    settings: Any,
+    config: RunnableConfig,
+    cache_phase: str,
+) -> AIMessage:
+    """Invoke the chat LLM via ``litellm.acompletion`` with prompt caching.
+
+    Cache-control placement strategy (see also agent docstring):
+
+      1. **Stable prefix first**: the base system prompt (loaded verbatim
+         from ``prompts/system.md``) is emitted as the first message with
+         an Anthropic-style ``cache_control: ephemeral`` breakpoint on
+         its text block. OpenAI-family prefix caching ignores the marker
+         but keys off the exact prefix bytes regardless, so the same
+         block caches for both providers routed via OpenRouter.
+      2. **Tools** are passed in a deterministic order (search, then
+         set_filter) so the tools+system prefix hashes identically
+         across turns.
+      3. **Dynamic suffix** (vessel context + intent addendum) is
+         appended as a *second* system message placed AFTER the user
+         history — anything dynamic that appears before the history
+         would invalidate the cache on every vessel / intent change.
+         Putting it last keeps the base system + tools + older history
+         cacheable even while the vessel filter or intent changes.
+
+    Returns an ``AIMessage`` so the rest of the graph (which relies on
+    ``.tool_calls``, ``.content``) works unchanged.
+    """
+    from litellm import acompletion
+
+    from ..observability import get_langfuse_metadata
+
+    model_name = settings.llm_model
+
+    # Convert LangChain history to OpenAI dict form. ``content`` on
+    # user/assistant messages becomes plain strings, which is what
+    # OpenAI/OpenRouter want.
+    history_dicts = convert_to_openai_messages(history)
+
+    # Prepend the stable system prompt with a cache_control breakpoint.
+    # We use the block-content form so the Anthropic-style marker can
+    # attach to it; OpenAI ignores unknown block fields.
+    system_block = {
+        "role": "system",
+        "content": [
+            {
+                "type": "text",
+                "text": base_system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+    }
+
+    messages: List[Dict[str, Any]] = [system_block, *history_dicts]
+
+    # Append dynamic system content AFTER the history so it stays out
+    # of the cached prefix. Empty string means we skip it entirely.
+    if dynamic_suffix:
+        messages.append({"role": "system", "content": dynamic_suffix})
+
+    call_params: Dict[str, Any] = {
+        "model": model_name,
+        "messages": messages,
+        "metadata": get_langfuse_metadata(),
+        "extra_body": OPENROUTER_PRIVACY_EXTRA_BODY,
+    }
+
+    if tools:
+        # Mark the last tool schema with cache_control so Anthropic
+        # caches the tool block (OpenAI ignores the marker). Tools are
+        # structurally identical across turns of the same type.
+        marked_tools = [dict(t) for t in tools]
+        if marked_tools:
+            last = dict(marked_tools[-1])
+            last["cache_control"] = {"type": "ephemeral"}
+            marked_tools[-1] = last
+        call_params["tools"] = marked_tools
+        if tool_choice is not None:
+            call_params["tool_choice"] = tool_choice
+        # Disable parallel tool calls — the graph only handles one call
+        # per turn. Matches the prior ``bind_tools(parallel_tool_calls=False)``.
+        call_params["parallel_tool_calls"] = False
+
+    # ``prompt_cache_key`` is an OpenAI routing hint that LiteLLM
+    # forwards as a top-level completion kwarg (not inside extra_body).
+    # A phase-scoped key encourages OpenAI to route turn-1 and turn-2
+    # requests to whichever replica has the matching prefix warm. This
+    # is a hint, not a requirement — cache hits still work without it
+    # whenever the prefix bytes match.
+    call_params["prompt_cache_key"] = f"mtss-chat-{cache_phase}"
+
+    response = await acompletion(**call_params)
+
+    choice = response.choices[0]
+    message = choice.message
+    content = getattr(message, "content", "") or ""
+
+    tool_calls = _extract_tool_calls(message)
+
+    # Log cache hits for verification. OpenAI populates
+    # prompt_tokens_details.cached_tokens; Anthropic uses
+    # cache_read_input_tokens at the top of usage. Check both.
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = 0
+        if details is not None:
+            cached = getattr(details, "cached_tokens", 0) or 0
+            if not cached and isinstance(details, dict):
+                cached = details.get("cached_tokens", 0) or 0
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        total_cached = max(cached, cache_read)
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+        if total_cached:
+            logger.info(
+                "chat_llm cache HIT phase=%s cached_tokens=%d prompt_tokens=%d",
+                cache_phase,
+                total_cached,
+                prompt_tokens,
+            )
+        else:
+            logger.debug(
+                "chat_llm cache miss phase=%s prompt_tokens=%d",
+                cache_phase,
+                prompt_tokens,
+            )
+
+    ai_kwargs: Dict[str, Any] = {"content": content}
+    if tool_calls:
+        ai_kwargs["tool_calls"] = tool_calls
+    return AIMessage(**ai_kwargs)
+
+
 async def chat_node(
     state: AgentState, config: RunnableConfig
 ) -> Command[Literal["search_node", "set_filter_node", "__end__"]]:
@@ -466,18 +655,15 @@ async def chat_node(
     don't waste a round trip on chit-chat or off-topic requests.
     """
     settings = get_settings()
-    model_name = settings.llm_model.removeprefix("openrouter/")
-    model = ChatOpenAI(
-        model=model_name,
-        base_url=settings.openrouter_base_url,
-        api_key=settings.openrouter_api_key,
-        extra_body=OPENROUTER_PRIVACY_EXTRA_BODY,
-    )
 
-    # Build system prompt with vessel context if a vessel filter is active
+    # Build system prompt with vessel context if a vessel filter is active.
+    # Keep base (stable) and vessel-suffix (dynamic) separate so the base
+    # plus tool schemas form a byte-stable prefix for OpenAI/OpenRouter
+    # prompt caching (~1-1.5s saved per cache hit; 5-min TTL on OpenAI).
     vessel_id = state.get("selected_vessel_id")
     vessel = await _get_vessel_info(vessel_id)
-    base_system = _build_system_prompt(vessel)
+    base_system = _load_system_prompt()
+    vessel_suffix = _build_vessel_context(vessel)
 
     # Check if we have search context (coming back from search_node)
     citation_map_data = state.get("citation_map")
@@ -496,7 +682,7 @@ async def chat_node(
     # Classify intent on fresh user turns only. Returning from search_node
     # (citation_map_data present) or mid-tool-call states skip this.
     intent: Optional[QueryIntent] = None
-    system_prompt = base_system
+    intent_addendum = ""
     force_search = False
     bind_search_tool = True
     bind_filter_tool = True
@@ -530,46 +716,51 @@ async def chat_node(
             elif intent is QueryIntent.EXPLORATORY:
                 bind_search_tool = False
                 bind_filter_tool = False
-                system_prompt = base_system + _EXPLORATORY_ADDENDUM
+                intent_addendum = _EXPLORATORY_ADDENDUM
             elif intent is QueryIntent.OFF_TOPIC:
                 bind_search_tool = False
                 bind_filter_tool = False
-                system_prompt = base_system + _OFF_TOPIC_ADDENDUM
+                intent_addendum = _OFF_TOPIC_ADDENDUM
             elif intent is QueryIntent.GREETING:
                 bind_search_tool = False
                 bind_filter_tool = False
-                system_prompt = base_system + _GREETING_ADDENDUM
+                intent_addendum = _GREETING_ADDENDUM
             state["search_progress"] = ""
             await emit_state(config, state)
 
-    system_message = SystemMessage(content=system_prompt)
+    # Build tools list — kept in a deterministic order so the same
+    # request shape hashes to the same prefix across turns.
+    available_tools: List[Dict[str, Any]] = []
+    if bind_search_tool:
+        available_tools.append(SEARCH_TOOL)
+    if bind_filter_tool:
+        available_tools.append(SET_FILTER_TOOL)
 
-    if bind_search_tool or bind_filter_tool:
-        available_tools = []
-        if bind_search_tool:
-            available_tools.append(SEARCH_TOOL)
-        if bind_filter_tool:
-            available_tools.append(SET_FILTER_TOOL)
+    if available_tools:
         # force_search pins the choice to search_documents specifically —
         # the filter tool must have already run (or not be relevant) on this
         # turn, so there's no reason to let the model pick it again.
         if force_search and bind_search_tool:
-            tool_choice: Any = "search_documents"
+            tool_choice: Any = {
+                "type": "function",
+                "function": {"name": "search_documents"},
+            }
         else:
             tool_choice = "auto"
-        invoker = model.bind_tools(
-            available_tools,
-            parallel_tool_calls=False,
-            tool_choice=tool_choice,
-        )
     else:
-        invoker = model
+        tool_choice = None
 
     llm_step = "chat_llm2_ms" if citation_map_data else "chat_llm1_ms"
     async with record_step(llm_step):
-        response = await invoker.ainvoke(
-            [system_message, *sanitized_messages],
-            config,
+        response = await _call_chat_llm(
+            base_system=base_system,
+            dynamic_suffix=vessel_suffix + intent_addendum,
+            history=sanitized_messages,
+            tools=available_tools,
+            tool_choice=tool_choice,
+            settings=settings,
+            config=config,
+            cache_phase="post_search" if citation_map_data else "pre_search",
         )
 
     # Check if the model wants to use a tool, and route by name.
