@@ -1,21 +1,10 @@
-﻿"""Processing layer for mtss."""
+"""Processing layer for mtss.
 
-from ..ingest.archive_generator import ArchiveGenerator, ArchiveResult, ContentFileResult
-from .embeddings import EmbeddingGenerator
-from ..ingest.hierarchy_manager import HierarchyManager
-from .image_processor import ImageClassification, ImageProcessor
-from ..rag.reranker import Reranker
-from ..ingest.version_manager import IngestDecision, VersionManager
+Intentionally empty of eager re-exports. The old re-exports pulled in
+``..ingest`` and ``..parsers`` transitively — those live in the ``ingest``
+extras and are absent from the API image, so loading them at import time
+crashes API startup with ``ModuleNotFoundError: langchain_text_splitters``.
 
-__all__ = [
-    "ArchiveGenerator",
-    "ArchiveResult",
-    "ContentFileResult",
-    "HierarchyManager",
-    "EmbeddingGenerator",
-    "IngestDecision",
-    "Reranker",
-    "ImageProcessor",
-    "ImageClassification",
-    "VersionManager",
-]
+Consumers import submodules directly (``mtss.processing.entity_cache``,
+``mtss.processing.embeddings``, ``mtss.processing.image_processor``, …).
+"""
