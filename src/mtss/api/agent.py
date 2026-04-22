@@ -1074,18 +1074,26 @@ async def search_node(
                 query_embedding=query_embedding,
             )
 
-            # Fallback: if the topic-filtered search returned nothing,
-            # retry without the topic_ids filter. Many chunks in the
-            # corpus have empty topic_ids arrays (populated by an LLM
-            # pass during ingest that often no-ops), so the
-            # semantic-matched topic_ids sometimes point to zero
-            # actual chunks. Vessel filters stay applied — they are
-            # structural, not LLM-derived.
-            if not retrieval_results and filter_result.matched_topic_ids:
+            # Fallback: retry without the topic_ids filter when the
+            # topic-filtered search returned zero OR a handful of chunks.
+            # Post-backfill (2026-04-22, 94.7% topic coverage) the filter
+            # is much tighter — narrow queries can match a single topic
+            # with 1-3 chunks, which starves the reranker. Extending the
+            # trigger to ``< retrieval_top_k / 4`` catches that case
+            # without impacting queries that already pool broadly.
+            # Vessel filters stay applied — they are structural, not
+            # LLM-derived.
+            min_results_before_fallback = max(1, settings.retrieval_top_k // 4)
+            if (
+                len(retrieval_results) < min_results_before_fallback
+                and filter_result.matched_topic_ids
+            ):
                 fallback_filter = dict(vessel_filter) if vessel_filter else None
                 logger.info(
-                    "Topic-filtered search returned 0 results; "
-                    "retrying without topic_ids filter"
+                    "Topic-filtered search returned %d results (<%d); "
+                    "retrying without topic_ids filter",
+                    len(retrieval_results),
+                    min_results_before_fallback,
                 )
                 await on_progress("Retrying without topic filter")
                 retrieval_results = await engine.search_only(

@@ -206,15 +206,22 @@ class Settings(BaseSettings):
     # this ontology (~3k rows, median 1 chunk per topic, heavy near-synonym
     # fragmentation like the 7 "spare parts" topics). Re-tune if the topic
     # ontology changes significantly.
+    # Lowered 0.55 -> 0.45 on 2026-04-22 after the v=5+v=6 topic_ids
+    # backfill pushed coverage from ~8% to 94.7%. At 0.55 on the post-
+    # backfill corpus the filter matched 0-3 narrow topics per question
+    # (1-3 chunks), starving the reranker; the prior no-result fallback
+    # only fires when the filter returns zero, not "a handful". Threshold
+    # sweep on regressed questions shows 0.45 consistently recovers
+    # 20-50 chunk pools across 5-10 clusters without false positives.
     topic_query_match_threshold: float = Field(
-        default=0.55, ge=0.0, le=1.0, validation_alias="TOPIC_QUERY_MATCH_THRESHOLD"
+        default=0.45, ge=0.0, le=1.0, validation_alias="TOPIC_QUERY_MATCH_THRESHOLD"
     )
-    # Top-K per extracted name. K=3 covers the common cluster size without
-    # meaningful precision loss (judged 53% vs 59% at K=1) and roughly
-    # doubles the chunk pool (13.6 vs 7.2 chunks/query). Reranker handles
-    # residual noise.
+    # Top-K per extracted name. Raised 3 -> 5 in the same 2026-04-22 tune
+    # to widen the cluster pool on narrow queries. Reranker still
+    # dominates the final top-K, so adding 2 more near-synonym topics
+    # costs only a few extra GIN index probes.
     topic_query_top_k: int = Field(
-        default=3, ge=1, le=20, validation_alias="TOPIC_QUERY_TOP_K"
+        default=5, ge=1, le=20, validation_alias="TOPIC_QUERY_TOP_K"
     )
 
     # Topic Loosening (query-time). Rarely fires with the tuned primary
