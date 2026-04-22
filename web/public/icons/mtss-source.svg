@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MTSS PWA icon source. Reproduces the in-app header logo:
+  Lucide `ship` glyph (white, stroked, round caps) on an MTSS-blue
+  (#1B365D) rounded square. Viewbox is 512x512; the ship is
+  centered on a 256x256 inner area (padding leaves maskable safe zone).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="80" ry="80" fill="#1B365D"/>
+  <g transform="translate(128 128) scale(10.6667)"
+     fill="none" stroke="#FFFFFF" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- Lucide ship (v0.292) path set; single-line values copied verbatim. -->
+    <path d="M2 20a2.4 2.4 0 0 0 2 1 2.4 2.4 0 0 0 2-1 2.4 2.4 0 0 1 2-1 2.4 2.4 0 0 1 2 1 2.4 2.4 0 0 0 2 1 2.4 2.4 0 0 0 2-1 2.4 2.4 0 0 1 2-1 2.4 2.4 0 0 1 2 1 2.4 2.4 0 0 0 2 1 2.4 2.4 0 0 0 2-1"/>
+    <path d="M19.38 20A11.6 11.6 0 0 0 21 14l-9-4-9 4c0 2.9.94 5.34 2.81 7.76"/>
+    <path d="M19 13V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6"/>
+    <path d="M12 10v4"/>
+    <path d="M12 2v3"/>
+  </g>
+</svg>

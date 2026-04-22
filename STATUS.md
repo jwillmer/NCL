@@ -1,15 +1,61 @@
-# Session Status — Chat UI fixes
+# Session Status — Chat UI fixes + Perf plan
 
 _Last updated: 2026-04-22 — Claude keeps this file in sync; scroll is optional._
-_ID scheme: `I#` = issue, `D#` = pending decision, `R#` = reference note, `C#` = commit._
+_ID scheme: `I#` = issue, `D#` = pending decision, `R#` = reference note, `C#` = commit, `P#` = perf plan item._
 
 ## Active issues
 
 _None — all chat-UI fixes confirmed by user._
 
-## Pending decisions (need user input)
+## Perf plan — approval sheet
 
-_None._
+Source: `PERF-PLAN.md`. Evaluated by 4 sub-agents (Phase 1–4). Items grouped by PR; mark each ✅ (approve) / ❌ (reject) / ✏️ (modify).
+
+### PR1 — Backend singleton + headers
+
+| ID | Task | Risk | Recommendation | Decision |
+|---|---|---|---|---|
+| **P1.1** | `SupabaseClient` singleton via `Depends`. Must also remove 3× `await client.close()` in vessel endpoints (main.py:544,559,574) and move pool close to lifespan shutdown. | Low | Implement | ⏳ pending |
+| **P1.2** | `GZipMiddleware` — **SSE-aware subclass only**. Stock middleware compresses `/api/agent` SSE and breaks the client. | High as-written; Low with subclass | Implement with SSE skip | ⏳ pending |
+| **P1.3 + P4.5** | `SPAStaticFiles` header override: `/assets/*` immutable, `/index.html` no-cache, `/sw.js` no-cache + `Service-Worker-Allowed: /`. | Low | Implement | ⏳ pending |
+
+### PR2 — Query + payload + migration
+
+| ID | Task | Risk | Recommendation | Decision |
+|---|---|---|---|---|
+| **P2.1** | Drop `count="exact"`; `has_more = len == limit`; make `total` `Optional[int]=None`. | Low | Implement | ⏳ pending |
+| **P2.2** | Replace `.select("*")` at 4 sites with the explicit 11-col list. | Low | Implement | ⏳ pending |
+| **P2.3** | Migration `005_conversations_list_perf.sql` — composite index `(user_id, is_archived, last_message_at DESC, created_at DESC)`, drop `idx_conversations_user_recent` + `idx_conversations_user_archived`. **User ruling: always write a migration file; apply script or manual both OK; apply to test → verify → prod.** | Medium | Implement → test → prod | ⏳ pending |
+| **P2.4** | Wire `/api/vessels*` through `VesselCache`. Add `Cache-Control: private, max-age=300, stale-while-revalidate=600`. Add `invalidate()` in CLI upsert paths. | Low | Implement | ⏳ pending |
+
+### PR3 — Frontend fast paths
+
+| ID | Task | Risk | Recommendation | Decision |
+|---|---|---|---|---|
+| **P3.1** | Optimistic new-chat nav. | — | **Drop — already implemented** in ConversationsPage.tsx:187 with 404 fallback. | n/a |
+| **P3.2** | Auth-token cache + `onAuthStateChange` clear + 401 retry. Put cache in new `web/src/lib/authCache.ts` to avoid circular imports. | Medium | Implement | ⏳ pending |
+| **P3.3** | Parallel mount fetches sweep. | — | **Drop — already parallel.** | n/a |
+| **P3.4** | Shared `VesselProvider` with sessionStorage; slot between `AuthProvider` and `Suspense` in App.tsx; logout clears cache. | Low | Implement | ⏳ pending |
+
+### PR4 — PWA
+
+| ID | Task | Risk | Recommendation | Decision |
+|---|---|---|---|---|
+| **P4.1** | Install `vite-plugin-pwa` + workbox config. Prod-only; dev unaffected. | Low | Implement | ⏳ pending |
+| **P4.2** | Manifest icons 192/512/maskable-512. | — | **BLOCKED — awaiting brand-mark source file from user.** | ⏸ awaiting asset |
+| **P4.3** | Update-available toast via `useRegisterSW` in App.tsx. | Low | Implement | ⏳ pending |
+| **P4.4** | CacheFirst on `/api/archive/*`. **Updated ruling: archive follows the *same per-user rules as conversations* — if a conversation is only visible to one user, that user's archive files must be too.** Currently the endpoint requires a session but does **not** filter by user → a **prerequisite fix** must land first: add per-user authorization to `serve_archive` (scope by ownership of the underlying document / conversation). Once scoped, runtime cache must key by user as well as URL (or simply switch off `CacheFirst` in the SW for archive and accept the server round-trip). | High — requires authz rework | Implement per-user scoping first; cache strategy revisited after | ⏳ pending |
+
+## Open items before merge
+
+- **P4.2 (UNBLOCKED):** Brand mark = Lucide `ship` icon (stroked, white) on MTSS-blue square (`#1B365D`, from `tailwind.config.ts`). Generating 192/512/maskable-512 PNGs from this combo; no external asset needed.
+- **P4.4 (updated):** Investigate how archive files tie to users/conversations so the authz filter can be implemented. The shared-corpus assumption was wrong — per-user scoping required.
+- **Version bump:** All three version sources (`pyproject.toml`, `src/mtss/version.py` APP_VERSION, `web/package.json`) → `1.0.0`.
+- **Prod rollout of SQL:** Any migration that is validated against test (EXPLAIN numbers + pytest green) must also be applied to prod automatically — no extra gate once test passes.
+
+## Backup split (approved, implementing)
+
+Current `mtss backup` produces two large artifacts (`ingest.db` VACUUM INTO + `archive.zip`). Both can be 10s of GB at prod scale. Splitting into configurable chunks (default 50MB) as `*.part001`, `*.part002`, ... for easier copy / sync / resume. Reassembly is a trivial concat (`cat *.part???`, or `copy /b` on Windows). Python's `zipfile` does not support native multi-volume; binary split is the portable approach.
 
 ## Working theories / active investigations
 

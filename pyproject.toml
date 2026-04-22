@@ -1,6 +1,6 @@
 [project]
 name = "mtss"
-version = "0.1.0"
+version = "1.0.0"
 description = "RAG pipeline for email processing with attachments"
 requires-python = ">=3.10"
 dependencies = [

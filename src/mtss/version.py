@@ -11,7 +11,7 @@ GIT_SHA: str = os.getenv("GIT_SHA", "development")
 GIT_SHA_SHORT: str = GIT_SHA[:8] if len(GIT_SHA) >= 8 else GIT_SHA
 
 # Application version (should match pyproject.toml)
-APP_VERSION: str = "0.1.0"
+APP_VERSION: str = "1.0.0"
 
 
 def get_version_info() -> dict:
