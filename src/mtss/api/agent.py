@@ -834,6 +834,11 @@ async def chat_node(
     # Check if the model wants to use a tool, and route by name.
     if hasattr(response, "tool_calls") and response.tool_calls:
         tool_name = response.tool_calls[0].get("name")
+        tool_args = response.tool_calls[0].get("args") or {}
+        logger.info(
+            "chat_node: LLM chose tool=%s args=%s (filter_bound=%s search_bound=%s)",
+            tool_name, tool_args, bind_filter_tool, bind_search_tool,
+        )
         goto_node = "set_filter_node" if tool_name == "set_filter" else "search_node"
         # Clear the pending-search flag; if we just dispatched another
         # set_filter call, set_filter_node will re-arm it.
@@ -841,6 +846,11 @@ async def chat_node(
             goto=goto_node,
             update={"messages": [response], "filter_pending_search": False},
         )
+
+    logger.info(
+        "chat_node: LLM returned plain text (no tool call) (filter_bound=%s search_bound=%s)",
+        bind_filter_tool, bind_search_tool,
+    )
 
     # No tool call - process citations inline before returning
     if citation_map_data:
