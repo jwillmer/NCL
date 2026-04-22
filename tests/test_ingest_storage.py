@@ -793,6 +793,114 @@ class TestCleanArchiveMdCommand:
         assert md_a.read_text(encoding="utf-8") == first
 
 
+class TestHealArchiveCommand:
+    """`mtss heal-archive` uploads local files missing from Supabase Storage."""
+
+    @pytest.fixture
+    def seeded_archive(self, tmp_path):
+        output = tmp_path / "output"
+        folder = output / "archive" / "abc123" / "attachments"
+        folder.mkdir(parents=True)
+        (folder / "present.md").write_text("already uploaded\n", encoding="utf-8")
+        (folder / "missing.md").write_text("needs upload\n", encoding="utf-8")
+        (folder / "missing.xlsx").write_bytes(b"\x50\x4b\x03\x04")  # zip magic
+        return output
+
+    def _storage_stub(self, remote_contents: dict[str, list[str]]):
+        from unittest.mock import MagicMock
+
+        from mtss.storage.archive_storage import ArchiveStorageError
+
+        storage = MagicMock()
+        storage.bucket_name = "archive-test"
+        uploaded: list[tuple[str, int, str]] = []
+
+        def _list_folder(folder: str):
+            if folder in remote_contents:
+                return [{"name": n} for n in remote_contents[folder]]
+            raise ArchiveStorageError(f"missing folder: {folder}")
+
+        def _upload_file(path, content, content_type):
+            uploaded.append((path, len(content), content_type))
+            return path
+
+        storage.list_folder.side_effect = _list_folder
+        storage.upload_file.side_effect = _upload_file
+        return storage, uploaded
+
+    def test_dry_run_lists_missing_but_does_not_upload(self, seeded_archive):
+        from unittest.mock import patch
+
+        from mtss.cli.maintenance_cmd import _heal_archive
+
+        storage, uploaded = self._storage_stub(
+            {"abc123/attachments": ["present.md"]}
+        )
+        with patch("mtss.storage.archive_storage.ArchiveStorage", return_value=storage):
+            _heal_archive(seeded_archive, dry_run=True, limit=0)
+
+        assert uploaded == []
+        storage.list_folder.assert_called_once_with("abc123/attachments")
+
+    def test_apply_uploads_only_missing_files(self, seeded_archive):
+        from unittest.mock import patch
+
+        from mtss.cli.maintenance_cmd import _heal_archive
+
+        storage, uploaded = self._storage_stub(
+            {"abc123/attachments": ["present.md"]}
+        )
+        with patch("mtss.storage.archive_storage.ArchiveStorage", return_value=storage):
+            _heal_archive(seeded_archive, dry_run=False, limit=0)
+
+        uploaded_keys = sorted(k for k, _, _ in uploaded)
+        assert uploaded_keys == [
+            "abc123/attachments/missing.md",
+            "abc123/attachments/missing.xlsx",
+        ]
+        # Markdown got text content-type, xlsx fell through to octet-stream.
+        md_upload = next(u for u in uploaded if u[0].endswith(".md"))
+        assert "markdown" in md_upload[2] or "text" in md_upload[2]
+
+    def test_apply_respects_limit(self, seeded_archive):
+        from unittest.mock import patch
+
+        from mtss.cli.maintenance_cmd import _heal_archive
+
+        storage, uploaded = self._storage_stub(
+            {"abc123/attachments": ["present.md"]}
+        )
+        with patch("mtss.storage.archive_storage.ArchiveStorage", return_value=storage):
+            _heal_archive(seeded_archive, dry_run=False, limit=1)
+
+        assert len(uploaded) == 1
+
+    def test_missing_folder_uploads_everything(self, seeded_archive):
+        """Folder absent remotely → every local file in it is queued."""
+        from unittest.mock import patch
+
+        from mtss.cli.maintenance_cmd import _heal_archive
+
+        storage, uploaded = self._storage_stub({})  # empty bucket
+        with patch("mtss.storage.archive_storage.ArchiveStorage", return_value=storage):
+            _heal_archive(seeded_archive, dry_run=False, limit=0)
+
+        uploaded_keys = sorted(k for k, _, _ in uploaded)
+        assert uploaded_keys == [
+            "abc123/attachments/missing.md",
+            "abc123/attachments/missing.xlsx",
+            "abc123/attachments/present.md",
+        ]
+
+    def test_no_archive_dir_exits(self, tmp_path):
+        import typer as _typer
+
+        from mtss.cli.maintenance_cmd import _heal_archive
+
+        with pytest.raises(_typer.Exit):
+            _heal_archive(tmp_path / "nope", dry_run=True, limit=0)
+
+
 class TestDeleteDocumentForReprocessClearsIndexes:
     """Regression: prior-loaded docs must be evicted from the in-memory
     dedup cache when reprocessed, otherwise insert_document early-returns

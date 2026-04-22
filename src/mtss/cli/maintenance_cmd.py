@@ -193,6 +193,38 @@ def register(app: typer.Typer):
         """
         asyncio.run(_mark_failed(file_paths, output_dir, reason))
 
+    @app.command("heal-archive")
+    def heal_archive(
+        output_dir: Optional[Path] = typer.Option(
+            None,
+            "--output-dir",
+            "-o",
+            help="Output directory containing archive/ (default: data/output)",
+        ),
+        dry_run: bool = typer.Option(
+            True,
+            "--dry-run/--apply",
+            help="Preview missing files without uploading (default). Pass --apply to upload.",
+        ),
+        limit: int = typer.Option(
+            0,
+            "--limit",
+            "-l",
+            help="Cap the number of missing files uploaded this run (0 = no cap).",
+        ),
+    ):
+        """Re-upload archive files that exist locally but not in Supabase Storage.
+
+        Complements `validate ingest --check-storage`: that *detects* missing
+        objects, this *fixes* them by pushing from the local archive tree.
+
+        For each folder referenced by the local archive, lists the bucket once
+        and uploads any local file that isn't already remote. Idempotent
+        (`upsert=true` under the hood). Dry-run by default; `--apply` to write.
+        """
+        _heal_archive(output_dir, dry_run=dry_run, limit=limit)
+
+
     @app.command("clean-archive-md")
     def clean_archive_md(
         output_dir: Optional[Path] = typer.Option(
@@ -216,6 +248,115 @@ def register(app: typer.Typer):
         Zero API cost. Idempotent.
         """
         _clean_archive_md(output_dir, dry_run)
+
+
+def _heal_archive(output_dir: Optional[Path], *, dry_run: bool, limit: int) -> None:
+    """Upload local archive files that aren't present in Supabase Storage.
+
+    One folder listing per unique local folder prefix; uploads go through
+    `ArchiveStorage.upload_file` which already uses upsert. Guesses the
+    content-type from the file extension.
+    """
+    import mimetypes
+
+    from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
+
+    resolved_output = output_dir or Path("data/output")
+    archive_dir = resolved_output / "archive"
+    if not archive_dir.exists():
+        console.print(f"[red]No archive directory at {archive_dir}[/red]")
+        raise typer.Exit(1)
+
+    # Gather local files grouped by their bucket-relative parent folder.
+    local_by_folder: dict[str, set[str]] = {}
+    local_path_by_key: dict[str, Path] = {}
+    for p in archive_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        key = p.relative_to(archive_dir).as_posix()
+        folder, _, name = key.rpartition("/")
+        local_by_folder.setdefault(folder, set()).add(name)
+        local_path_by_key[key] = p
+
+    if not local_by_folder:
+        console.print("[yellow]No local archive files found.[/yellow]")
+        return
+
+    try:
+        storage = ArchiveStorage()
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]Could not connect to archive storage: {e}[/red]")
+        raise typer.Exit(1) from e
+
+    missing: list[str] = []
+    with _common.make_progress() if hasattr(_common, "make_progress") else Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Listing remote folders", total=len(local_by_folder))
+        for folder, expected_names in local_by_folder.items():
+            try:
+                remote = {f["name"] for f in storage.list_folder(folder) if f.get("name")}
+            except ArchiveStorageError:
+                # Folder absent remotely — every local file in it is "missing".
+                remote = set()
+            for name in sorted(expected_names - remote):
+                missing.append(f"{folder}/{name}" if folder else name)
+            progress.advance(task)
+
+    if not missing:
+        console.print(f"[green]Bucket in sync with local archive — nothing to upload (bucket={storage.bucket_name}).[/green]")
+        return
+
+    if limit and len(missing) > limit:
+        console.print(f"[yellow]{len(missing)} missing; capping to --limit {limit}.[/yellow]")
+        missing = missing[:limit]
+
+    if dry_run:
+        console.print(f"[cyan]Dry-run:[/cyan] would upload {len(missing)} file(s) to bucket [bold]{storage.bucket_name}[/bold].")
+        for key in missing[:20]:
+            console.print(f"  {key}")
+        if len(missing) > 20:
+            console.print(f"  ... and {len(missing) - 20} more")
+        console.print("[dim]Re-run with --apply to upload.[/dim]")
+        return
+
+    uploaded = 0
+    failed: list[tuple[str, str]] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Uploading", total=len(missing))
+        for key in missing:
+            local = local_path_by_key.get(key)
+            if local is None:
+                failed.append((key, "no local source"))
+                progress.advance(task)
+                continue
+            try:
+                content_type, _ = mimetypes.guess_type(local.name)
+                if content_type is None:
+                    content_type = "text/markdown; charset=utf-8" if local.suffix == ".md" else "application/octet-stream"
+                storage.upload_file(key, local.read_bytes(), content_type)
+                uploaded += 1
+            except Exception as e:  # noqa: BLE001 - surface per-file failure, keep going
+                failed.append((key, str(e)))
+            progress.advance(task)
+
+    console.print(f"[green]Uploaded {uploaded} file(s)[/green] to bucket [bold]{storage.bucket_name}[/bold].")
+    if failed:
+        console.print(f"[red]{len(failed)} upload(s) failed:[/red]")
+        for key, err in failed[:10]:
+            console.print(f"  {key}: {err}")
+        if len(failed) > 10:
+            console.print(f"  ... and {len(failed) - 10} more")
 
 
 def _clean_archive_md(output_dir: Optional[Path], dry_run: bool) -> None:
