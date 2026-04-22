@@ -9,9 +9,9 @@ length. Cheap substring checks only — no parsing, no LLM.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
-from ..types import RunResult
+from ..types import GoldenQuestion, RunResult
 
 
 # Ordered so a caller can read the list as a ranked preference.
@@ -23,12 +23,38 @@ _STRUCTURE_MARKERS: tuple[str, ...] = (
     "Based on your query",
 )
 
-# Case-insensitive substrings that signal a "no results" / empty-index reply.
+# Case-insensitive substrings that signal a "no results" / empty-index /
+# off-topic-scope-refusal / retriever-error disclaimer.
 _NO_RESULTS_MARKERS: tuple[str, ...] = (
     "no relevant",
     "not found in sources",
     "we don't have any records",
     "broader search",
+    # scope refusals (off-topic queries like q30 "tesla").
+    # Use apostrophe-free substrings so both straight ' and typographic ’ match.
+    "focused on vessel",
+    "can t help with",
+    "outside the scope",
+    # retriever-error disclaimers (q29, q31 — "search returned an error")
+    "couldn't retrieve",
+    "search returned an error",
+    "do not provide",
+    "sources do not",
+)
+
+# Categories whose expected answer is a fleet-wide narrative / summary
+# rather than per-incident Component/Issue/Resolution blocks. The
+# system prompt only mandates the structured format for vessel-specific
+# and past-incident lookups; these broader questions are graded by
+# citation validity alone.
+_NARRATIVE_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "Cross-Cutting / Analytics",
+        "Cross-Vessel Pattern",
+        "Statistical Ranking",
+        "Evaluative",
+        "No Results Expected",
+    }
 )
 
 # Threshold above which a response is "long enough" to require citations.
@@ -40,7 +66,7 @@ def _has_no_results_disclaimer(response: str) -> bool:
     return any(marker in lower for marker in _NO_RESULTS_MARKERS)
 
 
-def score_format(run: RunResult) -> dict:
+def score_format(run: RunResult, golden: Optional[GoldenQuestion] = None) -> dict:
     """Score response format adherence.
 
     Rules:
@@ -56,16 +82,26 @@ def score_format(run: RunResult) -> dict:
     length = len(response)
     has_no_results = _has_no_results_disclaimer(response)
     has_citations = bool(run.citations)
+    is_narrative = bool(
+        golden is not None and golden.category in _NARRATIVE_CATEGORIES
+    )
 
     violations: List[str] = []
 
     present_markers = [m for m in _STRUCTURE_MARKERS if m in response]
 
-    if has_citations and not present_markers:
+    # Narrative / fleet-wide / no-results-expected questions are graded on
+    # citation validity, not on per-incident block structure. Skip the
+    # Component-header check for those categories and for any response
+    # whose own wording is a no-results / scope-refusal disclaimer.
+    strict_structure = not is_narrative and not has_no_results
+
+    if strict_structure and has_citations and not present_markers:
         violations.append("missing Component header")
 
     if (
-        has_citations
+        strict_structure
+        and has_citations
         and "Component:" not in response
         and "Most Relevant Solution" not in response
         and "Based on your query" in response

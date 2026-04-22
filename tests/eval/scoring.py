@@ -38,7 +38,7 @@ W_AUTO_GROUNDING = 0.35
 
 def _auto_score_one(run: RunResult, golden: GoldenQuestion) -> AutoScores:
     cit = score_citations(run)
-    fmt = score_format(run)
+    fmt = score_format(run, golden)
     ret = score_retrieval(run, golden)
     return AutoScores(
         citations_count=cit["citations_count"],
