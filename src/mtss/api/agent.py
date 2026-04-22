@@ -406,6 +406,63 @@ SET_FILTER_TOOL = {
 }
 
 
+async def _detect_filter_in_text(
+    text: str, state: "AgentState"
+) -> Optional[tuple[str, str]]:
+    """Scan free-text for an unambiguous vessel type / class / name mention.
+
+    Returns (kind, value) if the text contains a single vessel type or class
+    from the cache as a whole word, and the match differs from the currently
+    selected filter on state. Returns None otherwise (including ambiguous
+    multi-match cases — we don't want to guess).
+
+    Vessel-name matching is skipped here: vessel names are multi-word and
+    fuzzy, so leave that to the LLM's judgment via the regular set_filter
+    tool binding.
+    """
+    if not text:
+        return None
+
+    from ..processing.entity_cache import get_vessel_cache
+
+    vessel_cache = get_vessel_cache()
+    try:
+        await vessel_cache.ensure_loaded(SupabaseClient())
+    except Exception:
+        return None
+
+    folded = text.casefold()
+    types: set[str] = set()
+    classes: set[str] = set()
+    for vessel in vessel_cache.list_all():
+        if vessel.vessel_type:
+            types.add(vessel.vessel_type)
+        if vessel.vessel_class:
+            classes.add(vessel.vessel_class)
+
+    def _whole_word_hit(candidate: str) -> bool:
+        cf = candidate.casefold()
+        # Guard against empty/very-short tokens that would match too loosely.
+        if len(cf) < 3:
+            return False
+        import re
+        return re.search(rf"(?<![\w-]){re.escape(cf)}(?![\w-])", folded) is not None
+
+    matched_types = [t for t in types if _whole_word_hit(t)]
+    matched_classes = [c for c in classes if _whole_word_hit(c)]
+
+    current_type = state.get("selected_vessel_type")
+    current_class = state.get("selected_vessel_class")
+
+    # Prefer class over type when both appear (classes are more specific and
+    # usually longer phrases like "Canopus Class").
+    if len(matched_classes) == 1 and matched_classes[0] != current_class:
+        return ("vessel_class", matched_classes[0])
+    if len(matched_types) == 1 and matched_types[0] != current_type:
+        return ("vessel_type", matched_types[0])
+    return None
+
+
 async def _resolve_filter_value(
     kind: str, value: Optional[str]
 ) -> tuple[Optional[str], Optional[str], Optional[str], str]:
@@ -804,12 +861,42 @@ async def chat_node(
     if bind_filter_tool:
         available_tools.append(SET_FILTER_TOOL)
 
+    # If the turn is going to force search, but the user's own message
+    # unambiguously names a vessel type/class that differs from the current
+    # filter, redirect this turn to set_filter first. set_filter_node will
+    # re-arm filter_pending_search, and the next chat_node pass will run
+    # search against the newly-applied filter. This rescues the common case
+    # where the intent classifier marks the turn as FACTUAL_QUERY and the
+    # tool_choice pin to search_documents would otherwise prevent the LLM
+    # from ever calling set_filter.
+    prefilter_choice: Optional[Dict[str, Any]] = None
+    if (
+        force_search
+        and bind_filter_tool
+        and not citation_map_data
+        and not state.get("filter_pending_search")
+    ):
+        user_text = latest_user_text(sanitized_messages) or ""
+        detected = await _detect_filter_in_text(user_text, state)
+        if detected:
+            kind, value = detected
+            prefilter_choice = {
+                "type": "function",
+                "function": {"name": "set_filter"},
+            }
+            logger.info(
+                "chat_node: deterministic filter detected kind=%s value=%r — redirecting to set_filter",
+                kind, value,
+            )
+
     if available_tools:
         # force_search pins the choice to search_documents specifically —
         # the filter tool must have already run (or not be relevant) on this
         # turn, so there's no reason to let the model pick it again.
-        if force_search and bind_search_tool:
-            tool_choice: Any = {
+        if prefilter_choice is not None:
+            tool_choice: Any = prefilter_choice
+        elif force_search and bind_search_tool:
+            tool_choice = {
                 "type": "function",
                 "function": {"name": "search_documents"},
             }
