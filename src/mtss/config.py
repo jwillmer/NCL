@@ -84,6 +84,17 @@ class Settings(BaseSettings):
         default=True, validation_alias="INTENT_CLASSIFIER_ENABLED"
     )
 
+    # Topic filter: LLM extracts topic labels from the query, cosine-matches
+    # them against stored topic embeddings, and narrows the search to those
+    # topic_ids. Costs 1-3s/call but on the 37-question eval it helps 7 more
+    # questions than it hurts when paired with the no-result fallback in
+    # search_node (baseline-07 0.532 with filter, baseline-08 0.514 without,
+    # for a 10% latency trade). Keep the flag so corpora with very sparse
+    # topic_ids coverage can turn it off — set TOPIC_FILTER_ENABLED=false.
+    topic_filter_enabled: bool = Field(
+        default=True, validation_alias="TOPIC_FILTER_ENABLED"
+    )
+
     def get_model(self, specific_model: str | None) -> str:
         """Return specific model if set, otherwise fallback to llm_model."""
         return specific_model or self.llm_model

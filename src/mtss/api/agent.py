@@ -730,11 +730,16 @@ async def search_node(
             state["search_progress"] = message
             await emit_state(config, state)
 
-        # Check if user requested broad search (skip topic filtering)
-        skip_filter = tool_call["args"].get("skip_topic_filter", False)
+        # Check if user requested broad search (skip topic filtering),
+        # or if the topic filter is disabled globally via settings.
+        skip_filter = (
+            tool_call["args"].get("skip_topic_filter", False)
+            or not settings.topic_filter_enabled
+        )
 
         if skip_filter:
-            # User requested broad search - skip topic filtering entirely
+            # Skip topic filtering entirely — either the LLM opted out for
+            # a broad query, or the feature flag is off for the corpus.
             filter_result = TopicFilterResult()
             query_embedding = None
         else:
