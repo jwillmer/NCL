@@ -2,16 +2,31 @@
 
 Grades how well the agent's response cites its retrieved chunks. Computes
 counts (total, valid, valid percentage) from the already-extracted
-`run.citations`, then measures grounding by checking TF-IDF cosine
-similarity between each cited chunk's text_preview and the sentence that
-surrounds the [C:...] marker in the response. No LLM, no network.
+`run.citations`, then measures grounding by comparing each cited chunk's
+text_preview to the sentence that surrounds the [C:...] marker in the
+response.
+
+Grounding backend priority:
+  1. Embedding cosine via ``mtss.processing.embeddings.EmbeddingGenerator``
+     (captures paraphrase equivalence — the agent rewrites in prose, the
+     chunk preview keeps email metadata; bag-of-words overlap is thin
+     even when the citation is correct). Used by the async ``async``
+     scoring path.
+  2. TF-IDF cosine with n-grams + stopword filtering (sklearn). Used as
+     a deterministic fallback and by the synchronous API for tests.
+  3. Jaccard fallback if sklearn is missing (unusual in this repo).
+
+No network calls unless the async embedding path is explicitly chosen by
+the caller — see ``score_citations_async``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 from ..types import RetrievedChunk, RunResult
 
@@ -74,12 +89,30 @@ def _jaccard_similarity(a: str, b: str) -> float:
 
 
 def _tfidf_cosine(a: str, b: str) -> float:
-    """TF-IDF cosine between two strings. Returns 0.0 if either is empty or
-    the vectorizer finds no shared vocabulary."""
+    """TF-IDF cosine between two strings with n-gram + stopword handling.
+
+    Reworked 2026-04-22 after baseline-12d flagged citation_grounding
+    mean of 0.086 despite 97% citations valid. Root cause: agents
+    paraphrase heavily — the chunk preview keeps email metadata/subject
+    lines, the response rewrites in plain prose, so unigram vocabulary
+    overlap is thin.
+
+    Improvements over the previous one-shot vectorizer:
+      - ``lowercase=True`` so "BWTS" matches "bwts"
+      - ``ngram_range=(1, 2)`` picks up "chiller PLC", "liferaft exchange"
+        which would miss on unigrams alone
+      - ``stop_words='english'`` strips noise that inflates denominator
+      - ``min_df=1`` keeps rare domain tokens (vessel names, part IDs)
+    """
     if not a.strip() or not b.strip():
         return 0.0
     try:
-        vec = TfidfVectorizer().fit_transform([a, b])
+        vec = TfidfVectorizer(
+            lowercase=True,
+            ngram_range=(1, 2),
+            stop_words="english",
+            min_df=1,
+        ).fit_transform([a, b])
     except ValueError:
         # Raised when documents contain only stop words / no tokens
         return 0.0
@@ -136,6 +169,91 @@ def score_citations(run: RunResult) -> dict:
 
     grounding = sum(sims) / len(sims) if sims else 0.0
 
+    return {
+        "citations_count": total,
+        "citations_valid_count": valid_count,
+        "citations_valid_pct": valid_pct,
+        "citation_grounding_score": grounding,
+    }
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """Plain cosine similarity on two embedding vectors."""
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return float(max(0.0, min(1.0, dot / (na * nb))))
+
+
+async def score_citations_async(run: RunResult) -> dict:
+    """Same as :func:`score_citations` but grounding uses semantic
+    embeddings (cosine between response-sentence and chunk-preview).
+
+    Falls back to the sync TF-IDF path if the embedding call fails so
+    eval runs stay usable offline. One batched embedding call per run —
+    ~500 embeddings per 37-question eval = ~$0.001 at
+    text-embedding-3-small rates.
+    """
+    total = len(run.citations)
+    valid = [c for c in run.citations if c.is_valid]
+    valid_count = len(valid)
+    valid_pct = (valid_count / total) if total else 0.0
+
+    if not valid:
+        return {
+            "citations_count": total,
+            "citations_valid_count": 0,
+            "citations_valid_pct": valid_pct,
+            "citation_grounding_score": 0.0,
+        }
+
+    chunk_index = _build_chunk_index(run.retrieval)
+
+    # Build parallel lists of sentences + previews; track indices of
+    # citations that couldn't be paired (missing chunk / blank preview)
+    # so their grounding stays at 0.0 without polluting the embedding
+    # batch with empty strings.
+    sentences: List[str] = []
+    previews: List[str] = []
+    pair_indices: List[int] = []
+    zero_slots: List[int] = []
+    for i, occ in enumerate(valid):
+        chunk = chunk_index.get(occ.chunk_id)
+        if chunk is None or not chunk.text_preview:
+            zero_slots.append(i)
+            continue
+        sentences.append(_extract_sentence_around(run.response, occ.char_offset))
+        previews.append(chunk.text_preview)
+        pair_indices.append(i)
+
+    sims: List[float] = [0.0] * len(valid)
+    if pair_indices:
+        try:
+            from mtss.processing.embeddings import EmbeddingGenerator
+
+            gen = EmbeddingGenerator()
+            # Batch everything: sentences + previews in one call so the
+            # embedding provider sees a single request. Order preserved,
+            # sentence[i] pairs with preview[i].
+            combined = sentences + previews
+            vecs = await gen.generate_embeddings_batch(combined)
+            sent_vecs = vecs[: len(sentences)]
+            prev_vecs = vecs[len(sentences):]
+            for idx, (sv, pv) in zip(pair_indices, zip(sent_vecs, prev_vecs)):
+                sims[idx] = _cosine(sv, pv)
+        except Exception as e:
+            logger.warning(
+                "Embedding-based grounding failed (%s); falling back to TF-IDF.",
+                e,
+            )
+            for idx, sentence, preview in zip(pair_indices, sentences, previews):
+                sims[idx] = _similarity(sentence, preview)
+
+    grounding = sum(sims) / len(sims) if sims else 0.0
     return {
         "citations_count": total,
         "citations_valid_count": valid_count,

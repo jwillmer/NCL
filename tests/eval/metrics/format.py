@@ -14,13 +14,24 @@ from typing import List, Optional
 from ..types import GoldenQuestion, RunResult
 
 
-# Ordered so a caller can read the list as a ranked preference.
+# Ordered so a caller can read the list as a ranked preference. Preamble
+# phrases are case-insensitive substrings — the canonical form is still
+# "Based on your query" (per system prompt), but the agent naturally
+# opens with variants like "I found 5 ...", "Based on the fleet-wide
+# records..." for fleet-wide / aggregate questions. Widened 2026-04-22
+# after the baseline-12d eval flagged 4 responses as format-failing
+# despite opening with a clear preamble that just wasn't in the list.
 _STRUCTURE_MARKERS: tuple[str, ...] = (
     "Component:",
     "Issue:",
     "Resolution Steps:",
     "Most Relevant Solution",
     "Based on your query",
+    "Based on the ",
+    "I found ",
+    "I couldn't find",
+    "I could not find",
+    "Here are ",
 )
 
 # Case-insensitive substrings that signal a "no results" / empty-index /

@@ -15,7 +15,7 @@ import statistics
 from pathlib import Path
 from typing import Dict, List
 
-from .metrics.citation import score_citations
+from .metrics.citation import score_citations, score_citations_async
 from .metrics.format import score_format
 from .metrics.retrieval import score_retrieval
 from .runner import load_goldens, load_results
@@ -36,8 +36,14 @@ W_AUTO_CITATION = 0.65
 W_AUTO_GROUNDING = 0.35
 
 
-def _auto_score_one(run: RunResult, golden: GoldenQuestion) -> AutoScores:
-    cit = score_citations(run)
+_REFUSAL_CATEGORY = "No Results Expected"
+
+
+async def _auto_score_one(run: RunResult, golden: GoldenQuestion) -> AutoScores:
+    # Async grounding uses the semantic embedding path (text-embedding-3-
+    # small via LiteLLM). Falls back to TF-IDF inside the function if the
+    # embedding call errors, so offline runs still score.
+    cit = await score_citations_async(run)
     fmt = score_format(run, golden)
     ret = score_retrieval(run, golden)
     return AutoScores(
@@ -57,8 +63,24 @@ def _auto_score_one(run: RunResult, golden: GoldenQuestion) -> AutoScores:
     )
 
 
-def _overall_score(auto: AutoScores) -> float:
-    """Auto-only weighted aggregate, 0-1."""
+def _overall_score(auto: AutoScores, golden: GoldenQuestion | None = None) -> float:
+    """Auto-only weighted aggregate, 0-1.
+
+    "No Results Expected" goldens (off-topic queries, implausible vessels)
+    should score 1.0 when the agent correctly refuses or acknowledges no
+    results. These responses legitimately carry zero citations, which the
+    citations_valid_pct formula punishes as 0.0 — unfair to an otherwise
+    correct answer. Detection uses the format grader's disclaimer flag +
+    follows_response_format gate so a refusal that violates format still
+    falls back to the weighted formula.
+    """
+    if (
+        golden is not None
+        and golden.category == _REFUSAL_CATEGORY
+        and auto.has_no_results_disclaimer
+        and auto.follows_response_format
+    ):
+        return 1.0
     return round(
         W_AUTO_CITATION * auto.citations_valid_pct
         + W_AUTO_GROUNDING * auto.citation_grounding_score,
@@ -106,11 +128,11 @@ async def execute_judge(
                     question=run.question,
                     reference_answer="",
                 )
-            auto = _auto_score_one(run, golden)
+            auto = await _auto_score_one(run, golden)
             return ScoreResult(
                 question_id=run.question_id,
                 auto=auto,
-                overall=_overall_score(auto),
+                overall=_overall_score(auto, golden),
             )
 
     score_results = await asyncio.gather(*(_score_one(r) for r in runs))

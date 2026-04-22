@@ -1096,14 +1096,15 @@ async def search_node(
                     min_results_before_fallback,
                 )
                 await on_progress("Retrying without topic filter")
-                retrieval_results = await engine.search_only(
-                    question=question,
-                    top_k=settings.retrieval_top_k,
-                    use_rerank=settings.rerank_enabled,
-                    metadata_filter=fallback_filter,
-                    on_progress=on_progress,
-                    query_embedding=query_embedding,
-                )
+                async with record_step("fallback_search_ms"):
+                    retrieval_results = await engine.search_only(
+                        question=question,
+                        top_k=settings.retrieval_top_k,
+                        use_rerank=settings.rerank_enabled,
+                        metadata_filter=fallback_filter,
+                        on_progress=on_progress,
+                        query_embedding=query_embedding,
+                    )
 
         if not retrieval_results:
             # No results found
