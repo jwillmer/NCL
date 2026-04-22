@@ -248,24 +248,38 @@ class TopicFilter:
 
             pooled_topics = [t for t, _score in sims]
             detected_names = [query[:60]]  # surface the query as the label
-            matched_topics: List[MatchedTopic] = []
-            for t in pooled_topics:
-                count = t.chunk_count
-                filtered = count
-                if vessel_filter:
-                    filtered = await self.db.get_chunks_count_for_topic(
-                        t.id, vessel_filter
+
+            # Batch the vessel-filtered count into a single RPC
+            # (count_chunks_by_topics — OR over topic_ids). The prior
+            # per-topic loop did N sequential DB round-trips that dominated
+            # topic_filter_ms on vessel-filtered queries.
+            vessel_filtered_total = 0
+            if vessel_filter and pooled_topics:
+                try:
+                    vessel_filtered_total = await self.db.get_chunks_count_for_topics(
+                        [t.id for t in pooled_topics], vessel_filter
                     )
-                matched_topics.append(
-                    MatchedTopic(
-                        id=t.id,
-                        name=t.name,
-                        display_name=t.display_name,
-                        chunk_count=count,
-                        filtered_count=filtered,
-                    )
+                except Exception as e:
+                    logger.warning("Batched topic count failed: %s", e)
+
+            matched_topics: List[MatchedTopic] = [
+                MatchedTopic(
+                    id=t.id,
+                    name=t.name,
+                    display_name=t.display_name,
+                    chunk_count=t.chunk_count,
+                    # Per-topic filtered count is display-only and unused
+                    # by search_node; approximate with the unfiltered count
+                    # to avoid N DB round-trips.
+                    filtered_count=t.chunk_count,
                 )
-            total_chunks = sum(t.chunk_count for t in matched_topics)
+                for t in pooled_topics
+            ]
+            total_chunks = (
+                vessel_filtered_total
+                if vessel_filter
+                else sum(t.chunk_count for t in matched_topics)
+            )
             return TopicFilterResult(
                 detected_topics=detected_names,
                 matched_topics=matched_topics,
