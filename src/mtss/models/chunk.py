@@ -155,6 +155,7 @@ class ValidatedCitation:
     index: int  # Citation number in response (1-indexed)
     chunk_id: str
     source_title: Optional[str]
+    source_id: Optional[str] = None  # Stable per-document id; used by the UI to dedupe chunks of the same source
     page: Optional[int] = None
     lines: Optional[Tuple[int, int]] = None
     archive_browse_uri: Optional[str] = None

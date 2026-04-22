@@ -237,6 +237,7 @@ Example response:
                     index=doc_index,  # Shared index per document
                     chunk_id=chunk_id,
                     source_title=result.source_title,
+                    source_id=result.source_id or None,
                     page=result.page_number,
                     lines=lines,
                     archive_browse_uri=result.archive_browse_uri,
@@ -297,6 +298,12 @@ Example response:
 
             # Build attributes for the cite tag
             attrs = [f'id="{c.chunk_id}"']
+
+            if c.source_id:
+                # Stable per-document identity — the UI dedupes chunks of
+                # the same source by this attribute so a 4-chunk hit on
+                # one report renders as one source card, not four.
+                attrs.append(f'doc="{c.source_id}"')
 
             if c.source_title:
                 # Escape quotes in title for HTML attribute

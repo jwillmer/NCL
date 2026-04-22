@@ -34,6 +34,7 @@ export interface Citation {
  */
 export interface CiteProps {
   id?: string;
+  doc?: string;  // Stable source/document id — used by the UI to dedupe chunks of the same source
   title?: string;
   page?: string;
   lines?: string;

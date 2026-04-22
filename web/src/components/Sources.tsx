@@ -94,6 +94,7 @@ interface ChunkRef {
  */
 interface CitationEntry {
   id: string;              // Primary chunk_id (first chunk from this document)
+  doc?: string;            // Stable source id from the backend (dedupe key)
   index: number;           // Document index (shared across all chunks from same doc)
   title: string;
   titleLoading?: boolean;
@@ -125,9 +126,15 @@ function CitationProviderImpl({ children, onViewCitation }: CitationProviderProp
   const addCitation = useCallback((entry: CitationEntry) => {
     setCitations((prev) => {
       const next = new Map(prev);
-      const existingEntry = Array.from(next.values()).find(
-        (e) => e.title === entry.title && e.title !== "Source"
-      );
+      // Dedupe priority: stable doc id from the backend > title fallback.
+      // The title path is a fallback for legacy cites that haven't been
+      // re-rendered since the `doc` attribute shipped — it still guards
+      // against "Source" placeholders collapsing into one entry before
+      // their real titles land.
+      const existingEntry = Array.from(next.values()).find((e) => {
+        if (entry.doc && e.doc) return e.doc === entry.doc;
+        return e.title === entry.title && e.title !== "Source";
+      });
       if (existingEntry) {
         const newChunk = entry.chunks[0];
         if (newChunk && !existingEntry.chunks.some((c) => c.chunkId === newChunk.chunkId)) {
@@ -247,7 +254,7 @@ function ImgCiteRenderer(props: ImgCiteProps) {
 }
 
 function CiteRenderer(props: CiteProps) {
-  const { id, title, page, lines, download, children } = props;
+  const { id, doc, title, page, lines, download, children } = props;
   const { citations, addCitation, updateCitationTitle, onViewCitation } = useCitationContext();
   const { session } = useAuth();
 
@@ -291,12 +298,13 @@ function CiteRenderer(props: CiteProps) {
 
     addCitation({
       id,
+      doc,
       index,
       title: title || "Source",
       titleLoading: needsTitleFetch,
       chunks: [chunkRef],
     });
-  }, [id, index, title, page, parsedLines, download, addCitation, needsTitleFetch]);
+  }, [id, doc, index, title, page, parsedLines, download, addCitation, needsTitleFetch]);
 
   // Fetch title from API if not provided in the cite tag
   useEffect(() => {

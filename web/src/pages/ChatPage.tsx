@@ -74,7 +74,7 @@ const sanitizeSchema = {
   tagNames: [...(defaultSchema.tagNames || []), "cite", "img-cite", "mark"],
   attributes: {
     ...defaultSchema.attributes,
-    cite: ["id", "title", "page", "lines", "download"],
+    cite: ["id", "doc", "title", "page", "lines", "download"],
     "img-cite": ["src", "id"],
     mark: ["className", "class"],
   },
