@@ -534,6 +534,15 @@ async def _call_chat_llm(
          Putting it last keeps the base system + tools + older history
          cacheable even while the vessel filter or intent changes.
 
+    Streaming is always on: each token delta is re-emitted as a
+    ``chat_token`` custom event so ``api/streaming.py`` forwards it to
+    the client as a Vercel AI SDK text chunk. Tool-call fragments are
+    accumulated by ``choices[0].delta.tool_calls[*].index`` and assembled
+    into a single tool_call list once the stream terminates — the
+    graph's downstream routing still sees a complete ``AIMessage`` with
+    ``.content`` and ``.tool_calls`` populated, so behaviour is
+    unchanged apart from perceived latency.
+
     Returns an ``AIMessage`` so the rest of the graph (which relies on
     ``.tool_calls``, ``.content``) works unchanged.
     """
@@ -600,18 +609,91 @@ async def _call_chat_llm(
     # whenever the prefix bytes match.
     call_params["prompt_cache_key"] = f"mtss-chat-{cache_phase}"
 
-    response = await acompletion(**call_params)
+    if stream:
+        # Streaming path: re-emit each delta as a ``chat_token`` custom
+        # event so streaming.py can forward it to the client as a Vercel
+        # AI SDK text chunk (``0:"..."``). Accumulate content + any
+        # tool-call fragments so the final AIMessage matches the
+        # non-streaming path. LiteLLM yields OpenAI-style chunks with
+        # ``choices[0].delta.content`` / ``.tool_calls``; usage stats and
+        # finish_reason land on the final chunk when
+        # ``stream_options={"include_usage": True}`` is set.
+        call_params["stream"] = True
+        call_params["stream_options"] = {"include_usage": True}
+        content_parts: List[str] = []
+        tool_calls_buf: Dict[int, Dict[str, Any]] = {}
+        usage = None
 
-    choice = response.choices[0]
-    message = choice.message
-    content = getattr(message, "content", "") or ""
+        response_iter = await acompletion(**call_params)
+        async for chunk in response_iter:
+            choices = getattr(chunk, "choices", None) or []
+            if choices:
+                delta = getattr(choices[0], "delta", None)
+                if delta is not None:
+                    # Text delta — dispatch for streaming.py to forward.
+                    delta_text = getattr(delta, "content", None) or ""
+                    if delta_text:
+                        content_parts.append(delta_text)
+                        await adispatch_custom_event(
+                            name="chat_token",
+                            data={"text": delta_text},
+                            config=config,
+                        )
+                    # Tool-call fragments arrive partial too — accumulate
+                    # by index so a streamed tool call round-trips the
+                    # same way a non-streamed one does. Not exercised
+                    # today (we only stream when no tools are bound), but
+                    # handled for forward compatibility.
+                    delta_tcs = getattr(delta, "tool_calls", None) or []
+                    for tc in delta_tcs:
+                        idx = getattr(tc, "index", 0)
+                        slot = tool_calls_buf.setdefault(
+                            idx, {"id": None, "name": None, "arguments": ""}
+                        )
+                        tc_id = getattr(tc, "id", None)
+                        if tc_id:
+                            slot["id"] = tc_id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            fn_name = getattr(fn, "name", None)
+                            if fn_name:
+                                slot["name"] = fn_name
+                            fn_args = getattr(fn, "arguments", None)
+                            if fn_args:
+                                slot["arguments"] += fn_args
+            # Usage stats arrive on the final chunk (include_usage=True).
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage = chunk_usage
 
-    tool_calls = _extract_tool_calls(message)
+        content = "".join(content_parts)
+        tool_calls = []
+        for idx in sorted(tool_calls_buf):
+            slot = tool_calls_buf[idx]
+            if not slot["name"]:
+                continue
+            try:
+                args_obj = json.loads(slot["arguments"]) if slot["arguments"] else {}
+            except json.JSONDecodeError:
+                args_obj = {}
+            tool_calls.append({
+                "id": slot["id"] or f"call_{idx}",
+                "name": slot["name"],
+                "args": args_obj,
+            })
+    else:
+        response = await acompletion(**call_params)
+
+        choice = response.choices[0]
+        message = choice.message
+        content = getattr(message, "content", "") or ""
+
+        tool_calls = _extract_tool_calls(message)
+        usage = getattr(response, "usage", None)
 
     # Log cache hits for verification. OpenAI populates
     # prompt_tokens_details.cached_tokens; Anthropic uses
     # cache_read_input_tokens at the top of usage. Check both.
-    usage = getattr(response, "usage", None)
     if usage is not None:
         details = getattr(usage, "prompt_tokens_details", None)
         cached = 0
@@ -751,6 +833,12 @@ async def chat_node(
         tool_choice = None
 
     llm_step = "chat_llm2_ms" if citation_map_data else "chat_llm1_ms"
+    # Stream only the post-search final answer. Turn 1 (chat_llm1) can
+    # still emit tool_calls, and streaming tool_calls complicates the
+    # single-call-per-turn contract; cheap to keep that path unary.
+    # Dynamic intents (EXPLORATORY / GREETING etc) also skip search but
+    # do not need streaming because their wallclock is already <1s.
+    stream_response = bool(citation_map_data and not available_tools)
     async with record_step(llm_step):
         response = await _call_chat_llm(
             base_system=base_system,
@@ -761,6 +849,7 @@ async def chat_node(
             settings=settings,
             config=config,
             cache_phase="post_search" if citation_map_data else "pre_search",
+            stream=stream_response,
         )
 
     # Check if the model wants to use a tool, and route by name.
@@ -945,6 +1034,7 @@ async def search_node(
                 # matching and the downstream search. Topic matching on
                 # the in-memory topic cache is sub-300ms, so sequential
                 # is cheaper than the old parallel-LLM-extraction path.
+                await on_progress("Embedding query")
                 async with record_step("embed_ms"):
                     query_embedding = await engine.retriever.embed_query(question)
                 async with record_step("topic_filter_ms"):
@@ -1018,6 +1108,7 @@ async def search_node(
                     "Topic-filtered search returned 0 results; "
                     "retrying without topic_ids filter"
                 )
+                await on_progress("Retrying without topic filter")
                 retrieval_results = await engine.search_only(
                     question=question,
                     top_k=settings.retrieval_top_k,

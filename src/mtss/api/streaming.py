@@ -169,6 +169,16 @@ async def _stream_agent(
                 if content:
                     yield f"0:{json.dumps(content)}\n"
 
+            elif kind == "on_custom_event" and event["name"] == "chat_token":
+                # Per-token delta from our litellm streaming bridge in
+                # agent.py `_call_chat_llm(stream=True)`. Forwarded as a
+                # Vercel AI SDK text chunk so the UI renders progressively
+                # while the citation-validation step still runs server-side
+                # on the full content before the node returns.
+                text = event["data"].get("text") or ""
+                if text:
+                    yield f"0:{json.dumps(text)}\n"
+
             elif kind == "on_custom_event" and event["name"] == "manually_emit_state":
                 # Progress update emitted by emit_state() in agent nodes
                 state_data = event["data"]
