@@ -109,6 +109,18 @@ class IntentClassifier:
         settings = get_settings()
         self.model = model or settings.intent_classifier_model or settings.llm_model
 
+    # Conservative greeting fast-path. Matches obvious small-talk
+    # turns ("hi", "thanks", "bye") so we skip a ~700ms OpenRouter
+    # round-trip on ~10-15% of chats. The pattern only fires for
+    # short messages with no other content — false positives here
+    # would suppress a real question, which is costly, so the bar
+    # is strict on purpose.
+    _GREETING_FAST_PATH = re.compile(
+        r"^\s*(?:hi|hello|hey|hiya|thanks|thank\s*you|thx|bye|goodbye|good\s*(?:morning|afternoon|evening|night))"
+        r"[\s!.\-,]*$",
+        re.IGNORECASE,
+    )
+
     async def classify(self, query: str) -> IntentResult:
         """Classify a single user message.
 
@@ -121,6 +133,13 @@ class IntentClassifier:
                 intent=QueryIntent.GREETING,
                 confidence=1.0,
                 reasoning="empty input",
+            )
+
+        if len(sanitized) <= 40 and self._GREETING_FAST_PATH.match(sanitized):
+            return IntentResult(
+                intent=QueryIntent.GREETING,
+                confidence=0.95,
+                reasoning="regex fast-path",
             )
 
         try:

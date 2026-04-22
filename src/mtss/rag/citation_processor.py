@@ -47,6 +47,9 @@ Example response:
     def __init__(self):
         """Initialize citation processor."""
         self.storage = ArchiveStorage()
+        # Per-response cache: most answers cite the same folder many times
+        # (e.g. 16 citations from 4 docs). Check the bucket once per URI.
+        self._archive_exists_cache: Dict[str, bool] = {}
 
     def get_system_prompt(self) -> str:
         """Get system prompt with citation rules."""
@@ -144,7 +147,12 @@ Example response:
         if not archive_uri:
             return False
 
-        return self.storage.file_exists(archive_uri)
+        cached = self._archive_exists_cache.get(archive_uri)
+        if cached is not None:
+            return cached
+        exists = self.storage.file_exists(archive_uri)
+        self._archive_exists_cache[archive_uri] = exists
+        return exists
 
     def process_response(
         self,
