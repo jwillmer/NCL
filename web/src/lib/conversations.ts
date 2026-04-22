@@ -192,7 +192,11 @@ export async function listVesselClasses(): Promise<string[]> {
   return typedFetch("GET", "/vessel-classes");
 }
 
-export async function submitFeedback(threadId: string, messageId: string, value: 0 | 1): Promise<void> {
+export async function submitFeedback(
+  threadId: string,
+  messageId: string,
+  value: 0 | 1 | -1,
+): Promise<void> {
   await typedFetch<{ status: string }>("POST", "/feedback", {
     thread_id: threadId,
     message_id: messageId,

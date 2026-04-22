@@ -20,7 +20,8 @@ class FeedbackRequest(BaseModel):
 
     thread_id: UUID
     message_id: str = Field(max_length=100)
-    value: Literal[0, 1]  # 0 = negative (thumbs down), 1 = positive (thumbs up)
+    # 0 = negative (thumbs down), 1 = positive (thumbs up), -1 = cleared
+    value: Literal[-1, 0, 1]
 
 
 class FeedbackResponse(BaseModel):
@@ -51,11 +52,19 @@ async def submit_feedback(
 
     if langfuse:
         try:
-            # Use session_id (thread_id) to link feedback to the conversation
-            # This links to all traces in the session without needing a specific trace_id
+            # value=-1 signals the user retracted their feedback. We record it
+            # as a separate score name so analytics queries on "user_feedback"
+            # aren't skewed by the clear events.
+            if request.value == -1:
+                score_name = "user_feedback_cleared"
+                score_value = 1
+            else:
+                score_name = "user_feedback"
+                score_value = request.value
+
             langfuse.create_score(
-                name="user_feedback",
-                value=request.value,
+                name=score_name,
+                value=score_value,
                 session_id=str(request.thread_id),
                 comment=f"message_id: {request.message_id}",
             )

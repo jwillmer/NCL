@@ -41,9 +41,9 @@ export function initLangfuse(): void {
  *
  * @param sessionId - The conversation thread_id (matches backend session)
  * @param messageId - The message ID being rated
- * @param value - 0 for thumbs down, 1 for thumbs up
+ * @param value - 0 for thumbs down, 1 for thumbs up, -1 for cleared
  */
-export function trackFeedback(sessionId: string, messageId: string, value: 0 | 1): void {
+export function trackFeedback(sessionId: string, messageId: string, value: 0 | 1 | -1): void {
   if (!langfuseWeb) {
     console.debug("Langfuse not initialized, skipping feedback tracking");
     return;
@@ -51,8 +51,8 @@ export function trackFeedback(sessionId: string, messageId: string, value: 0 | 1
 
   try {
     langfuseWeb.score({
-      name: "user_feedback_browser",
-      value,
+      name: value === -1 ? "user_feedback_browser_cleared" : "user_feedback_browser",
+      value: value === -1 ? 1 : value,
       sessionId,
       comment: `message_id: ${messageId}`,
     });

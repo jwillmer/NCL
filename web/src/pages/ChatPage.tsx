@@ -179,6 +179,8 @@ function AssistantMessage({ content, messageId, threadId, showFeedback }: {
     const next = value === 1 ? "up" : "down";
     if (feedback === next) {
       setFeedback(null);
+      submitFeedback(threadId, messageId, -1).catch(console.error);
+      trackFeedback(threadId, messageId, -1);
       return;
     }
     setFeedback(next);
