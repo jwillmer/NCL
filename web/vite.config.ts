@@ -33,12 +33,13 @@ export default defineConfig({
         globPatterns: ["**/*.{js,css,html,svg,woff2,png,ico}"],
         navigateFallback: "/index.html",
         navigateFallbackDenylist: [/^\/api/, /^\/config\.js/, /^\/health/, /^\/docs/, /^\/redoc/],
+        // NOTE: /config.js is intentionally NOT runtime-cached. It's ~500
+        // bytes, served with `no-cache, no-store, must-revalidate`, and
+        // carries the Supabase/API env values the SPA bootstraps from —
+        // caching it risks one broken deploy poisoning every user's PWA
+        // with a stale or empty config. The navigateFallbackDenylist above
+        // keeps the SW from returning index.html for this URL.
         runtimeCaching: [
-          {
-            urlPattern: ({ url }) => url.pathname === "/config.js",
-            handler: "NetworkFirst",
-            options: { cacheName: "runtime-config", networkTimeoutSeconds: 3 },
-          },
           {
             urlPattern: ({ url }) =>
               url.pathname.startsWith("/api/vessels") ||
@@ -48,6 +49,7 @@ export default defineConfig({
             options: {
               cacheName: "vessels",
               expiration: { maxAgeSeconds: 3600, maxEntries: 10 },
+              cacheableResponse: { statuses: [200] },
             },
           },
           {
@@ -56,7 +58,7 @@ export default defineConfig({
             options: {
               cacheName: "archive-files",
               expiration: { maxAgeSeconds: 60 * 60 * 24 * 30, maxEntries: 500 },
-              cacheableResponse: { statuses: [0, 200] },
+              cacheableResponse: { statuses: [200] },
             },
           },
         ],
