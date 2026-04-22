@@ -19,9 +19,12 @@ RUN npm ci
 # Copy frontend source
 COPY web/ ./
 
-# Build argument for Git SHA (injected into frontend at build time)
+# Build args injected into the frontend bundle at compile time.
+# BUILD_TIME should be an ISO-8601 UTC timestamp (e.g. from `date -u +%FT%TZ`).
 ARG GIT_SHA=development
+ARG BUILD_TIME=""
 ENV VITE_GIT_SHA=${GIT_SHA}
+ENV VITE_BUILD_TIME=${BUILD_TIME}
 
 # Build static output to dist/
 # Note: VITE_* env vars are loaded at runtime via /config.js endpoint
@@ -56,9 +59,12 @@ RUN uv venv /app/.venv && \
 # -----------------------------------------------------------------------------
 FROM python:3.13-slim
 
-# Build argument for Git SHA (available at runtime)
+# Build args surfaced into the runtime process so /health + /api/stats
+# can echo them back.
 ARG GIT_SHA=development
+ARG BUILD_TIME=""
 ENV GIT_SHA=${GIT_SHA}
+ENV BUILD_TIME=${BUILD_TIME}
 
 # Install curl for healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends curl \

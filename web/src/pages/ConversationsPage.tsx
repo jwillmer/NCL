@@ -200,7 +200,7 @@ function ConversationsPageContent() {
 
   return (
     <MainLayout>
-      <div className="flex-1 flex flex-col max-w-3xl mx-auto w-full px-4 py-6">
+      <div className="flex-1 min-h-0 flex flex-col max-w-3xl mx-auto w-full px-4 py-6">
         {/* Header */}
         <div className="flex items-center gap-4 mb-6">
           <div className="flex-1 relative">
@@ -218,7 +218,7 @@ function ConversationsPageContent() {
         </div>
 
         {/* List */}
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0">
           {loading ? (
             <div className="space-y-2">
               {Array.from({ length: 5 }).map((_, i) => (

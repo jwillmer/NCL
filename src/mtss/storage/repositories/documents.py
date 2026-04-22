@@ -296,6 +296,30 @@ class DocumentRepository(BaseRepository):
 
         return [self._row_to_document(row) for row in result.data]
 
+    async def get_corpus_stats(self) -> dict[str, int]:
+        """Return `{emails, documents, topics, vessels}` counts for the UI footer.
+
+        Single aggregate round trip — the stats only shift on ingest and the
+        API caches this for 5 min, so the query load is negligible.
+        """
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    (SELECT count(*) FILTER (WHERE document_type = 'email')  FROM documents) AS emails,
+                    (SELECT count(*) FILTER (WHERE document_type <> 'email') FROM documents) AS documents,
+                    (SELECT count(*) FROM topics)                                            AS topics,
+                    (SELECT count(*) FROM vessels)                                           AS vessels
+                """
+            )
+        return {
+            "emails": int(row["emails"] or 0),
+            "documents": int(row["documents"] or 0),
+            "topics": int(row["topics"] or 0),
+            "vessels": int(row["vessels"] or 0),
+        }
+
     async def count_documents_below_version(self, target_version: int) -> int:
         """Count documents with ingest_version below target.
 

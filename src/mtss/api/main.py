@@ -36,12 +36,12 @@ from ..observability import flush_langfuse_traces, set_user_id
 from ..storage.archive_storage import ArchiveStorage, ArchiveStorageError
 from ..storage.supabase_client import SupabaseClient
 from ..utils import CHUNK_ID_LENGTH
-from ..version import APP_VERSION, GIT_SHA_SHORT
+from ..version import APP_VERSION, BUILD_TIME, GIT_SHA_SHORT
 from .agent import create_graph
 from .conversations import router as conversations_router
 from .deps import get_supabase_client
 from .feedback import router as feedback_router
-from .middleware.auth import SupabaseJWTBearer
+from .middleware.auth import SupabaseJWTBearer, UserPayload, get_current_user
 from .streaming import router as streaming_router
 
 logger = logging.getLogger(__name__)
@@ -425,7 +425,36 @@ def create_app() -> FastAPI:
             "service": "MTSS-api",
             "version": APP_VERSION,
             "git_sha": GIT_SHA_SHORT,
+            "build_time": BUILD_TIME,
         }
+
+    # Corpus stats for the conversations-page footer. In-memory TTL cache
+    # keeps the DB cost trivial — these numbers only change when an
+    # ingest completes, which is operator-initiated and rare.
+    _stats_cache: dict = {"value": None, "at": 0.0}
+    _STATS_TTL = 300.0  # 5 min
+
+    @app.get("/api/stats")
+    @limiter.limit("60/minute")
+    async def corpus_stats(
+        request: Request,
+        user: UserPayload = Depends(get_current_user),
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
+        import time
+
+        now = time.time()
+        if _stats_cache["value"] is not None and (now - _stats_cache["at"]) < _STATS_TTL:
+            payload = _stats_cache["value"]
+        else:
+            payload = await client.get_corpus_stats()
+            _stats_cache["value"] = payload
+            _stats_cache["at"] = now
+        return Response(
+            content=json.dumps(payload),
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=300"},
+        )
 
     # Frontend runtime configuration endpoint
     # Serves env vars as JavaScript for static Vite build

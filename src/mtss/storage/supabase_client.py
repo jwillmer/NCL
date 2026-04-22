@@ -255,6 +255,10 @@ class SupabaseClient:
     async def list_all_topics_lightweight(self) -> List[Topic]:
         return await self._domain.list_all_topics_lightweight()
 
+    async def get_corpus_stats(self) -> dict[str, int]:
+        """{emails, documents, topics, vessels} — drives the footer stats."""
+        return await self._docs.get_corpus_stats()
+
     async def get_topics_fingerprint(self) -> tuple[int, Optional[str]]:
         """(count, max(updated_at)) — cheap change-detector for TopicCache."""
         return await self._domain.get_topics_fingerprint()

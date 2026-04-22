@@ -53,6 +53,15 @@ export default defineConfig({
             },
           },
           {
+            urlPattern: ({ url }) => url.pathname === "/api/stats",
+            handler: "StaleWhileRevalidate",
+            options: {
+              cacheName: "corpus-stats",
+              expiration: { maxAgeSeconds: 600, maxEntries: 1 },
+              cacheableResponse: { statuses: [200] },
+            },
+          },
+          {
             urlPattern: ({ url }) => url.pathname.startsWith("/api/archive/"),
             handler: "CacheFirst",
             options: {
