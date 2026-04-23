@@ -168,9 +168,17 @@ async def _import_data(
             )
 
         await _import_topics(db, resolved_output, totals, changes, dry_run, verbose)
-        wave_folder_ids = await _import_documents(
+        wave_folder_ids, new_root_doc_ids = await _import_documents(
             db, resolved_output, totals, changes, dry_run, verbose, limit=limit,
         )
+
+        # Heal vessel_ids on the freshly-pushed chunks: local ingest stamps
+        # chunks with ephemeral CSV-load UUIDs that don't match the remote
+        # vessels table, so every new push would silently orphan itself
+        # without this pass. Scoped to the roots actually imported so wave
+        # mode stays cheap; skipped entirely on dry-run.
+        if not dry_run and new_root_doc_ids:
+            await _retag_imported_docs(db, new_root_doc_ids, verbose)
 
         if limit is None:
             await _remove_db_orphans(db, resolved_output, changes, dry_run, verbose)
@@ -515,10 +523,20 @@ async def _rewrite_remote_topic_ids(db, plan_path: Path, changes, dry_run, verbo
 async def _import_documents(db, output_dir, totals, changes, dry_run, verbose, limit=None):
     """Import documents + chunks from JSONL files.
 
-    Returns the set of folder_ids (compute_folder_id(doc_id)) for emails
-    imported (or attempted) this run. Callers use this to scope the
-    archive-upload phase in wave mode so untouched folders aren't
-    rescanned. On dry-run the set still reflects what *would* be imported.
+    Returns a tuple ``(wave_folder_ids, imported_root_doc_ids)``:
+
+      - ``wave_folder_ids`` — folder_ids (compute_folder_id(doc_id)) for
+        emails attempted this run; callers use it to scope the
+        archive-upload phase so untouched folders aren't rescanned.
+      - ``imported_root_doc_ids`` — the corpus ``doc_id`` strings of the
+        root emails actually sent in this run. The ``_import_data`` caller
+        resolves these to DB UUIDs and hands them to ``retag_vessels`` so
+        each newly-pushed tree's chunks get their ``vessel_ids`` rebuilt
+        from the canonical vessels table (local ingest stamps chunks with
+        ephemeral CSV-load UUIDs; without this healing step each import
+        would silently orphan its own chunks).
+
+    On dry-run both sets still reflect what *would* be imported.
     """
     docs_data = _read_jsonl(output_dir / "documents.jsonl")
     chunks_data = _read_jsonl(output_dir / "chunks.jsonl")
@@ -576,12 +594,14 @@ async def _import_documents(db, output_dir, totals, changes, dry_run, verbose, l
 
     console.print(f"Importing {len(roots)} emails ({len(docs_data)} documents, {len(chunks_data)} chunks)...")
 
+    new_root_doc_ids: list[str] = [r["doc_id"] for r in new_roots if r.get("doc_id")]
+
     if not new_roots:
         console.print(f"Documents up to date ({len(roots)} already imported)")
-        return wave_folder_ids
+        return wave_folder_ids, []
 
     if dry_run:
-        return wave_folder_ids
+        return wave_folder_ids, new_root_doc_ids
 
     already_imported = len(roots) - total_pending
     deferred = total_pending - len(new_roots)
@@ -652,6 +672,40 @@ async def _import_documents(db, output_dir, totals, changes, dry_run, verbose, l
             *(_persist_one(r) for r in new_roots),
             return_exceptions=False,  # _persist_one swallows its own errors
         )
+
+    return wave_folder_ids, new_root_doc_ids
+
+
+async def _retag_imported_docs(db, new_root_doc_ids: list[str], verbose: bool) -> None:
+    """Rebuild `chunks.metadata.vessel_ids` for the roots just imported.
+
+    Resolves corpus ``doc_id`` strings to DB UUIDs then delegates to the
+    shared `retag_vessels` helper. Chunks still use ephemeral local UUIDs
+    at write time; this pass swaps them for the canonical values from the
+    remote `vessels` table so filters and citations resolve correctly.
+    """
+    from ..storage.vessel_retag import retag_vessels
+
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id FROM documents WHERE depth = 0 AND doc_id = ANY($1::text[])",
+            new_root_doc_ids,
+        )
+    root_ids = [r["id"] for r in rows]
+    if not root_ids:
+        return
+
+    console.print(f"Healing vessel_ids on {len(root_ids)} newly-imported emails...")
+    stats = await retag_vessels(db, root_ids=root_ids)
+    if stats.chunks_updated or stats.vessel_tags_added or stats.vessel_tags_removed:
+        console.print(
+            f"  [green]vessel retag: changed {stats.docs_changed} docs, "
+            f"+{stats.vessel_tags_added}/-{stats.vessel_tags_removed} tags, "
+            f"{stats.chunks_updated} chunks updated[/green]"
+        )
+    elif verbose:
+        console.print("  [dim]vessel retag: no changes needed[/dim]")
 
 
 async def _remove_db_orphans(db, output_dir: Path, changes, dry_run, verbose):
