@@ -23,6 +23,7 @@ import {
   listVesselTypes,
   listVesselClasses,
 } from "@/lib/conversations";
+import { useAuth } from "@/components/auth";
 
 type VesselState = {
   vessels: Vessel[];
@@ -79,6 +80,7 @@ function saveToStorage(data: Omit<StoredShape, "ts">): void {
 }
 
 export function VesselProvider({ children }: { children: ReactNode }) {
+  const { session, loading: authLoading } = useAuth();
   const cached = loadFromStorage();
   const [vessels, setVessels] = useState<Vessel[]>(cached?.vessels ?? []);
   const [types, setTypes] = useState<string[]>(cached?.types ?? []);
@@ -99,11 +101,16 @@ export function VesselProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!session) {
+      setLoading(false);
+      return;
+    }
     refresh().catch((err) => {
       console.error("VesselProvider: refresh failed", err);
       setLoading(false);
     });
-  }, [refresh]);
+  }, [authLoading, session, refresh]);
 
   const lookup = useMemo(
     () => Object.fromEntries(vessels.map((v) => [v.id, v.name])),
