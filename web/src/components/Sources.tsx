@@ -23,6 +23,8 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { visit } from "unist-util-visit";
+import type { Root as MdastRoot, Text as MdastText } from "mdast";
 import { ChevronDown, ChevronRight, FileText, Download, ArrowLeft, Mail } from "lucide-react";
 import {
   Card,
@@ -219,46 +221,6 @@ function withArchiveToken(url: string, token: string | undefined): string {
   if (/[?&]token=/.test(url)) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}token=${encodeURIComponent(token)}`;
-}
-
-/**
- * Strip the header preamble from an archived attachment markdown file.
- *
- * Archive .md files start with a generated block:
- *
- *     # Filename.xlsx
- *
- *     **Type:** application/...
- *     **Size:** 28.8 KB
- *     **Extracted:** 2026-04-19 23:50:13
- *
- *     [Download Original](folder/attachments/Filename.xlsx)
- *
- *     ---
- *
- *     ## Content
- *
- * All that metadata is already shown elsewhere in the dialog (title,
- * download button). Strip everything up to and including the first
- * `## Content` heading, or failing that the first standalone horizontal
- * rule (`---`). Email .md files typically open with `## Message 1` and
- * have no horizontal rule at the top, so this heuristic is a no-op for
- * them.
- */
-function stripArchiveMdPreamble(markdown: string): string {
-  const lines = markdown.split("\n");
-
-  const contentIdx = lines.findIndex((line) => /^##\s+Content\s*$/.test(line.trim()));
-  if (contentIdx >= 0) {
-    return lines.slice(contentIdx + 1).join("\n").replace(/^\n+/, "");
-  }
-
-  const hrIdx = lines.findIndex((line) => /^-{3,}\s*$/.test(line.trim()));
-  if (hrIdx >= 0) {
-    return lines.slice(hrIdx + 1).join("\n").replace(/^\n+/, "");
-  }
-
-  return markdown;
 }
 
 // -------------------------------------------------------------------------
@@ -872,33 +834,62 @@ interface SourceViewDialogProps {
 }
 
 /**
- * Add highlight markers to markdown content for specified line ranges.
- * Wraps lines in <mark> tags that will be rendered with yellow background.
+ * remark plugin that wraps every mdast ``text`` node whose source line
+ * overlaps any of the supplied ``lineRanges`` in a ``<mark>`` HTML span.
+ *
+ * Operating on the AST (rather than the raw markdown source) means the
+ * markdown has already been parsed by the time we add highlights — so we
+ * never accidentally break a heading, list item, blockquote, or GFM table
+ * row by prepending raw HTML to its source line. Block structure stays
+ * intact; only the rendered text content inside each block gets wrapped.
+ *
+ * Line numbers come from ``node.position`` which remark fills in from the
+ * original markdown source. Callers must pass line ranges that reference
+ * the same source (``citation.archive_browse_uri`` content → ranges from
+ * ``activeHighlights``).
  */
-function addLineHighlights(content: string, lineRanges: [number, number][]): string {
-  if (!lineRanges || lineRanges.length === 0) return content;
+function remarkLineHighlights(lineRanges: [number, number][] | undefined) {
+  return () => (tree: MdastRoot) => {
+    if (!lineRanges || lineRanges.length === 0) return;
+    const overlaps = (startLine: number, endLine: number) =>
+      lineRanges.some(([s, e]) => !(endLine < s || startLine > e));
 
-  const lines = content.split("\n");
-  const highlightedLineNums = new Set<number>();
+    // Collect first, mutate after — ``unist-util-visit`` doesn't guarantee
+    // correct sibling iteration if you mutate ``parent.children`` during
+    // the visit, and ``remark-breaks`` splits lines into multiple text
+    // nodes that need each to be wrapped independently.
+    const replacements: Array<{
+      parent: { children: Array<MdastText | { type: "html"; value: string }> };
+      index: number;
+      value: string;
+    }> = [];
 
-  // Collect all line numbers to highlight
-  for (const [start, end] of lineRanges) {
-    for (let i = start; i <= end && i <= lines.length; i++) {
-      highlightedLineNums.add(i);
+    visit(tree, "text", (node: MdastText, index, parent) => {
+      if (!parent || index === undefined) return;
+      const startLine = node.position?.start.line;
+      const endLine = node.position?.end.line ?? startLine;
+      if (startLine === undefined || endLine === undefined) return;
+      if (!overlaps(startLine, endLine)) return;
+      replacements.push({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        parent: parent as any,
+        index,
+        value: `<mark class="citation-highlight">${escapeMarkHtml(node.value)}</mark>`,
+      });
+    });
+
+    // In-place replacement (no length change) — order doesn't matter.
+    for (const { parent, index, value } of replacements) {
+      parent.children[index] = { type: "html", value };
     }
-  }
+  };
+}
 
-  // Wrap highlighted lines
-  const result = lines.map((line, idx) => {
-    const lineNum = idx + 1; // Lines are 1-indexed
-    if (highlightedLineNums.has(lineNum)) {
-      // Use a special marker that we'll style with CSS
-      return `<mark class="citation-highlight">${line}</mark>`;
-    }
-    return line;
-  });
-
-  return result.join("\n");
+function escapeMarkHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight }: SourceViewDialogProps) {
@@ -940,16 +931,23 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
       return;
     }
 
-    const fetchCitation = async () => {
-      setLoading(true);
-      setError(null);
-      setArchiveMd(null);
+    // Clear previous citation immediately so a rapid reopen with a new
+    // chunkId doesn't flash the prior document. Same reason archiveMd is
+    // reset here and on the cleanup path below.
+    setCitation(null);
+    setArchiveMd(null);
+    setLoading(true);
+    setError(null);
 
+    const controller = new AbortController();
+
+    (async () => {
       try {
         const response = await fetch(`${getApiBaseUrl()}/citations/${currentChunkId}`, {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
+          signal: controller.signal,
         });
 
         if (!response.ok) {
@@ -957,15 +955,19 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
         }
 
         const data = await response.json();
+        if (controller.signal.aborted) return;
         setCitation(data);
       } catch (err) {
+        if (controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : "Failed to load content");
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
-    };
+    })();
 
-    fetchCitation();
+    return () => {
+      controller.abort();
+    };
   }, [open, currentChunkId, session]);
 
   const handleOpenOrigin = () => {
@@ -1096,10 +1098,13 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
   // via the fetch above), falling back to the chunk text. Then rewrite legacy
   // attachment listings, friendlify the MIME "**Type:**" line, inject a
   // prominent image preview for image attachments, and apply line highlights
-  // last (so it sees the final text). Preamble stripping only applies to the
-  // archived .md — chunk text is already just the content slice.
+  // last (so it sees the final text). Render the archived .md verbatim —
+  // stripping the preamble would shift line numbers out from under the
+  // citation's activeHighlights (which reference original .md line numbers),
+  // causing the highlight band to land on unrelated content. The preamble
+  // duplicates info already shown in the dialog header, which is cosmetic.
   const renderedBody = archiveMd !== null
-    ? stripArchiveMdPreamble(archiveMd)
+    ? archiveMd
     : (citation?.content ?? undefined);
 
   const isImageCitation =
@@ -1112,15 +1117,15 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
       )
     : null;
 
-  let preppedContent = renderedBody;
-  if (preppedContent) {
-    preppedContent = rewriteAttachmentListing(preppedContent);
-    preppedContent = friendlifyTypeLine(preppedContent);
-    preppedContent = injectImagePreview(preppedContent, imagePreviewUrl, isImageCitation);
+  let processedContent = renderedBody;
+  if (processedContent) {
+    processedContent = rewriteAttachmentListing(processedContent);
+    processedContent = friendlifyTypeLine(processedContent);
+    processedContent = injectImagePreview(processedContent, imagePreviewUrl, isImageCitation);
   }
-  const processedContent = preppedContent && activeHighlights
-    ? addLineHighlights(preppedContent, activeHighlights)
-    : preppedContent;
+  // Highlighting is applied inside ReactMarkdown via ``remarkLineHighlights``
+  // (an AST-level plugin) so block-level constructs — headings, list items,
+  // blockquotes, GFM table rows — stay intact. See the plugin's docstring.
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -1153,6 +1158,14 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
                     From email: {citation.origin_email.subject || "(no subject)"}
                   </span>
                 </button>
+              )}
+              {citation?.document_type === "email"
+                && typeof citation.attachment_count === "number" && (
+                <p className="text-sm text-MTSS-gray mt-1">
+                  {citation.attachment_count === 0
+                    ? "No attachments"
+                    : `${citation.attachment_count} attachment${citation.attachment_count === 1 ? "" : "s"}`}
+                </p>
               )}
               {locationParts.length > 0 && (
                 <p className="text-sm text-MTSS-gray mt-1">{locationParts.join(" | ")}</p>
@@ -1195,7 +1208,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
               <TooltipProvider delayDuration={200}>
               <div className="prose prose-sm max-w-none prose-headings:text-MTSS-blue-dark prose-p:text-MTSS-blue-dark prose-li:text-MTSS-blue-dark prose-a:text-MTSS-blue prose-a:underline prose-hr:my-4 [&_p]:mb-4 [&_br+br]:block [&_br+br]:h-2 [&_.citation-highlight]:bg-yellow-200 [&_.citation-highlight]:px-0.5 [&_.citation-highlight]:rounded [&_.source-image-preview]:my-3 [&_.source-image-preview]:max-w-full [&_.source-image-preview]:max-h-[420px] [&_.source-image-preview]:object-contain [&_.source-image-preview]:mx-auto [&_.source-image-preview]:block [&_.source-image-preview]:rounded [&_.source-image-preview]:border [&_.source-image-preview]:border-MTSS-gray-light">
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkBreaks]}
+                  remarkPlugins={[remarkGfm, remarkBreaks, remarkLineHighlights(activeHighlights)]}
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   rehypePlugins={[rehypeRaw as any, [rehypeSanitize, sourceSanitizeSchema]]}
                   components={{
