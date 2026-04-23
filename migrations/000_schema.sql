@@ -379,8 +379,12 @@ COMMENT ON COLUMN conversations.vessel_type IS 'Vessel type filter e.g. VLCC (mu
 COMMENT ON COLUMN conversations.vessel_class IS 'Vessel class filter e.g. Canopus Class (mutually exclusive with vessel_id/vessel_type)';
 
 CREATE INDEX idx_conversations_user_id ON conversations(user_id);
-CREATE INDEX idx_conversations_user_recent ON conversations(user_id, last_message_at DESC NULLS LAST);
-CREATE INDEX idx_conversations_user_archived ON conversations(user_id, is_archived);
+-- Composite tuned for GET /api/conversations: filter by (user_id, is_archived),
+-- sort by (last_message_at DESC NULLS LAST, created_at DESC). Satisfies the
+-- list query directly from the index — earlier three narrower indexes each
+-- covered only part of the shape and forced an in-memory sort.
+CREATE INDEX idx_conversations_list
+    ON conversations(user_id, is_archived, last_message_at DESC NULLS LAST, created_at DESC);
 CREATE INDEX idx_conversations_vessel ON conversations(vessel_id);
 CREATE INDEX idx_conversations_vessel_type ON conversations(vessel_type);
 CREATE INDEX idx_conversations_vessel_class ON conversations(vessel_class);
@@ -412,6 +416,11 @@ INSERT INTO ingest_versions (version, description, breaking_changes) VALUES
 -- FUNCTIONS: VECTOR / HYBRID SEARCH
 -- ============================================
 
+-- Hybrid vector+BM25 search. HNSW-eligible ORDER BY + GIN-indexable topic
+-- filter. Over-fetches match_count*3 HNSW candidates then re-scores with
+-- BM25 on the bounded set. See git log for the performance rationale
+-- (derived expression on 1-distance defeated HNSW; direct distance bound
+-- restores it).
 CREATE OR REPLACE FUNCTION match_chunks(
     query_embedding extensions.vector(1536),
     match_threshold FLOAT DEFAULT 0.7,
@@ -449,8 +458,9 @@ DECLARE
     topic_ids_filter TEXT[];
     other_filter JSONB;
     tsquery_val tsquery;
+    distance_limit FLOAT;
+    candidate_count INT;
 BEGIN
-    -- Extract topic_ids for special OR handling
     IF metadata_filter IS NOT NULL AND metadata_filter ? 'topic_ids' THEN
         SELECT ARRAY(SELECT jsonb_array_elements_text(metadata_filter->'topic_ids'))
         INTO topic_ids_filter;
@@ -463,71 +473,94 @@ BEGIN
         other_filter := metadata_filter;
     END IF;
 
-    -- Pre-compute tsquery if query_text provided
     IF query_text IS NOT NULL AND query_text <> '' THEN
         tsquery_val := plainto_tsquery('english', query_text);
     ELSE
         tsquery_val := NULL;
     END IF;
 
+    -- HNSW fires on ORDER BY embedding <=> const and on
+    -- embedding <=> const < const; translate similarity threshold
+    -- into the equivalent distance bound.
+    distance_limit := 1.0 - match_threshold;
+    candidate_count := GREATEST(match_count * 3, 60);
+
     RETURN QUERY
-    SELECT * FROM (
+    WITH candidates AS (
         SELECT
             c.chunk_id,
-            c.document_id AS document_uuid,
+            c.document_id,
             c.content,
+            c.content_tsv,
             c.section_path,
-            -- Hybrid score: blend vector similarity with BM25 when query_text matches
-            CASE
-                WHEN tsquery_val IS NOT NULL AND c.content_tsv @@ tsquery_val THEN
-                    (0.7 * (1 - (c.embedding <=> query_embedding)) +
-                     0.3 * ts_rank(c.content_tsv, tsquery_val))::FLOAT
-                ELSE
-                    (1 - (c.embedding <=> query_embedding))::FLOAT
-            END AS similarity,
-
             c.context_summary,
-
-            d.doc_id,
             c.source_id,
-            d.file_path,
-            d.document_type,
-
             c.source_title,
             c.page_number,
             c.line_from,
             c.line_to,
-
             c.archive_browse_uri,
             c.archive_download_uri,
-
-            COALESCE(d.email_subject, root_doc.email_subject) AS email_subject,
-            COALESCE(d.email_initiator, root_doc.email_initiator) AS email_initiator,
-            COALESCE(d.email_participants, root_doc.email_participants) AS email_participants,
-            COALESCE(d.email_date_start, root_doc.email_date_start) AS email_date,
-            root_doc.file_path AS root_file_path
+            c.metadata,
+            c.embedding <=> query_embedding AS distance
         FROM chunks c
-        JOIN documents d ON c.document_id = d.id
-        LEFT JOIN documents root_doc ON d.root_id = root_doc.id
         WHERE c.embedding IS NOT NULL
-          AND 1 - (c.embedding <=> query_embedding) > match_threshold
+          AND c.embedding <=> query_embedding < distance_limit
+          -- GIN-indexable OR-of-containments on topic_ids. Each
+          -- c.metadata @> <expr> is served from the GIN index on
+          -- chunks.metadata (jsonb_ops).
           AND (topic_ids_filter IS NULL
                OR EXISTS (
                    SELECT 1
-                   FROM jsonb_array_elements_text(c.metadata->'topic_ids') AS stored_tid
-                   WHERE stored_tid = ANY(topic_ids_filter)
+                   FROM unnest(topic_ids_filter) AS tid
+                   WHERE c.metadata @> jsonb_build_object(
+                       'topic_ids', jsonb_build_array(tid)
+                   )
                ))
           AND (other_filter IS NULL OR c.metadata @> other_filter)
-    ) sub
-    ORDER BY sub.similarity DESC
+        ORDER BY c.embedding <=> query_embedding
+        LIMIT candidate_count
+    )
+    SELECT
+        cand.chunk_id,
+        cand.document_id AS document_uuid,
+        cand.content,
+        cand.section_path,
+        CASE
+            WHEN tsquery_val IS NOT NULL AND cand.content_tsv @@ tsquery_val THEN
+                (0.7 * (1 - cand.distance) +
+                 0.3 * ts_rank(cand.content_tsv, tsquery_val))::FLOAT
+            ELSE
+                (1 - cand.distance)::FLOAT
+        END AS similarity,
+        cand.context_summary,
+        d.doc_id,
+        cand.source_id,
+        d.file_path,
+        d.document_type,
+        cand.source_title,
+        cand.page_number,
+        cand.line_from,
+        cand.line_to,
+        cand.archive_browse_uri,
+        cand.archive_download_uri,
+        COALESCE(d.email_subject, root_doc.email_subject) AS email_subject,
+        COALESCE(d.email_initiator, root_doc.email_initiator) AS email_initiator,
+        COALESCE(d.email_participants, root_doc.email_participants) AS email_participants,
+        COALESCE(d.email_date_start, root_doc.email_date_start) AS email_date,
+        root_doc.file_path AS root_file_path
+    FROM candidates cand
+    JOIN documents d ON cand.document_id = d.id
+    LEFT JOIN documents root_doc ON d.root_id = root_doc.id
+    ORDER BY similarity DESC
     LIMIT match_count;
 END;
 $$;
 
 COMMENT ON FUNCTION match_chunks IS 'Hybrid vector+BM25 search with metadata filtering.
+Over-fetches match_count*3 HNSW candidates, then re-scores with BM25 on a bounded set.
 When query_text is provided, score = 0.7*vector + 0.3*bm25 for text-matching chunks.
-topic_ids uses OR logic (match ANY topic), other filters use AND logic (match ALL).
-Returns context_summary for LLM context assembly.';
+topic_ids uses OR logic (match ANY topic), other filters use AND logic (match ALL).';
 
 -- ============================================
 -- FUNCTIONS: DOCUMENT ANCESTRY
@@ -566,6 +599,9 @@ $$;
 -- FUNCTIONS: TOPICS
 -- ============================================
 
+-- HNSW index on topics(embedding vector_cosine_ops) activates when the
+-- ORDER BY matches the opclass and a LIMIT is present. Inner over-fetch
+-- (max_results * 4) keeps the threshold filter from starving the result.
 CREATE OR REPLACE FUNCTION find_similar_topics(
     query_embedding extensions.vector(1536),
     similarity_threshold FLOAT DEFAULT 0.85,
@@ -580,18 +616,26 @@ RETURNS TABLE (
 LANGUAGE SQL STABLE
 SET search_path = public, extensions, pg_temp
 AS $$
-    SELECT
-        t.id,
-        t.name,
-        t.display_name,
-        1 - (t.embedding <=> query_embedding) AS similarity
-    FROM topics t
-    WHERE t.embedding IS NOT NULL
-      AND 1 - (t.embedding <=> query_embedding) > similarity_threshold
-    ORDER BY t.embedding <=> query_embedding ASC
+    SELECT x.id, x.name, x.display_name, x.similarity
+    FROM (
+        SELECT
+            t.id,
+            t.name,
+            t.display_name,
+            1 - (t.embedding <=> query_embedding) AS similarity
+        FROM topics t
+        WHERE t.embedding IS NOT NULL
+        ORDER BY t.embedding <=> query_embedding
+        LIMIT GREATEST(max_results * 4, 20)
+    ) x
+    WHERE x.similarity > similarity_threshold
+    ORDER BY x.similarity DESC
     LIMIT max_results;
 $$;
 
+-- Containment (@>) uses the GIN index on chunks.metadata (jsonb_ops).
+-- The prior `->'topic_ids' ? uuid` form was a function expression on a
+-- sub-path and fell back to a sequential scan at production scale.
 CREATE OR REPLACE FUNCTION count_chunks_by_topic(
     topic_uuid UUID,
     vessel_filter JSONB DEFAULT NULL
@@ -602,10 +646,14 @@ SET search_path = public, pg_temp
 AS $$
     SELECT COUNT(*)::INTEGER
     FROM chunks c
-    WHERE c.metadata->'topic_ids' ? topic_uuid::text
+    WHERE c.metadata @> jsonb_build_object(
+              'topic_ids', jsonb_build_array(topic_uuid::text)
+          )
       AND (vessel_filter IS NULL OR c.metadata @> vessel_filter);
 $$;
 
+-- Union of index-backed containment scans, one per topic_id. DISTINCT
+-- c.id dedupes chunks that carry multiple matching topics.
 CREATE OR REPLACE FUNCTION count_chunks_by_topics(
     topic_uuids UUID[],
     vessel_filter JSONB DEFAULT NULL
@@ -615,8 +663,11 @@ LANGUAGE SQL STABLE
 SET search_path = public, pg_temp
 AS $$
     SELECT COUNT(DISTINCT c.id)::INTEGER
-    FROM chunks c
-    WHERE c.metadata->'topic_ids' ?| ARRAY(SELECT t::text FROM unnest(topic_uuids) t)
+    FROM chunks c,
+         unnest(topic_uuids) AS tid
+    WHERE c.metadata @> jsonb_build_object(
+              'topic_ids', jsonb_build_array(tid::text)
+          )
       AND (vessel_filter IS NULL OR c.metadata @> vessel_filter);
 $$;
 
@@ -638,6 +689,53 @@ AS $$
     FROM topics t
     ORDER BY t.chunk_count DESC, t.name ASC;
 $$;
+
+-- Server-side rewrite of chunks.metadata.topic_ids for local → remote topic
+-- consolidation. Takes a {old_uuid: new_uuid} mapping and updates every
+-- chunk that carries an absorbed UUID. Called by `mtss import` after the
+-- local `mtss topics consolidate --apply` step so no chunk ends up
+-- pointing at a deleted topic.
+CREATE OR REPLACE FUNCTION rewrite_chunk_topic_ids(mapping JSONB)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    updated_count INTEGER;
+BEGIN
+    IF mapping IS NULL OR jsonb_typeof(mapping) <> 'object' THEN
+        RAISE EXCEPTION 'mapping must be a JSON object of {old_uuid: new_uuid}';
+    END IF;
+
+    UPDATE chunks c
+    SET metadata = jsonb_set(
+        c.metadata,
+        '{topic_ids}',
+        (
+            -- DISTINCT dedupes — a keeper UUID the chunk already
+            -- referenced would otherwise appear twice after rewrite.
+            SELECT COALESCE(jsonb_agg(DISTINCT rewritten), '[]'::jsonb)
+            FROM (
+                SELECT COALESCE(mapping->>tid, tid) AS rewritten
+                FROM jsonb_array_elements_text(c.metadata->'topic_ids') AS tid
+            ) t
+        )
+    )
+    WHERE c.metadata ? 'topic_ids'
+      AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(c.metadata->'topic_ids') AS tid
+          WHERE mapping ? tid
+      );
+
+    GET DIAGNOSTICS updated_count = ROW_COUNT;
+    RETURN updated_count;
+END;
+$$;
+
+COMMENT ON FUNCTION rewrite_chunk_topic_ids IS
+    'Rewrite chunks.metadata.topic_ids using {old_uuid:new_uuid} map. '
+    'Called by mtss import after local topic consolidation.';
 
 -- ============================================
 -- ROW LEVEL SECURITY
