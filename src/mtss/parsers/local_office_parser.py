@@ -14,6 +14,39 @@ logger = logging.getLogger(__name__)
 _ENCODINGS = ["utf-8", "utf-8-sig", "latin-1", "cp1252"]
 
 
+def _escape_gfm_cell(value: str) -> str:
+    """Escape a cell value so embedded pipes don't break the GFM table.
+
+    Strips leading/trailing whitespace (matches historical cell handling) and
+    backslash-escapes every literal ``|`` so markdown viewers don't treat it
+    as a column separator.
+    """
+    return value.strip().replace("|", r"\|")
+
+
+def _format_gfm_table(rows: list[list[str]]) -> str:
+    """Render rows as a GFM table string.
+
+    First row is treated as the header; a ``|---|`` delimiter row of matching
+    width is inserted after it. Cells are escaped via ``_escape_gfm_cell``.
+    Returns a single string joined by ``\\n`` — no trailing newline.
+
+    Empty ``rows`` raises ``ValueError``; callers should skip emission if a
+    sheet has no non-empty rows.
+    """
+    if not rows:
+        raise ValueError("_format_gfm_table requires at least one row")
+    col_count = max(len(r) for r in rows)
+
+    def _render(cells: list[str]) -> str:
+        # Pad short rows so every row has ``col_count`` columns.
+        padded = cells + [""] * (col_count - len(cells))
+        return "| " + " | ".join(_escape_gfm_cell(c) for c in padded) + " |"
+
+    delimiter = "|" + "|".join(["---"] * col_count) + "|"
+    return "\n".join([_render(rows[0]), delimiter, *(_render(r) for r in rows[1:])])
+
+
 def _decode_with_fallback(raw_bytes: bytes) -> str:
     """Decode bytes trying common encodings, falling back to lossy UTF-8."""
     for enc in _ENCODINGS:
@@ -107,14 +140,14 @@ class LocalXlsxParser(BaseParser):
                 ws = wb[sheet_name]
                 parts.append(f"## {sheet_name}")
 
-                rows: list[str] = []
+                rows: list[list[str]] = []
                 for row in ws.iter_rows(values_only=True):
                     cells = [str(cell) if cell is not None else "" for cell in row]
                     if any(c for c in cells):
-                        rows.append(" | ".join(cells))
+                        rows.append(cells)
 
                 if rows:
-                    parts.append("\n".join(rows))
+                    parts.append(_format_gfm_table(rows))
 
             wb.close()
 
@@ -165,13 +198,13 @@ class LocalCsvParser(BaseParser):
 
         try:
             reader = csv.reader(io.StringIO(text))
-            rows: list[str] = []
+            rows: list[list[str]] = []
             for row in reader:
                 cells = [cell.strip() for cell in row]
                 if any(c for c in cells):
-                    rows.append(" | ".join(cells))
+                    rows.append(cells)
 
-            content = "\n".join(rows)
+            content = _format_gfm_table(rows) if rows else ""
         except EmptyContentError:
             raise
         except Exception as e:

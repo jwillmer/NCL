@@ -1002,3 +1002,253 @@ class TestDeleteDocumentForReprocessClearsIndexes:
         client_b._conn.close()
         assert len(rows) == 1
         assert rows[0]["id"] == str(new_id)
+
+
+class TestFixTableMdCommand:
+    """`MTSS fix-table-md` rewrites legacy broken-pipe tables in archived .md
+    files as valid GFM.
+
+    Backstory: ``LocalXlsxParser`` and ``LocalCsvParser`` historically emitted
+    rows with `" | ".join(cells)` — no leading/trailing ``|`` and no delimiter
+    row after the header. Markdown viewers collapse those blocks into a
+    soft-wrapped paragraph. This maintenance command patches the output in
+    place without re-parsing the source attachment.
+    """
+
+    @pytest.fixture
+    def seeded_archive(self, tmp_path):
+        output = tmp_path / "output"
+        archive = output / "archive"
+        folder_a = archive / "aaa" / "attachments"
+        folder_b = archive / "bbb" / "attachments"
+        folder_a.mkdir(parents=True)
+        folder_b.mkdir(parents=True)
+
+        # Broken xlsx.md — `## Sheet` header followed by pipe-joined rows,
+        # no delimiter, no leading/trailing `|`. Modelled on the real
+        # Weekly_Onboard_LO_Analysis_Log_22.xlsx.md output.
+        broken_xlsx = (
+            "# Weekly Log.xlsx\n"
+            "\n"
+            "**Type:** application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\n"
+            "\n"
+            "---\n"
+            "\n"
+            "## Content\n"
+            "\n"
+            "## Sheet1\n"
+            "\n"
+            "Date | Engine | Notes\n"
+            "2022-01-28 | ME | Added 500 lt\n"
+            "2022-02-04 | AE1 | -\n"
+            "2022-02-11 | AE2 | OK\n"
+            "\n"
+            "Other prose content here.\n"
+        )
+        (folder_a / "weekly.xlsx.md").write_text(broken_xlsx, encoding="utf-8")
+
+        # Broken csv.md — no sheet header, just rows.
+        broken_csv = (
+            "# export.csv\n"
+            "\n"
+            "---\n"
+            "\n"
+            "## Content\n"
+            "\n"
+            "name | value\n"
+            "alpha | 1\n"
+            "beta | 2\n"
+        )
+        (folder_b / "export.csv.md").write_text(broken_csv, encoding="utf-8")
+
+        # Already-valid file — must not change.
+        good_path = folder_a / "good.xlsx.md"
+        good_path.write_text(
+            "## Sheet1\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            encoding="utf-8",
+        )
+
+        # Non-xlsx/csv .md — must be skipped entirely.
+        untouched = archive / "aaa" / "email.eml.md"
+        untouched.write_text(
+            "Body of an email with a | pipe | in prose.\n",
+            encoding="utf-8",
+        )
+        return output, folder_a / "weekly.xlsx.md", folder_b / "export.csv.md", good_path, untouched
+
+    def test_apply_rewrites_broken_table_as_valid_gfm(self, seeded_archive):
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        output, xlsx_md, csv_md, good, untouched = seeded_archive
+        _fix_table_md(output, dry_run=False)
+
+        txt = xlsx_md.read_text(encoding="utf-8")
+        lines = txt.splitlines()
+        # Locate the rewritten table — first line after "## Sheet1" blank line.
+        assert "| Date | Engine | Notes |" in lines
+        # Delimiter row follows immediately.
+        header_idx = lines.index("| Date | Engine | Notes |")
+        assert lines[header_idx + 1] == "|---|---|---|"
+        # Original data preserved row-for-row.
+        assert "| 2022-01-28 | ME | Added 500 lt |" in lines
+        assert "| 2022-02-04 | AE1 | - |" in lines
+        assert "| 2022-02-11 | AE2 | OK |" in lines
+        # Surrounding content preserved.
+        assert "# Weekly Log.xlsx" in txt
+        assert "Other prose content here." in txt
+
+        csv_txt = csv_md.read_text(encoding="utf-8")
+        csv_lines = csv_txt.splitlines()
+        assert "| name | value |" in csv_lines
+        header_idx_csv = csv_lines.index("| name | value |")
+        assert csv_lines[header_idx_csv + 1] == "|---|---|"
+        assert "| alpha | 1 |" in csv_lines
+        assert "| beta | 2 |" in csv_lines
+
+    def test_dry_run_does_not_write(self, seeded_archive):
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        output, xlsx_md, csv_md, _good, _untouched = seeded_archive
+        before_xlsx = xlsx_md.read_text(encoding="utf-8")
+        before_csv = csv_md.read_text(encoding="utf-8")
+
+        _fix_table_md(output, dry_run=True)
+
+        assert xlsx_md.read_text(encoding="utf-8") == before_xlsx
+        assert csv_md.read_text(encoding="utf-8") == before_csv
+
+    def test_idempotent(self, seeded_archive):
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        output, xlsx_md, _csv_md, _good, _untouched = seeded_archive
+        _fix_table_md(output, dry_run=False)
+        first = xlsx_md.read_text(encoding="utf-8")
+        _fix_table_md(output, dry_run=False)
+        assert xlsx_md.read_text(encoding="utf-8") == first
+
+    def test_already_valid_tables_untouched(self, seeded_archive):
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        output, _xlsx_md, _csv_md, good, _untouched = seeded_archive
+        before = good.read_text(encoding="utf-8")
+        _fix_table_md(output, dry_run=False)
+        assert good.read_text(encoding="utf-8") == before
+
+    def test_non_table_md_files_ignored(self, seeded_archive):
+        """Command only walks *.xlsx.md and *.csv.md — the email .md with a
+        pipe in prose must remain untouched."""
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        output, _xlsx_md, _csv_md, _good, untouched = seeded_archive
+        before = untouched.read_text(encoding="utf-8")
+        _fix_table_md(output, dry_run=False)
+        assert untouched.read_text(encoding="utf-8") == before
+
+    def test_missing_archive_dir_exits(self, tmp_path):
+        import typer as _typer
+
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        with pytest.raises(_typer.Exit):
+            _fix_table_md(tmp_path / "no-such-output", dry_run=False)
+
+    def test_block_widens_to_max_row_width(self, tmp_path):
+        """Legacy rows have no escaping, so a cell-internal ``|`` is
+        indistinguishable from a separator. The fixer splits greedily and
+        widens the block to the max row width — the header is padded with
+        empty cells so the delimiter row still matches GFM column-count
+        rules. Data is preserved; no truncation or silent merge.
+        """
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        output = tmp_path / "output"
+        folder = output / "archive" / "zzz" / "attachments"
+        folder.mkdir(parents=True)
+        md = folder / "mix.csv.md"
+        md.write_text(
+            "## Content\n"
+            "\n"
+            "name | note\n"
+            "alpha | one|two\n",
+            encoding="utf-8",
+        )
+        _fix_table_md(output, dry_run=False)
+        text = md.read_text(encoding="utf-8")
+        # Delimiter has 3 columns (widest row wins).
+        assert "|---|---|---|" in text
+        # Every original token still present; data row is valid GFM.
+        assert "| alpha | one | two |" in text
+        assert "| name | note |  |" in text
+
+    def test_real_world_broken_xlsx_sample_becomes_gfm(self, tmp_path):
+        """Representative subset of the real
+        ``Weekly_Onboard_LO_Analysis_Log_22.xlsx.md`` that sits in
+        production archive. Reproduces the exact structure — a sheet
+        header whose first two rows both have leading empty cells
+        rendered as ``" | value"`` — and asserts the post-fix table
+        is valid GFM and parses as a table.
+        """
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        output = tmp_path / "output"
+        folder = output / "archive" / "0b0a97618b16d6fe9d2bde33bde37e1f" / "attachments"
+        folder.mkdir(parents=True)
+        md = folder / "Weekly_Onboard_LO_Analysis_Log_22.xlsx.md"
+        sample = (
+            "# Weekly Onboard  LO Analysis Log (22).xlsx\n"
+            "\n"
+            "**Type:** application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\n"
+            "**Size:** 28.8 KB\n"
+            "**Extracted:** 2026-04-19 23:50:13\n"
+            "\n"
+            "---\n"
+            "\n"
+            "## Content\n"
+            "\n"
+            "## Sheet1\n"
+            "\n"
+            " | MAIN ENGINE |  |  | A/E #1 |  |  | STERN TUBE | \n"
+            "Date | TBN | Water % | Viscosity | TBN | Water % | Viscosity | Water %\n"
+            "2022-01-28 00:00:00 | 12 | <0.02 | OK | 27 | <0.02 | OK | <0.02\n"
+            "2022-02-04 00:00:00 | 13 | <0.02 | OK | 25 | <0.02 | OK | <0.02\n"
+            "2022-02-11 00:00:00 | 13 | <0.02 | OK | 25 | <0.02 | OK | <0.02\n"
+        )
+        md.write_text(sample, encoding="utf-8")
+
+        # Dry-run first.
+        before = md.read_text(encoding="utf-8")
+        _fix_table_md(output, dry_run=True)
+        assert md.read_text(encoding="utf-8") == before, "dry-run must not write"
+
+        # Apply.
+        _fix_table_md(output, dry_run=False)
+        after = md.read_text(encoding="utf-8")
+        assert after != before
+        # The first table row is now valid GFM (leading + trailing pipe)
+        # and contains the header cell from the source.
+        assert "| MAIN ENGINE |" in after
+        for line in after.splitlines():
+            if "MAIN ENGINE" in line:
+                assert line.startswith("| ") and line.endswith("|"), (
+                    f"header row not valid GFM: {line!r}"
+                )
+                break
+        # A delimiter row follows the first data row (exact column count: 8).
+        assert "|---|---|---|---|---|---|---|---|" in after
+        # Original data preserved — dates still present.
+        assert "2022-01-28 00:00:00" in after
+        assert "2022-02-11 00:00:00" in after
+        # Every non-blank line in the table block starts with `|` now.
+        in_table = False
+        for line in after.splitlines():
+            if line.startswith("|---"):
+                in_table = True
+                continue
+            if in_table and not line.strip():
+                break
+            if in_table:
+                assert line.startswith("| "), f"broken row in table: {line!r}"
+
+        # Idempotency.
+        _fix_table_md(output, dry_run=False)
+        assert md.read_text(encoding="utf-8") == after

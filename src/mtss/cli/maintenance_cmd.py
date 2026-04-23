@@ -225,6 +225,37 @@ def register(app: typer.Typer):
         _heal_archive(output_dir, dry_run=dry_run, limit=limit)
 
 
+    @app.command("fix-table-md")
+    def fix_table_md(
+        output_dir: Optional[Path] = typer.Option(
+            None,
+            "--output-dir",
+            "-o",
+            help="Output directory containing archive/ (default: data/output)",
+        ),
+        dry_run: bool = typer.Option(
+            True,
+            "--dry-run/--apply",
+            help="Preview files that would be rewritten (default). Pass --apply to write.",
+        ),
+    ):
+        """Rewrite legacy broken-pipe tables in archived .xlsx.md / .csv.md files as valid GFM.
+
+        ``LocalXlsxParser`` and ``LocalCsvParser`` historically emitted table rows
+        as ``cell | cell | cell`` with no leading/trailing ``|`` and no delimiter
+        row after the header — markdown viewers collapse the block into one
+        wrapped paragraph. This command detects those blocks (consecutive
+        non-blank lines containing ``|`` but not starting with ``|``) and
+        rewrites them as ``| cell | cell |`` with a ``|---|---|---|`` delimiter
+        row after the first line. Escapes literal ``|`` in cell values.
+
+        Idempotent — tables already starting with ``|`` are skipped. Only walks
+        ``*.xlsx.md`` and ``*.csv.md`` so email bodies with stray pipes in prose
+        are left alone. Dry-run by default; use ``--apply`` to write.
+        """
+        _fix_table_md(output_dir, dry_run=dry_run)
+
+
     @app.command("clean-archive-md")
     def clean_archive_md(
         output_dir: Optional[Path] = typer.Option(
@@ -368,6 +399,194 @@ def _heal_archive(output_dir: Optional[Path], *, dry_run: bool, limit: int) -> N
             console.print(f"  {key}: {err}")
         if len(failed) > 10:
             console.print(f"  ... and {len(failed) - 10} more")
+
+
+def _escape_gfm_cell(value: str) -> str:
+    """Escape a cell value so an embedded ``|`` is not parsed as a column break."""
+    # GFM convention: backslash-escape `|`. Strip leading/trailing whitespace
+    # (matches historical LocalXlsxParser/LocalCsvParser cell handling) while
+    # preserving interior whitespace.
+    return value.strip().replace("|", r"\|")
+
+
+def _format_gfm_row(cells: list[str]) -> str:
+    """Render a GFM table row: ``| cell | cell |``."""
+    return "| " + " | ".join(_escape_gfm_cell(c) for c in cells) + " |"
+
+
+def _format_gfm_delimiter(column_count: int) -> str:
+    """Render a GFM delimiter row of ``column_count`` columns."""
+    return "|" + "|".join(["---"] * column_count) + "|"
+
+
+def _split_legacy_row(line: str) -> list[str]:
+    """Split a legacy ``cell | cell | cell`` row into its cells.
+
+    The historical emitter used ``" | "`` as the separator but didn't escape
+    cell-internal pipes, so we can't perfectly disambiguate an escaped pipe from
+    a separator after the fact — we just split on every ``|``. That's fine in
+    practice because legacy rows came from XLSX/CSV cells where pipes are
+    extremely rare; the forward-fixed parser does escape correctly.
+
+    If the stripped line already has a leading + trailing ``|`` (as happens
+    when the spreadsheet's first/last columns are empty, producing legacy
+    output like ``" | a | b | "``), treat those outer pipes as GFM framing
+    and drop the resulting empty boundary cells before returning. This keeps
+    the column count honest on mixed-validity tables.
+    """
+    stripped = line.strip()
+    if stripped.startswith("|") and stripped.endswith("|") and len(stripped) >= 2:
+        stripped = stripped[1:-1]
+        return stripped.split("|")
+    return line.split("|")
+
+
+def _is_candidate_table_line(line: str) -> bool:
+    """Return True if ``line`` could belong to a table block.
+
+    A candidate line is non-blank, contains ``|``, and isn't an ATX heading.
+    Whether the block actually needs rewriting is decided by
+    ``_block_is_broken`` — a block is rewritten only if at least one row isn't
+    already a valid GFM row (``stripped.startswith('|')`` and
+    ``stripped.endswith('|')``).
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("#"):
+        return False
+    return "|" in stripped
+
+
+def _line_looks_like_valid_gfm(line: str) -> bool:
+    """A line is "valid GFM looking" if its non-whitespace runs from a ``|``
+    to a ``|``.
+
+    Doesn't catch every corner case (e.g. delimiter rows) — it's just enough
+    to decide whether a block of pipe-separated rows needs a rewrite at all.
+    """
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|")
+
+
+def _block_is_broken(block: list[str]) -> bool:
+    """A table-candidate run is "broken" if any non-delimiter line isn't
+    already valid GFM. A single bad row in the block is enough to warrant
+    a rewrite of the whole run — partially-valid tables don't render either.
+    """
+    for line in block:
+        stripped = line.strip()
+        # Already-valid delimiter rows like ``|---|---|`` are fine and look
+        # like valid GFM on the outer test; skip them here.
+        if set(stripped.replace("|", "").replace("-", "").replace(":", "").strip()) == set():
+            continue
+        if not _line_looks_like_valid_gfm(line):
+            return True
+    return False
+
+
+def _rewrite_broken_tables(text: str) -> tuple[str, bool]:
+    """Rewrite any legacy broken-pipe table blocks in ``text`` as valid GFM.
+
+    A "block" is a run of consecutive non-blank lines that each contain a
+    ``|`` and aren't ATX headings. When at least one line in the run lacks a
+    leading+trailing ``|`` (i.e. the legacy ``cell | cell`` form), the whole
+    block is reformatted: the first line becomes the header row, a delimiter
+    row of matching width is inserted, and every subsequent line becomes a
+    GFM data row. Cells are stripped and literal ``|`` characters are
+    backslash-escaped.
+
+    Blocks whose rows are already all valid GFM (e.g. tables written by a
+    downstream tool) are left untouched so the command is idempotent.
+    """
+    lines = text.splitlines(keepends=False)
+    out: list[str] = []
+    i = 0
+    changed = False
+    n = len(lines)
+    while i < n:
+        if _is_candidate_table_line(lines[i]):
+            block_start = i
+            while i < n and _is_candidate_table_line(lines[i]):
+                i += 1
+            block = lines[block_start:i]
+            if not _block_is_broken(block):
+                out.extend(block)
+                continue
+            # Compute the canonical column count as the max across all rows
+            # in the block. A header that looks narrower than its data rows
+            # (common when the spreadsheet uses merged/empty header cells)
+            # gets right-padded with empty cells rather than silently
+            # truncating wider data rows.
+            all_rows = [_split_legacy_row(r) for r in block]
+            col_count = max(len(r) for r in all_rows)
+
+            def _normalize(cells: list[str]) -> list[str]:
+                if len(cells) < col_count:
+                    return cells + [""] * (col_count - len(cells))
+                return cells
+
+            header_cells = _normalize(all_rows[0])
+            out.append(_format_gfm_row(header_cells))
+            out.append(_format_gfm_delimiter(col_count))
+            for data_cells in all_rows[1:]:
+                out.append(_format_gfm_row(_normalize(data_cells)))
+            changed = True
+        else:
+            out.append(lines[i])
+            i += 1
+    # Preserve a trailing newline if the original had one.
+    suffix = "\n" if text.endswith("\n") else ""
+    return "\n".join(out) + suffix, changed
+
+
+def _fix_table_md(output_dir: Optional[Path], *, dry_run: bool) -> None:
+    """Walk archive/ and rewrite legacy broken-pipe tables as valid GFM.
+
+    Targets ``*.xlsx.md`` and ``*.csv.md`` only — email bodies and attachment
+    markdown from other parsers are left alone so stray pipes in prose don't
+    get mangled. Idempotent.
+    """
+    resolved_output = output_dir or Path("data/output")
+    archive_dir = resolved_output / "archive"
+    if not archive_dir.exists():
+        console.print(f"[red]No archive directory at {archive_dir}[/red]")
+        raise typer.Exit(1)
+
+    scanned = 0
+    changed_files: list[Path] = []
+    skipped_already_valid = 0
+
+    for md_file in archive_dir.rglob("*.md"):
+        name = md_file.name
+        if not (name.endswith(".xlsx.md") or name.endswith(".csv.md")):
+            continue
+        scanned += 1
+        original = md_file.read_text(encoding="utf-8", errors="replace")
+        rewritten, changed = _rewrite_broken_tables(original)
+        if not changed:
+            skipped_already_valid += 1
+            continue
+        changed_files.append(md_file)
+        if not dry_run:
+            md_file.write_text(rewritten, encoding="utf-8")
+
+    action = "would rewrite" if dry_run else "rewrote"
+    console.print(
+        f"Scanned {scanned} table .md files; "
+        f"{action} {len(changed_files)}; "
+        f"{skipped_already_valid} already valid."
+    )
+    for p in changed_files[:20]:
+        try:
+            rel = p.relative_to(archive_dir)
+        except ValueError:
+            rel = p
+        console.print(f"  {rel}")
+    if len(changed_files) > 20:
+        console.print(f"  ... and {len(changed_files) - 20} more")
+    if dry_run and changed_files:
+        console.print("[dim]Re-run with --apply to write.[/dim]")
 
 
 def _clean_archive_md(output_dir: Optional[Path], dry_run: bool) -> None:

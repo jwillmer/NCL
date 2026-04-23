@@ -9,10 +9,17 @@ from mtss.parsers.local_office_parser import LocalCsvParser
 
 @pytest.mark.asyncio
 async def test_parses_plain_csv(tmp_path):
+    """CSV rows should render as a valid GFM table: header + delimiter row +
+    data rows, each wrapped in leading/trailing ``|``."""
     p = tmp_path / "plain.csv"
     p.write_bytes(b'"name","value"\r\n"a",1\r\n"b",2\r\n')
     out = await LocalCsvParser().parse(p)
-    assert out.splitlines() == ["name | value", "a | 1", "b | 2"]
+    assert out.splitlines() == [
+        "| name | value |",
+        "|---|---|",
+        "| a | 1 |",
+        "| b | 2 |",
+    ]
 
 
 @pytest.mark.asyncio
@@ -33,8 +40,8 @@ async def test_recovers_from_binary_trailer(tmp_path):
 
     out = await LocalCsvParser().parse(p)
 
-    assert "a | 1" in out
-    assert "b | 2" in out
+    assert "| a | 1 |" in out
+    assert "| b | 2 |" in out
     assert "garbage" not in out  # trailer was dropped
 
 
