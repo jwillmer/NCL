@@ -15,6 +15,7 @@ import pytest
 
 from mtss.parsers.local_office_parser import (
     LocalCsvParser,
+    LocalDocxParser,
     LocalXlsxParser,
     _escape_gfm_cell,
     _format_gfm_table,
@@ -229,3 +230,106 @@ class TestLocalCsvParserGFM:
         p.write_bytes(b"only\n")
         out = await LocalCsvParser().parse(p)
         assert out.splitlines() == ["| only |", "|---|"]
+
+
+class TestLocalDocxParserGFM:
+    """``LocalDocxParser`` emits valid GFM tables for embedded tables while
+    preserving surrounding paragraph text."""
+
+    @staticmethod
+    def _write_docx(path, *, paragraphs: list[str], tables: list[list[list[str]]]):
+        """Build a minimal .docx via python-docx with paragraphs then tables."""
+        from docx import Document
+
+        doc = Document()
+        for para in paragraphs:
+            doc.add_paragraph(para)
+        for table_rows in tables:
+            if not table_rows:
+                continue
+            cols = max(len(r) for r in table_rows)
+            tbl = doc.add_table(rows=len(table_rows), cols=cols)
+            for r_idx, row in enumerate(table_rows):
+                for c_idx in range(cols):
+                    tbl.rows[r_idx].cells[c_idx].text = row[c_idx] if c_idx < len(row) else ""
+        doc.save(str(path))
+
+    @pytest.mark.asyncio
+    async def test_header_plus_data_rows_render_as_gfm(self, tmp_path):
+        p = tmp_path / "doc.docx"
+        self._write_docx(
+            p,
+            paragraphs=[],
+            tables=[[
+                ["Name", "Value"],
+                ["alpha", "1"],
+                ["beta", "2"],
+            ]],
+        )
+        out = await LocalDocxParser().parse(p)
+        lines = out.splitlines()
+        assert "| Name | Value |" in lines
+        idx = lines.index("| Name | Value |")
+        assert lines[idx + 1] == "|---|---|"
+        assert "| alpha | 1 |" in lines
+        assert "| beta | 2 |" in lines
+
+    @pytest.mark.asyncio
+    async def test_cell_with_pipe_is_escaped(self, tmp_path):
+        p = tmp_path / "pipes.docx"
+        self._write_docx(
+            p,
+            paragraphs=[],
+            tables=[[
+                ["col"],
+                ["foo|bar"],
+            ]],
+        )
+        out = await LocalDocxParser().parse(p)
+        assert r"| foo\|bar |" in out
+        # Escaped pipe doesn't inflate the column count.
+        assert "|---|" in out.splitlines()
+
+    @pytest.mark.asyncio
+    async def test_blank_rows_are_skipped(self, tmp_path):
+        """Entirely-empty rows in the docx table should be dropped before
+        GFM rendering, matching xlsx behaviour — otherwise the delimiter
+        row or a data row would render as `|  |  |` noise."""
+        p = tmp_path / "blanks.docx"
+        self._write_docx(
+            p,
+            paragraphs=[],
+            tables=[[
+                ["h1", "h2"],
+                ["", ""],  # entirely blank — must drop
+                ["a", "b"],
+            ]],
+        )
+        out = await LocalDocxParser().parse(p)
+        data_lines = [l for l in out.splitlines() if l.startswith("|") and not l.startswith("|---")]
+        assert data_lines == ["| h1 | h2 |", "| a | b |"]
+
+    @pytest.mark.asyncio
+    async def test_paragraphs_preserved_above_table(self, tmp_path):
+        """Existing docx parser behaviour: paragraph text comes out first,
+        then the table. The GFM-fix must not break that ordering or drop
+        prose."""
+        p = tmp_path / "mixed.docx"
+        self._write_docx(
+            p,
+            paragraphs=["Intro sentence.", "Second paragraph."],
+            tables=[[
+                ["A", "B"],
+                ["1", "2"],
+            ]],
+        )
+        out = await LocalDocxParser().parse(p)
+        assert "Intro sentence." in out
+        assert "Second paragraph." in out
+        # Paragraph text precedes the GFM table.
+        assert out.index("Intro sentence.") < out.index("| A | B |")
+        # Table is valid GFM.
+        lines = out.splitlines()
+        idx = lines.index("| A | B |")
+        assert lines[idx + 1] == "|---|---|"
+        assert "| 1 | 2 |" in lines

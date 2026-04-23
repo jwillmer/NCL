@@ -239,19 +239,21 @@ def register(app: typer.Typer):
             help="Preview files that would be rewritten (default). Pass --apply to write.",
         ),
     ):
-        """Rewrite legacy broken-pipe tables in archived .xlsx.md / .csv.md files as valid GFM.
+        """Rewrite legacy broken-pipe tables in archived .xlsx.md / .csv.md / .docx.md files as valid GFM.
 
-        ``LocalXlsxParser`` and ``LocalCsvParser`` historically emitted table rows
-        as ``cell | cell | cell`` with no leading/trailing ``|`` and no delimiter
-        row after the header — markdown viewers collapse the block into one
-        wrapped paragraph. This command detects those blocks (consecutive
-        non-blank lines containing ``|`` but not starting with ``|``) and
-        rewrites them as ``| cell | cell |`` with a ``|---|---|---|`` delimiter
-        row after the first line. Escapes literal ``|`` in cell values.
+        ``LocalXlsxParser``, ``LocalCsvParser`` and ``LocalDocxParser``
+        historically emitted table rows as ``cell | cell | cell`` with no
+        leading/trailing ``|`` and no delimiter row after the header — markdown
+        viewers collapse the block into one wrapped paragraph. This command
+        detects those blocks (consecutive non-blank lines containing ``|`` but
+        not starting with ``|``) and rewrites them as ``| cell | cell |`` with
+        a ``|---|---|---|`` delimiter row after the first line. Escapes literal
+        ``|`` in cell values.
 
         Idempotent — tables already starting with ``|`` are skipped. Only walks
-        ``*.xlsx.md`` and ``*.csv.md`` so email bodies with stray pipes in prose
-        are left alone. Dry-run by default; use ``--apply`` to write.
+        ``*.xlsx.md``, ``*.csv.md`` and ``*.docx.md`` so email bodies with stray
+        pipes in prose are left alone. Dry-run by default; use ``--apply`` to
+        write.
         """
         _fix_table_md(output_dir, dry_run=dry_run)
 
@@ -543,9 +545,9 @@ def _rewrite_broken_tables(text: str) -> tuple[str, bool]:
 def _fix_table_md(output_dir: Optional[Path], *, dry_run: bool) -> None:
     """Walk archive/ and rewrite legacy broken-pipe tables as valid GFM.
 
-    Targets ``*.xlsx.md`` and ``*.csv.md`` only — email bodies and attachment
-    markdown from other parsers are left alone so stray pipes in prose don't
-    get mangled. Idempotent.
+    Targets ``*.xlsx.md``, ``*.csv.md`` and ``*.docx.md`` only — email bodies
+    and attachment markdown from other parsers are left alone so stray pipes
+    in prose don't get mangled. Idempotent.
     """
     resolved_output = output_dir or Path("data/output")
     archive_dir = resolved_output / "archive"
@@ -559,7 +561,11 @@ def _fix_table_md(output_dir: Optional[Path], *, dry_run: bool) -> None:
 
     for md_file in archive_dir.rglob("*.md"):
         name = md_file.name
-        if not (name.endswith(".xlsx.md") or name.endswith(".csv.md")):
+        if not (
+            name.endswith(".xlsx.md")
+            or name.endswith(".csv.md")
+            or name.endswith(".docx.md")
+        ):
             continue
         scanned += 1
         original = md_file.read_text(encoding="utf-8", errors="replace")

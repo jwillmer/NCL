@@ -1252,3 +1252,57 @@ class TestFixTableMdCommand:
         # Idempotency.
         _fix_table_md(output, dry_run=False)
         assert md.read_text(encoding="utf-8") == after
+
+    def test_docx_md_files_also_rewritten(self, tmp_path):
+        """``.docx.md`` archives produced by the legacy ``LocalDocxParser``
+        carry the same broken-pipe tables as xlsx/csv — the fixer must
+        cover them too. Dry-run reports the rewrite, apply writes it, and
+        a second apply is a no-op.
+        """
+        from mtss.cli.maintenance_cmd import _fix_table_md
+
+        output = tmp_path / "output"
+        folder = output / "archive" / "ddd" / "attachments"
+        folder.mkdir(parents=True)
+        md = folder / "report.docx.md"
+        broken = (
+            "# report.docx\n"
+            "\n"
+            "**Type:** application/vnd.openxmlformats-officedocument.wordprocessingml.document\n"
+            "\n"
+            "---\n"
+            "\n"
+            "## Content\n"
+            "\n"
+            "Intro paragraph before the table.\n"
+            "\n"
+            "Date | Engine | Notes\n"
+            "2022-01-28 | ME | Added 500 lt\n"
+            "2022-02-04 | AE1 | -\n"
+            "\n"
+            "Trailing prose.\n"
+        )
+        md.write_text(broken, encoding="utf-8")
+
+        # Dry-run: no write.
+        before = md.read_text(encoding="utf-8")
+        _fix_table_md(output, dry_run=True)
+        assert md.read_text(encoding="utf-8") == before, "dry-run must not write"
+
+        # Apply: rewrite to valid GFM.
+        _fix_table_md(output, dry_run=False)
+        after = md.read_text(encoding="utf-8")
+        assert after != before
+        lines = after.splitlines()
+        assert "| Date | Engine | Notes |" in lines
+        header_idx = lines.index("| Date | Engine | Notes |")
+        assert lines[header_idx + 1] == "|---|---|---|"
+        assert "| 2022-01-28 | ME | Added 500 lt |" in lines
+        assert "| 2022-02-04 | AE1 | - |" in lines
+        # Surrounding prose preserved.
+        assert "Intro paragraph before the table." in after
+        assert "Trailing prose." in after
+
+        # Idempotent — a second apply is a no-op.
+        _fix_table_md(output, dry_run=False)
+        assert md.read_text(encoding="utf-8") == after

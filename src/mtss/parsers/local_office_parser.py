@@ -86,12 +86,13 @@ class LocalDocxParser(BaseParser):
                     parts.append(text)
 
             for table in doc.tables:
-                rows: list[str] = []
+                rows: list[list[str]] = []
                 for row in table.rows:
                     cells = [cell.text.strip() for cell in row.cells]
-                    rows.append(" | ".join(cells))
+                    if any(c for c in cells):
+                        rows.append(cells)
                 if rows:
-                    parts.append("\n".join(rows))
+                    parts.append(_format_gfm_table(rows))
 
             content = "\n\n".join(parts)
 
