@@ -690,6 +690,68 @@ class DocumentRepository(BaseRepository):
             return self._row_to_chunk(result.data[0])
         return None
 
+    def get_origin_email_for_document(self, document_id: UUID | str) -> Optional[Dict[str, Any]]:
+        """Resolve a chunk's originating email (root email doc).
+
+        For attachment chunks, returns the root email's subject + the
+        chunk_id of its first email-body chunk so the UI can re-open the
+        dialog on the email. Returns None when the chunk is already part
+        of the email (no deeper origin to surface).
+        """
+        doc_row = (
+            self.client.table("documents")
+            .select("id, parent_id, root_id, document_type, source_title")
+            .eq("id", str(document_id))
+            .limit(1)
+            .execute()
+        )
+        if not doc_row.data:
+            return None
+
+        row = doc_row.data[0]
+        doc_type = row.get("document_type")
+        if isinstance(doc_type, str):
+            doc_type_str = doc_type
+        else:
+            doc_type_str = getattr(doc_type, "value", "") or ""
+
+        if doc_type_str == "email" or not row.get("parent_id"):
+            return None
+
+        root_id = row.get("root_id") or row.get("parent_id")
+        if not root_id:
+            return None
+
+        root_row = (
+            self.client.table("documents")
+            .select("id, source_title")
+            .eq("id", str(root_id))
+            .limit(1)
+            .execute()
+        )
+        if not root_row.data:
+            return None
+
+        subject = root_row.data[0].get("source_title")
+
+        chunk_row = (
+            self.client.table("chunks")
+            .select("chunk_id, chunk_index")
+            .eq("document_id", str(root_id))
+            .gte("chunk_index", 0)
+            .order("chunk_index")
+            .limit(1)
+            .execute()
+        )
+        if not chunk_row.data:
+            return None
+
+        origin_chunk_id = chunk_row.data[0].get("chunk_id")
+        if not origin_chunk_id:
+            return None
+
+        return {"subject": subject, "chunk_id": origin_chunk_id}
+
     async def update_chunk_context(self, chunk: Chunk) -> None:
         """Update a chunk's context_summary, embedding_text, and embedding.
 

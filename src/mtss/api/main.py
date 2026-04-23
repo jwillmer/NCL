@@ -629,6 +629,12 @@ def create_app() -> FastAPI:
             getattr(user, "email", "unknown") if user else "unknown",
         )
 
+        origin_email = None
+        try:
+            origin_email = client.get_origin_email_for_document(chunk.document_id)
+        except Exception:
+            logger.exception("Failed to resolve origin email for chunk %s", chunk_id)
+
         return {
             "chunk_id": chunk_id,
             "source_title": chunk.source_title,
@@ -640,6 +646,7 @@ def create_app() -> FastAPI:
             "archive_download_uri": chunk.archive_download_uri,
             "archive_download_signed_url": archive_download_signed_url,
             "content": content,
+            "origin_email": origin_email,
         }
 
     # ------------------------------------------------------------------

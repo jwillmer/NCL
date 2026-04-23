@@ -26,6 +26,12 @@ export interface Citation {
   archive_download_uri: string | null;
   archive_download_signed_url: string | null;
   content: string | null;
+  origin_email: OriginEmail | null;
+}
+
+export interface OriginEmail {
+  subject: string | null;
+  chunk_id: string;
 }
 
 /**

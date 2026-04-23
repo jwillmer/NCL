@@ -22,7 +22,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { ChevronDown, ChevronRight, FileText, Download, ExternalLink } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Download, ExternalLink, ArrowLeft, Mail } from "lucide-react";
 import {
   Button,
   Card,
@@ -561,8 +561,26 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
   const [error, setError] = useState<string | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
 
+  // In-dialog navigation: user can click "From email: <subject>" to swap
+  // content to the originating email. Stack holds previous chunk IDs so a
+  // Back button can restore the attachment view.
+  const [currentChunkId, setCurrentChunkId] = useState<string | null>(chunkId);
+  const [navStack, setNavStack] = useState<string[]>([]);
+
+  // Sync internal state with the externally-selected chunk: a fresh cite
+  // click resets any in-dialog navigation.
   useEffect(() => {
-    if (!open || !chunkId || !session?.access_token) {
+    setCurrentChunkId(chunkId);
+    setNavStack([]);
+  }, [chunkId]);
+
+  // highlights only apply to the originally-opened chunk, not to anything
+  // the user navigates to via "From email".
+  const isOriginalChunk = navStack.length === 0;
+  const activeHighlights = isOriginalChunk ? linesToHighlight : undefined;
+
+  useEffect(() => {
+    if (!open || !currentChunkId || !session?.access_token) {
       setCitation(null);
       setError(null);
       return;
@@ -573,7 +591,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
       setError(null);
 
       try {
-        const response = await fetch(`${getApiBaseUrl()}/citations/${chunkId}`, {
+        const response = await fetch(`${getApiBaseUrl()}/citations/${currentChunkId}`, {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
@@ -593,11 +611,33 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
     };
 
     fetchCitation();
-  }, [open, chunkId, session]);
+  }, [open, currentChunkId, session]);
+
+  const handleOpenOrigin = () => {
+    if (!citation?.origin_email?.chunk_id || !currentChunkId) return;
+    setNavStack((prev) => [...prev, currentChunkId]);
+    setCurrentChunkId(citation.origin_email.chunk_id);
+  };
+
+  const handleBack = () => {
+    setNavStack((prev) => {
+      if (prev.length === 0) return prev;
+      const next = prev.slice(0, -1);
+      setCurrentChunkId(prev[prev.length - 1]);
+      return next;
+    });
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      setNavStack([]);
+    }
+    onOpenChange(nextOpen);
+  };
 
   // Scroll to first highlight after content loads
   useEffect(() => {
-    if (!loading && citation?.content && linesToHighlight && linesToHighlight.length > 0) {
+    if (!loading && citation?.content && activeHighlights && activeHighlights.length > 0) {
       // Small delay to ensure DOM is ready
       const timer = setTimeout(() => {
         const firstHighlight = contentRef.current?.querySelector(".citation-highlight");
@@ -607,37 +647,60 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [loading, citation?.content, linesToHighlight]);
+  }, [loading, citation?.content, activeHighlights]);
 
   const locationParts: string[] = [];
   if (citation?.page) locationParts.push(`Page ${citation.page}`);
 
   // Show highlighted line info
-  if (linesToHighlight && linesToHighlight.length > 0) {
-    if (linesToHighlight.length === 1) {
-      const [start, end] = linesToHighlight[0];
+  if (activeHighlights && activeHighlights.length > 0) {
+    if (activeHighlights.length === 1) {
+      const [start, end] = activeHighlights[0];
       locationParts.push(`Lines ${start}-${end} highlighted`);
     } else {
-      locationParts.push(`${linesToHighlight.length} sections highlighted`);
+      locationParts.push(`${activeHighlights.length} sections highlighted`);
     }
   } else if (citation?.lines) {
     locationParts.push(`Lines ${citation.lines[0]}-${citation.lines[1]}`);
   }
 
   // Process content with highlights
-  const processedContent = citation?.content && linesToHighlight
-    ? addLineHighlights(citation.content, linesToHighlight)
+  const processedContent = citation?.content && activeHighlights
+    ? addLineHighlights(citation.content, activeHighlights)
     : citation?.content;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-4xl h-[80vh] flex flex-col overflow-hidden" aria-describedby={undefined}>
         <DialogHeader className="flex-shrink-0">
           <div className="flex items-start justify-between gap-4 pr-8">
-            <div>
+            <div className="min-w-0 flex-1">
+              {navStack.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  className="inline-flex items-center gap-1 text-xs text-MTSS-blue hover:underline mb-1"
+                >
+                  <ArrowLeft className="h-3 w-3" />
+                  Back
+                </button>
+              )}
               <DialogTitle className="text-lg">
                 {citation?.source_title || "Source Document"}
               </DialogTitle>
+              {citation?.origin_email && (
+                <button
+                  type="button"
+                  onClick={handleOpenOrigin}
+                  className="inline-flex items-center gap-1 text-sm text-MTSS-blue hover:underline mt-1 max-w-full"
+                  title="Open originating email"
+                >
+                  <Mail className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="truncate">
+                    From email: {citation.origin_email.subject || "(no subject)"}
+                  </span>
+                </button>
+              )}
               {locationParts.length > 0 && (
                 <p className="text-sm text-MTSS-gray mt-1">{locationParts.join(" | ")}</p>
               )}

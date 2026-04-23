@@ -152,6 +152,9 @@ class SupabaseClient:
     def get_chunk_by_id(self, chunk_id: str) -> Optional[Chunk]:
         return self._docs.get_chunk_by_id(chunk_id)
 
+    def get_origin_email_for_document(self, document_id: UUID | str):
+        return self._docs.get_origin_email_for_document(document_id)
+
     async def update_chunk_context(self, chunk: Chunk) -> None:
         return await self._docs.update_chunk_context(chunk)
 
