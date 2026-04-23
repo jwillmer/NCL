@@ -553,10 +553,20 @@ def create_app() -> FastAPI:
         # Get filename from path
         filename = Path(file_path).name
 
+        # Archive .md files were rewritten in place (mtss fix-table-md) after
+        # the initial ingest uploaded them to Storage. Browsers that cached
+        # the pre-fix version would keep serving the broken-GFM tables, so
+        # force revalidation for markdown. Binary attachments (PDFs, images,
+        # the original docs) are immutable content addressed by folder_id
+        # and can keep whatever caching they have.
+        headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+        if file_path.endswith(".md"):
+            headers["Cache-Control"] = "no-cache"
+
         return Response(
             content=content,
             media_type=content_type,
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers=headers,
         )
 
     # Reverse-lookup endpoint: archive browse URI → first chunk_id of that

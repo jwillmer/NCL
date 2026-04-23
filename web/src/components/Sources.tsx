@@ -221,6 +221,79 @@ function withArchiveToken(url: string, token: string | undefined): string {
   return `${url}${sep}token=${encodeURIComponent(token)}`;
 }
 
+/**
+ * Strip the header preamble from an archived attachment markdown file.
+ *
+ * Archive .md files start with a generated block:
+ *
+ *     # Filename.xlsx
+ *
+ *     **Type:** application/...
+ *     **Size:** 28.8 KB
+ *     **Extracted:** 2026-04-19 23:50:13
+ *
+ *     [Download Original](folder/attachments/Filename.xlsx)
+ *
+ *     ---
+ *
+ *     ## Content
+ *
+ * All that metadata is already shown elsewhere in the dialog (title,
+ * download button). Strip everything up to and including the first
+ * `## Content` heading, or failing that the first standalone horizontal
+ * rule (`---`). Email .md files typically open with `## Message 1` and
+ * have no horizontal rule at the top, so this heuristic is a no-op for
+ * them.
+ */
+function stripArchiveMdPreamble(markdown: string): string {
+  const lines = markdown.split("\n");
+
+  const contentIdx = lines.findIndex((line) => /^##\s+Content\s*$/.test(line.trim()));
+  if (contentIdx >= 0) {
+    return lines.slice(contentIdx + 1).join("\n").replace(/^\n+/, "");
+  }
+
+  const hrIdx = lines.findIndex((line) => /^-{3,}\s*$/.test(line.trim()));
+  if (hrIdx >= 0) {
+    return lines.slice(hrIdx + 1).join("\n").replace(/^\n+/, "");
+  }
+
+  return markdown;
+}
+
+// -------------------------------------------------------------------------
+// Archive markdown cache
+//
+// Same document reopened in one session shouldn't re-fetch. Small LRU-ish
+// Map (insertion-order iteration + manual eviction of oldest key) capped
+// at a modest entry count. The values are the raw fetched markdown text
+// — preamble stripping happens at render time so we don't need to re-run
+// the fetch if the stripping logic changes mid-session (it won't, but it
+// keeps the cache semantically simple).
+// -------------------------------------------------------------------------
+const ARCHIVE_MD_CACHE_MAX = 20;
+const archiveMdCache = new Map<string, string>();
+
+function getCachedArchiveMd(url: string): string | undefined {
+  const hit = archiveMdCache.get(url);
+  if (hit !== undefined) {
+    // Refresh recency — delete then reinsert so the key moves to the tail.
+    archiveMdCache.delete(url);
+    archiveMdCache.set(url, hit);
+  }
+  return hit;
+}
+
+function setCachedArchiveMd(url: string, content: string): void {
+  if (archiveMdCache.has(url)) archiveMdCache.delete(url);
+  archiveMdCache.set(url, content);
+  while (archiveMdCache.size > ARCHIVE_MD_CACHE_MAX) {
+    const oldest = archiveMdCache.keys().next().value;
+    if (oldest === undefined) break;
+    archiveMdCache.delete(oldest);
+  }
+}
+
 /** Resolve a relative or absolute archive URL to a full API path.
  *
  * Archive folder IDs are 32-char MD5 hashes (compute_folder_id). The old
@@ -833,6 +906,12 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
   const [citation, setCitation] = useState<Citation | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Full archived .md (preamble-stripped) fetched lazily from the archive
+  // endpoint. Preferred over `citation.content` (which is the chunk slice,
+  // and still has the old broken-GFM tables). Optimistic flow: chunk text
+  // renders as soon as the /citations/ call resolves, then this swaps in
+  // when the .md fetch lands. Fetch failure keeps chunk text visible.
+  const [archiveMd, setArchiveMd] = useState<string | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
 
   // In-dialog navigation: user can click "From email: <subject>" to swap
@@ -857,12 +936,14 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
     if (!open || !currentChunkId || !session?.access_token) {
       setCitation(null);
       setError(null);
+      setArchiveMd(null);
       return;
     }
 
     const fetchCitation = async () => {
       setLoading(true);
       setError(null);
+      setArchiveMd(null);
 
       try {
         const response = await fetch(`${getApiBaseUrl()}/citations/${currentChunkId}`, {
@@ -936,7 +1017,53 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
     onOpenChange(nextOpen);
   };
 
-  // Scroll to first highlight after content loads
+  // Fetch the full archived .md — the per-document source of truth that
+  // was rewritten to valid GFM after the initial ingest. The chunk text
+  // in `citation.content` is rendered immediately for instant feedback;
+  // this fetch swaps the body once it lands. Cached per-URL so reopening
+  // the same doc during a session is free. No-op if `archive_browse_uri`
+  // is missing — we simply keep the chunk text.
+  useEffect(() => {
+    if (!open || !citation?.archive_browse_uri || !session?.access_token) {
+      return;
+    }
+
+    const url = `${getApiBaseUrl()}/archive/${stripArchivePrefix(citation.archive_browse_uri)}`;
+
+    const cached = getCachedArchiveMd(url);
+    if (cached !== undefined) {
+      setArchiveMd(cached);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const response = await fetch(url, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        if (!response.ok) {
+          throw new Error(`Archive fetch failed: ${response.status} ${response.statusText}`);
+        }
+        const text = await response.text();
+        setCachedArchiveMd(url, text);
+        if (!cancelled) setArchiveMd(text);
+      } catch (err) {
+        // Fall back to citation.content (already rendering). Don't surface
+        // this to the UI — the chunk text is a perfectly usable fallback.
+        console.warn(`Failed to fetch archive markdown at ${url}:`, err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, citation?.archive_browse_uri, session]);
+
+  // Scroll to first highlight after content loads. Re-runs when the
+  // rendered body swaps from chunk text to the full .md so highlights
+  // align against the (larger) markdown file.
   useEffect(() => {
     if (!loading && citation?.content && activeHighlights && activeHighlights.length > 0) {
       // Small delay to ensure DOM is ready
@@ -948,7 +1075,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [loading, citation?.content, activeHighlights]);
+  }, [loading, archiveMd, citation?.content, activeHighlights]);
 
   const locationParts: string[] = [];
   if (citation?.page) locationParts.push(`Page ${citation.page}`);
@@ -965,9 +1092,16 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
     locationParts.push(`Lines ${citation.lines[0]}-${citation.lines[1]}`);
   }
 
-  // Process content: rewrite legacy attachment listings, friendlify the
-  // MIME "**Type:**" line, inject a prominent image preview for image
-  // attachments, then apply line highlights last (so it sees final text).
+  // Process content: prefer the full archived .md (swapped in progressively
+  // via the fetch above), falling back to the chunk text. Then rewrite legacy
+  // attachment listings, friendlify the MIME "**Type:**" line, inject a
+  // prominent image preview for image attachments, and apply line highlights
+  // last (so it sees the final text). Preamble stripping only applies to the
+  // archived .md — chunk text is already just the content slice.
+  const renderedBody = archiveMd !== null
+    ? stripArchiveMdPreamble(archiveMd)
+    : (citation?.content ?? undefined);
+
   const isImageCitation =
     citation?.document_type === "attachment_image" ||
     IMAGE_EXTENSIONS.test(citation?.archive_download_uri || "");
@@ -978,7 +1112,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
       )
     : null;
 
-  let preppedContent = citation?.content ?? undefined;
+  let preppedContent = renderedBody;
   if (preppedContent) {
     preppedContent = rewriteAttachmentListing(preppedContent);
     preppedContent = friendlifyTypeLine(preppedContent);
