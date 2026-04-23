@@ -83,7 +83,8 @@ BEGIN
     NEW.updated_at = NOW();
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public, pg_temp;
 
 -- ============================================
 -- DOCUMENTS TABLE
@@ -442,6 +443,7 @@ RETURNS TABLE (
     root_file_path TEXT
 )
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     topic_ids_filter TEXT[];
@@ -541,6 +543,7 @@ RETURNS TABLE (
     email_subject TEXT
 )
 LANGUAGE SQL
+SET search_path = public, pg_temp
 AS $$
     WITH RECURSIVE ancestry AS (
         SELECT d.id, d.document_type, d.file_path, d.file_name, d.depth,
@@ -575,6 +578,7 @@ RETURNS TABLE (
     similarity FLOAT
 )
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT
         t.id,
@@ -594,6 +598,7 @@ CREATE OR REPLACE FUNCTION count_chunks_by_topic(
 )
 RETURNS INTEGER
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT COUNT(*)::INTEGER
     FROM chunks c
@@ -607,6 +612,7 @@ CREATE OR REPLACE FUNCTION count_chunks_by_topics(
 )
 RETURNS INTEGER
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT COUNT(DISTINCT c.id)::INTEGER
     FROM chunks c
@@ -624,6 +630,7 @@ RETURNS TABLE (
     document_count INTEGER
 )
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT
         t.id, t.name, t.display_name, t.description,

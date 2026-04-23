@@ -15,6 +15,7 @@
 CREATE OR REPLACE FUNCTION rewrite_chunk_topic_ids(mapping JSONB)
 RETURNS INTEGER
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     updated_count INTEGER;

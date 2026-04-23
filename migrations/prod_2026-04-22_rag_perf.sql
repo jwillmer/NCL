@@ -58,6 +58,7 @@
 CREATE OR REPLACE FUNCTION rewrite_chunk_topic_ids(mapping JSONB)
 RETURNS INTEGER
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     updated_count INTEGER;
@@ -117,6 +118,7 @@ RETURNS TABLE (
     similarity FLOAT
 )
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT x.id, x.name, x.display_name, x.similarity
     FROM (
@@ -160,6 +162,7 @@ CREATE OR REPLACE FUNCTION count_chunks_by_topic(
 )
 RETURNS INTEGER
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT COUNT(*)::INTEGER
     FROM chunks c
@@ -175,6 +178,7 @@ CREATE OR REPLACE FUNCTION count_chunks_by_topics(
 )
 RETURNS INTEGER
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT COUNT(DISTINCT c.id)::INTEGER
     FROM chunks c,
@@ -260,6 +264,7 @@ RETURNS TABLE (
     root_file_path TEXT
 )
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     topic_ids_filter TEXT[];

@@ -36,6 +36,7 @@ RETURNS TABLE (
     similarity FLOAT
 )
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT x.id, x.name, x.display_name, x.similarity
     FROM (
@@ -69,6 +70,7 @@ CREATE OR REPLACE FUNCTION count_chunks_by_topic(
 )
 RETURNS INTEGER
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     SELECT COUNT(*)::INTEGER
     FROM chunks c
@@ -88,6 +90,7 @@ CREATE OR REPLACE FUNCTION count_chunks_by_topics(
 )
 RETURNS INTEGER
 LANGUAGE SQL STABLE
+SET search_path = public, pg_temp
 AS $$
     -- Union of index-backed containment scans, one per topic_id. DISTINCT
     -- c.id dedupes chunks that carry multiple matching topics.
