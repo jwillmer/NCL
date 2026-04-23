@@ -19,8 +19,9 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Body, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from slowapi import Limiter
@@ -233,7 +234,6 @@ async def _stream_agent(
 @limiter.limit("30/minute")
 async def agent_stream(
     request: Request,
-    body: AgentRequest = Body(...),
     user: UserPayload = Depends(get_current_user),
 ):
     """Streaming agent endpoint using Vercel AI SDK UI Message Stream v1.
@@ -241,7 +241,48 @@ async def agent_stream(
     JWT authentication is validated via the ``get_current_user`` dependency
     **before** the streaming response begins, ensuring unauthorised callers
     never trigger a LangGraph run.
+
+    Body is parsed manually so we can tolerate payloads where an upstream proxy
+    (e.g. Cloudflare) delivers the JSON as a quoted string — double-decoded once
+    and validated, with a diagnostic log so we can see how often it happens.
     """
+    raw = await request.body()
+    content_type = request.headers.get("content-type", "")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "agent_stream: body is not JSON (ct=%r len=%d head=%r): %s",
+            content_type, len(raw), raw[:200], exc,
+        )
+        return JSONResponse(
+            {"detail": "Body must be valid JSON"}, status_code=400,
+        )
+
+    # Normal path: parsed is a dict.
+    if isinstance(parsed, str):
+        # Observed in production: Chrome-via-Cloudflare occasionally delivers
+        # the body as a JSON-encoded string (double-encoded). Try to recover
+        # by decoding once more and log so we can see which UA/path triggers.
+        logger.warning(
+            "agent_stream: body arrived as JSON string (ct=%r ua=%r cf-ray=%r len=%d)",
+            content_type,
+            request.headers.get("user-agent", ""),
+            request.headers.get("cf-ray", ""),
+            len(raw),
+        )
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            return JSONResponse(
+                {"detail": "Body must decode to a JSON object"}, status_code=400,
+            )
+
+    try:
+        body = AgentRequest.model_validate(parsed)
+    except ValidationError as exc:
+        return JSONResponse({"detail": exc.errors()}, status_code=422)
+
     return StreamingResponse(
         _stream_agent(request, body, user),
         media_type="text/event-stream",
