@@ -41,20 +41,37 @@ class DomainRepository(BaseRepository):
     async def upsert_vessel(self, vessel: Vessel) -> Vessel:
         """Insert or update a vessel record by name.
 
-        Args:
-            vessel: Vessel to upsert.
-
-        Returns:
-            The upserted vessel.
+        Preserves the existing row's UUID on name conflict. `load_vessels_from_csv`
+        mints a fresh uuid4 per row on every load, so sending `id` into an upsert
+        made Postgres UPDATE the id column to the new value — orphaning every
+        `chunk.metadata.vessel_ids` reference (they point to the prior UUID) and
+        tripping the FK from `conversations.vessel_id` for any vessel that had
+        an active conversation. Look up the existing id first and reuse it; if
+        the row doesn't exist, insert with the model's minted UUID.
         """
+        existing = (
+            self.client.table("vessels")
+            .select("id")
+            .eq("name", vessel.name)
+            .limit(1)
+            .execute()
+        )
+        existing_id: str | None = None
+        if existing.data:
+            existing_id = existing.data[0].get("id")
+
+        vessel_id_str = existing_id or str(vessel.id)
         data = {
-            "id": str(vessel.id),
+            "id": vessel_id_str,
             "name": vessel.name,
             "vessel_type": vessel.vessel_type,
             "vessel_class": vessel.vessel_class,
             "aliases": vessel.aliases,
         }
         self.client.table("vessels").upsert(data, on_conflict="name").execute()
+        if existing_id:
+            from uuid import UUID
+            vessel.id = UUID(existing_id)
         return vessel
 
     async def get_all_vessels(self) -> List[Vessel]:
