@@ -309,14 +309,21 @@ class ArchiveGenerator:
                 att_name = att.filename
                 safe_name = _sanitize_storage_key(att_name)
 
-                # Only add [View] link if .md file was created
+                # Render the filename as plain text and expose two explicit
+                # actions: Download (raw file) and, when a markdown render
+                # exists, Details (opens the source dialog in-place via the
+                # UI's archive-anchor interceptor). Keeps the intent of each
+                # link obvious — the old "[name](file) ([View](file.md))"
+                # made the filename itself look like a destination.
                 if has_md.get(safe_name, False):
                     lines.append(
-                        f"- [{att_name}]({att_prefix}/{safe_name}) "
-                        f"([View]({att_prefix}/{safe_name}.md))"
+                        f"- {att_name} — [Download]({att_prefix}/{safe_name})"
+                        f" · [Details]({att_prefix}/{safe_name}.md)"
                     )
                 else:
-                    lines.append(f"- [{att_name}]({att_prefix}/{safe_name})")
+                    lines.append(
+                        f"- {att_name} — [Download]({att_prefix}/{safe_name})"
+                    )
             lines.append("")
 
         return "\n".join(lines)

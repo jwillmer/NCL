@@ -158,6 +158,9 @@ class SupabaseClient:
     def get_citation_document_meta(self, document_id: UUID | str):
         return self._docs.get_citation_document_meta(document_id)
 
+    def get_chunk_id_by_browse_uri(self, browse_uri: str):
+        return self._docs.get_chunk_id_by_browse_uri(browse_uri)
+
     async def update_chunk_context(self, chunk: Chunk) -> None:
         return await self._docs.update_chunk_context(chunk)
 

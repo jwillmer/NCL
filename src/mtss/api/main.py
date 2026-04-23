@@ -188,7 +188,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path.startswith(self.STATIC_PREFIXES):
             return await call_next(request)
-        if any(path.endswith(ext) for ext in self.STATIC_EXTENSIONS):
+        # Extension-based bypass is scoped to root-level files only (e.g.
+        # /manifest.json, /favicon.ico, /sw.js emitted by Vite). A path with
+        # more than one segment — most importantly anything under /api/ —
+        # must still authenticate, so /api/archive/*.png can't slip through
+        # the static exemption.
+        if "/" not in path[1:] and any(path.endswith(ext) for ext in self.STATIC_EXTENSIONS):
             return await call_next(request)
 
         # Skip auth for CORS preflight requests (OPTIONS)
@@ -553,6 +558,32 @@ def create_app() -> FastAPI:
             media_type=content_type,
             headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
+
+    # Reverse-lookup endpoint: archive browse URI → first chunk_id of that
+    # document. Powers the in-dialog "View" navigation when a user clicks a
+    # ``[View](…md)`` link inside the rendered archive markdown.
+    @app.get("/api/citations/by-browse-uri")
+    @limiter.limit("100/minute")
+    async def get_citation_by_browse_uri(
+        request: Request,
+        uri: str,
+        client: SupabaseClient = Depends(get_supabase_client),
+    ):
+        del request  # user auth is handled by middleware; kept for signature
+        if not uri or len(uri) > 1024:
+            raise HTTPException(status_code=400, detail="Invalid uri")
+        if ".." in uri:
+            raise HTTPException(status_code=400, detail="Invalid uri")
+
+        try:
+            chunk_id = client.get_chunk_id_by_browse_uri(uri)
+        except Exception:
+            logger.exception("Failed to resolve chunk for browse_uri %s", uri)
+            raise HTTPException(status_code=500, detail="Lookup failed")
+
+        if not chunk_id:
+            raise HTTPException(status_code=404, detail="Not found")
+        return {"chunk_id": chunk_id}
 
     # Citation details endpoint for fetching source content
     @app.get("/api/citations/{chunk_id}")

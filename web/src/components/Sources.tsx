@@ -15,6 +15,7 @@ import {
   useEffect,
   useRef,
   useMemo,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import ReactMarkdown from "react-markdown";
@@ -41,7 +42,9 @@ import type { Citation, CiteProps } from "@/types/rag";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/conversations";
 
-// Allow <mark> (line highlighting) and <abbr title="..."> (MIME tooltip) through sanitizer.
+// Allow <mark> (line highlighting), <abbr title="..."> (MIME tooltip) and
+// the injected image preview's <img class="source-image-preview"> through
+// the sanitizer.
 const sourceSanitizeSchema = {
   ...defaultSchema,
   tagNames: [...(defaultSchema.tagNames || []), "mark", "abbr"],
@@ -49,8 +52,89 @@ const sourceSanitizeSchema = {
     ...defaultSchema.attributes,
     mark: ["className", "class"],
     abbr: ["title"],
+    img: [...(defaultSchema.attributes?.img || []), "className", "class"],
   },
 };
+
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)(?:\?|$)/i;
+
+/** Hover-preview image that shows a spinner until the fetch resolves.
+ *  Gives the tooltip a stable 240×180 footprint so the popover doesn't
+ *  appear empty on the first hover of large archive images.
+ *
+ *  Implementation note: the <img> is always rendered visibly (opacity
+ *  transitions in once loaded) — the earlier ``hidden`` + ``loading=lazy``
+ *  version could block the browser from ever fetching the file in Chrome,
+ *  leaving the spinner stuck forever. */
+function ImageHoverPreview({ src }: { src: string }) {
+  const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
+  return (
+    <div className="relative w-[240px] h-[180px] flex items-center justify-center">
+      <img
+        src={src}
+        alt=""
+        onLoad={() => setStatus("loaded")}
+        onError={() => setStatus("error")}
+        className={cn(
+          "max-w-[240px] max-h-[180px] object-contain transition-opacity duration-150",
+          status === "loaded" ? "opacity-100" : "opacity-0",
+        )}
+      />
+      {status === "loading" && (
+        <div
+          className="absolute h-6 w-6 rounded-full border-2 border-MTSS-gray-light border-t-MTSS-blue animate-spin"
+          aria-label="Loading preview"
+        />
+      )}
+      {status === "error" && (
+        <span className="absolute text-xs text-MTSS-gray">Preview unavailable</span>
+      )}
+    </div>
+  );
+}
+
+/** Rewrite legacy attachment-listing lines inside archive email markdown —
+ *  ``- [name](file) ([View](file.md))`` → ``- name — [Download](file) · [Details](file.md)``.
+ *  Idempotent (skips lines already in the new format). The generator emits
+ *  the new form for fresh ingests; this handles the corpus already on disk
+ *  without rewriting the .md files. */
+function rewriteAttachmentListing(content: string): string {
+  let out = content.replace(
+    /^(\s*-\s+)\[([^\]]+)\]\(([^)]+)\)\s*\(\[View\]\(([^)]+)\)\)\s*$/gm,
+    (_m, dash, name, href, viewHref) =>
+      `${dash}${name} — [Download](${href}) · [Details](${viewHref})`,
+  );
+  out = out.replace(
+    /^(\s*-\s+)\[([^\]]+)\]\(([^)]+)\)\s*$/gm,
+    (match, dash, name, href) => {
+      // Only rewrite attachment paths (heuristic: contains "/attachments/").
+      // Leaves body prose / unrelated bullet lists alone.
+      if (!String(href).includes("/attachments/")) return match;
+      return `${dash}${name} — [Download](${href})`;
+    },
+  );
+  return out;
+}
+
+/** If the citation is an image attachment, inject the image inline right
+ *  before the "## Content" heading so the dialog reads metadata → image →
+ *  description. Users asked for the image up-front since it communicates
+ *  faster than the LLM-generated caption below it. */
+function injectImagePreview(
+  content: string,
+  imageUrl: string | null | undefined,
+  isImage: boolean,
+): string {
+  if (!isImage || !imageUrl) return content;
+  if (content.includes("source-image-preview")) return content;
+  const replacement = `<img src="${imageUrl}" alt="" class="source-image-preview" />\n\n## Content`;
+  if (/^##\s+Content\s*$/m.test(content)) {
+    return content.replace(/^##\s+Content\s*$/m, replacement);
+  }
+  // No Content heading (edge case) — append the image after the metadata
+  // block instead.
+  return `${content}\n\n<img src="${imageUrl}" alt="" class="source-image-preview" />`;
+}
 
 // Friendly labels for common attachment MIME types rendered in archive markdown
 // under "**Type:** <mime>". Users see the friendly label; raw MIME stays on
@@ -124,6 +208,19 @@ function stripArchivePrefix(uri: string): string {
   return uri.replace(/^\/archive\//, "");
 }
 
+/** Append ``?token=<jwt>`` to same-origin ``/api/archive/**`` URLs so <img>
+ *  and anchor-new-tab navigations (which can't carry an Authorization header)
+ *  still authenticate. The AuthMiddleware accepts the query param as a
+ *  fallback to the Bearer header. No-op when a token isn't available or the
+ *  URL already carries one. */
+function withArchiveToken(url: string, token: string | undefined): string {
+  if (!token || !url) return url;
+  if (!url.includes("/api/archive/")) return url;
+  if (/[?&]token=/.test(url)) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
 /** Resolve a relative or absolute archive URL to a full API path.
  *
  * Archive folder IDs are 32-char MD5 hashes (compute_folder_id). The old
@@ -141,6 +238,21 @@ function resolveArchiveUrl(href: string, browseUri?: string | null): string {
     ? browseUri.replace(/^\/archive/, "").replace(/\/[^/]+$/, "")
     : "";
   return `${getApiBaseUrl()}/archive${basePath}/${href}`;
+}
+
+/** Strip the ``/api/archive/`` (or ``/archive/``) origin prefix from a URL
+ *  so only the bucket-relative path remains — the shape the backend stores
+ *  on ``chunks.archive_browse_uri``. */
+function toBucketRelative(url: string): string {
+  try {
+    const u = new URL(url, typeof window !== "undefined" ? window.location.origin : "http://x");
+    let p = u.pathname;
+    if (p.startsWith("/api/archive/")) p = p.slice("/api/archive/".length);
+    else if (p.startsWith("/archive/")) p = p.slice("/archive/".length);
+    return p;
+  } catch {
+    return url.replace(/^.*\/api\/archive\//, "").replace(/^.*\/archive\//, "");
+  }
 }
 
 // =============================================================================
@@ -329,6 +441,7 @@ interface ImgCiteProps {
 function ImgCiteRenderer(props: ImgCiteProps) {
   const { src, id } = props;
   const { onViewCitation } = useCitationContext();
+  const { session } = useAuth();
 
   if (!src) {
     return (
@@ -344,7 +457,10 @@ function ImgCiteRenderer(props: ImgCiteProps) {
   cleanSrc = cleanSrc.replace(/^img:/, "");
   // Remove /archive/ prefix if present
   cleanSrc = cleanSrc.replace(/^\/archive\//, "");
-  const imageUrl = `${getApiBaseUrl()}/archive/${cleanSrc}`;
+  const imageUrl = withArchiveToken(
+    `${getApiBaseUrl()}/archive/${cleanSrc}`,
+    session?.access_token,
+  );
 
   const handleClick = () => {
     if (id) {
@@ -786,6 +902,33 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
     });
   };
 
+  // View-link interception: when a user clicks "[View](…md)" inside the
+  // rendered archive markdown, keep them in the dialog by looking up the
+  // matching chunk and swapping currentChunkId instead of opening a new tab.
+  const handleOpenBrowseUri = useCallback(
+    async (archiveUrl: string) => {
+      if (!session?.access_token || !currentChunkId) return false;
+      const bucketPath = toBucketRelative(archiveUrl);
+      if (!bucketPath) return false;
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/citations/by-browse-uri?uri=${encodeURIComponent(bucketPath)}`,
+          { headers: { Authorization: `Bearer ${session.access_token}` } },
+        );
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        const nextId: string | undefined = data?.chunk_id;
+        if (!nextId) return false;
+        setNavStack((prev) => [...prev, currentChunkId]);
+        setCurrentChunkId(nextId);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [session?.access_token, currentChunkId],
+  );
+
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
       setNavStack([]);
@@ -822,13 +965,28 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
     locationParts.push(`Lines ${citation.lines[0]}-${citation.lines[1]}`);
   }
 
-  // Process content: friendlify MIME in "**Type:**" line, then apply highlights.
-  const friendliedContent = citation?.content
-    ? friendlifyTypeLine(citation.content)
-    : citation?.content;
-  const processedContent = friendliedContent && activeHighlights
-    ? addLineHighlights(friendliedContent, activeHighlights)
-    : friendliedContent;
+  // Process content: rewrite legacy attachment listings, friendlify the
+  // MIME "**Type:**" line, inject a prominent image preview for image
+  // attachments, then apply line highlights last (so it sees final text).
+  const isImageCitation =
+    citation?.document_type === "attachment_image" ||
+    IMAGE_EXTENSIONS.test(citation?.archive_download_uri || "");
+  const imagePreviewUrl = isImageCitation && citation?.archive_download_uri
+    ? withArchiveToken(
+        `${getApiBaseUrl()}/archive/${stripArchivePrefix(citation.archive_download_uri)}`,
+        session?.access_token,
+      )
+    : null;
+
+  let preppedContent = citation?.content ?? undefined;
+  if (preppedContent) {
+    preppedContent = rewriteAttachmentListing(preppedContent);
+    preppedContent = friendlifyTypeLine(preppedContent);
+    preppedContent = injectImagePreview(preppedContent, imagePreviewUrl, isImageCitation);
+  }
+  const processedContent = preppedContent && activeHighlights
+    ? addLineHighlights(preppedContent, activeHighlights)
+    : preppedContent;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -900,7 +1058,8 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
             )}
 
             {processedContent && !loading && (
-              <div className="prose prose-sm max-w-none prose-headings:text-MTSS-blue-dark prose-p:text-MTSS-blue-dark prose-li:text-MTSS-blue-dark prose-a:text-MTSS-blue prose-a:underline prose-hr:my-4 [&_p]:mb-4 [&_br+br]:block [&_br+br]:h-2 [&_.citation-highlight]:bg-yellow-200 [&_.citation-highlight]:px-0.5 [&_.citation-highlight]:rounded">
+              <TooltipProvider delayDuration={200}>
+              <div className="prose prose-sm max-w-none prose-headings:text-MTSS-blue-dark prose-p:text-MTSS-blue-dark prose-li:text-MTSS-blue-dark prose-a:text-MTSS-blue prose-a:underline prose-hr:my-4 [&_p]:mb-4 [&_br+br]:block [&_br+br]:h-2 [&_.citation-highlight]:bg-yellow-200 [&_.citation-highlight]:px-0.5 [&_.citation-highlight]:rounded [&_.source-image-preview]:my-3 [&_.source-image-preview]:max-w-full [&_.source-image-preview]:max-h-[420px] [&_.source-image-preview]:object-contain [&_.source-image-preview]:mx-auto [&_.source-image-preview]:block [&_.source-image-preview]:rounded [&_.source-image-preview]:border [&_.source-image-preview]:border-MTSS-gray-light">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkBreaks]}
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -927,13 +1086,59 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
                       ) {
                         resolved = citation.archive_download_signed_url;
                       }
-                      return <a href={resolved} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
+                      // For remaining archive links, attach the session token
+                      // as a query param so anchor-new-tab navigations pass
+                      // AuthMiddleware (which accepts ?token= as a fallback
+                      // when the Authorization header can't be sent).
+                      const isArchive = resolved.includes("/api/archive/");
+                      resolved = withArchiveToken(resolved, session?.access_token);
+                      // Special-case "[Details](…md)" inside archive markdown
+                      // — keep the user in this dialog instead of opening a
+                      // new tab. Non-.md archive links (Download) still open
+                      // externally with the token appended.
+                      const isArchiveMd = isArchive && /\.md(?:\?|$)/.test(resolved);
+                      const onClick = isArchiveMd
+                        ? (e: ReactMouseEvent<HTMLAnchorElement>) => {
+                            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                            e.preventDefault();
+                            void handleOpenBrowseUri(resolved);
+                          }
+                        : undefined;
+
+                      const anchor = (
+                        <a
+                          href={resolved}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={onClick}
+                          {...props}
+                        >
+                          {children}
+                        </a>
+                      );
+
+                      // Show a floating image preview when hovering a
+                      // Download link that points at an image file. Keeps
+                      // users from having to open a tab just to see what
+                      // they're downloading.
+                      const isImageDownload =
+                        isArchive && !isArchiveMd && IMAGE_EXTENSIONS.test(resolved);
+                      if (!isImageDownload) return anchor;
+                      return (
+                        <Tooltip>
+                          <TooltipTrigger asChild>{anchor}</TooltipTrigger>
+                          <TooltipContent side="top" className="p-1 bg-white border shadow-md">
+                            <ImageHoverPreview src={resolved} />
+                          </TooltipContent>
+                        </Tooltip>
+                      );
                     },
                     img: ({ src, alt, ...props }) => {
                       let resolved = src || "";
                       if (!resolved.startsWith("http")) {
                         resolved = resolveArchiveUrl(resolved, citation?.archive_browse_uri);
                       }
+                      resolved = withArchiveToken(resolved, session?.access_token);
                       return <img src={resolved} alt={alt || ""} {...props} />;
                     },
                   }}
@@ -941,6 +1146,7 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
                   {processedContent}
                 </ReactMarkdown>
               </div>
+              </TooltipProvider>
             )}
 
             {!processedContent && !loading && !error && (

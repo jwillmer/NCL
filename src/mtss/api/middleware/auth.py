@@ -150,19 +150,30 @@ class SupabaseJWTBearer:
         self._settings = get_settings()
 
     async def __call__(self, request) -> Optional[UserPayload]:
-        """Validate JWT from request headers."""
+        """Validate JWT from request headers or ``?token=`` query fallback.
+
+        The query-param fallback exists so the SPA can render <img> / <a
+        target=_blank> links at ``/api/archive/...`` — those are browser
+        navigations that cannot carry an Authorization header. The token is
+        the same short-lived Supabase access token the SPA already holds,
+        and archive URLs stay same-origin (no external Referer leak), so
+        the additional exposure surface is minimal.
+        """
         from starlette.requests import Request
 
         if not isinstance(request, Request):
             return None
 
         auth_header = request.headers.get("authorization", "")
-        if not auth_header:
-            return None
+        if auth_header:
+            parts = auth_header.split()
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                user = _verify_jwt(parts[1])
+                if user:
+                    return user
 
-        parts = auth_header.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            return None
+        token = request.query_params.get("token")
+        if token:
+            return _verify_jwt(token)
 
-        token = parts[1]
-        return _verify_jwt(token)
+        return None

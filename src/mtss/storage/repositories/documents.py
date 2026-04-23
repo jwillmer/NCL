@@ -752,6 +752,41 @@ class DocumentRepository(BaseRepository):
 
         return {"subject": subject, "chunk_id": origin_chunk_id}
 
+    def get_chunk_id_by_browse_uri(self, browse_uri: str) -> Optional[str]:
+        """Return the first chunk_id for the document at ``browse_uri``.
+
+        The UI uses this to swap the source dialog to the referenced
+        attachment when a user clicks a ``[View](…md)`` link inside an
+        email's rendered archive markdown — keeps navigation in-dialog
+        instead of opening an unauthenticated new tab.
+
+        Matches against ``chunks.archive_browse_uri`` with and without the
+        ``/archive/`` prefix because callers sometimes normalise the path
+        differently. Returns the lowest-``chunk_index`` match.
+        """
+        if not browse_uri:
+            return None
+
+        stripped = browse_uri
+        if stripped.startswith("/archive/"):
+            stripped = stripped[len("/archive/") :]
+        elif stripped.startswith("archive/"):
+            stripped = stripped[len("archive/") :]
+
+        candidates = [stripped, f"/archive/{stripped}", f"archive/{stripped}"]
+
+        result = (
+            self.client.table("chunks")
+            .select("chunk_id, chunk_index")
+            .in_("archive_browse_uri", candidates)
+            .order("chunk_index")
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0].get("chunk_id")
+        return None
+
     def get_citation_document_meta(self, document_id: UUID | str) -> Dict[str, Any]:
         """Resolve document type + attachment count for a citation's document.
 
