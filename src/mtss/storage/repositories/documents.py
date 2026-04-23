@@ -752,6 +752,47 @@ class DocumentRepository(BaseRepository):
 
         return {"subject": subject, "chunk_id": origin_chunk_id}
 
+    def get_citation_document_meta(self, document_id: UUID | str) -> Dict[str, Any]:
+        """Resolve document type + attachment count for a citation's document.
+
+        Used by the citations API so the UI can badge email sources with a
+        mail icon and show how many attachments the email carried. Counts
+        direct children only (parent_id = doc_id) to match the user's
+        mental model — a zip attachment is one attachment, its members are
+        nested and not counted separately.
+
+        Returns a dict with ``document_type`` (string or None) and
+        ``attachment_count`` (int for emails, None otherwise).
+        """
+        doc_row = (
+            self.client.table("documents")
+            .select("document_type")
+            .eq("id", str(document_id))
+            .limit(1)
+            .execute()
+        )
+        if not doc_row.data:
+            return {"document_type": None, "attachment_count": None}
+
+        doc_type = doc_row.data[0].get("document_type") or ""
+        if isinstance(doc_type, str):
+            doc_type_str = doc_type
+        else:
+            doc_type_str = getattr(doc_type, "value", "") or ""
+
+        attachment_count: Optional[int] = None
+        if doc_type_str == "email":
+            count_row = (
+                self.client.table("documents")
+                .select("id", count="exact")
+                .eq("parent_id", str(document_id))
+                .neq("document_type", "email")
+                .execute()
+            )
+            attachment_count = count_row.count or 0
+
+        return {"document_type": doc_type_str, "attachment_count": attachment_count}
+
     async def update_chunk_context(self, chunk: Chunk) -> None:
         """Update a chunk's context_summary, embedding_text, and embedding.
 

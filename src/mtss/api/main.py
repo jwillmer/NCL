@@ -635,6 +635,20 @@ def create_app() -> FastAPI:
         except Exception:
             logger.exception("Failed to resolve origin email for chunk %s", chunk_id)
 
+        document_type: str | None = None
+        attachment_count: int | None = None
+        try:
+            meta = client.get_citation_document_meta(chunk.document_id)
+            if isinstance(meta, dict):
+                dt = meta.get("document_type")
+                if isinstance(dt, str):
+                    document_type = dt
+                ac = meta.get("attachment_count")
+                if isinstance(ac, int) and not isinstance(ac, bool):
+                    attachment_count = ac
+        except Exception:
+            logger.exception("Failed to resolve document meta for chunk %s", chunk_id)
+
         return {
             "chunk_id": chunk_id,
             "source_title": chunk.source_title,
@@ -647,6 +661,8 @@ def create_app() -> FastAPI:
             "archive_download_signed_url": archive_download_signed_url,
             "content": content,
             "origin_email": origin_email,
+            "document_type": document_type,
+            "attachment_count": attachment_count,
         }
 
     # ------------------------------------------------------------------

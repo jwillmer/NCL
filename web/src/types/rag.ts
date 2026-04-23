@@ -27,6 +27,12 @@ export interface Citation {
   archive_download_signed_url: string | null;
   content: string | null;
   origin_email: OriginEmail | null;
+  // Document type of the citation's source (e.g. "email", "attachment_pdf").
+  // Null when the backend could not resolve it.
+  document_type: string | null;
+  // For email documents: number of direct attachments. Null for non-email
+  // sources or when lookup failed.
+  attachment_count: number | null;
 }
 
 export interface OriginEmail {

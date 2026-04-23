@@ -22,9 +22,8 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { ChevronDown, ChevronRight, FileText, Download, ExternalLink, ArrowLeft, Mail } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Download, ArrowLeft, Mail } from "lucide-react";
 import {
-  Button,
   Card,
   Dialog,
   DialogContent,
@@ -42,12 +41,83 @@ import type { Citation, CiteProps } from "@/types/rag";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/conversations";
 
-// Allow <mark> tags through sanitizer (used for line highlighting)
+// Allow <mark> (line highlighting) and <abbr title="..."> (MIME tooltip) through sanitizer.
 const sourceSanitizeSchema = {
   ...defaultSchema,
-  tagNames: [...(defaultSchema.tagNames || []), "mark"],
-  attributes: { ...defaultSchema.attributes, mark: ["className", "class"] },
+  tagNames: [...(defaultSchema.tagNames || []), "mark", "abbr"],
+  attributes: {
+    ...defaultSchema.attributes,
+    mark: ["className", "class"],
+    abbr: ["title"],
+  },
 };
+
+// Friendly labels for common attachment MIME types rendered in archive markdown
+// under "**Type:** <mime>". Users see the friendly label; raw MIME stays on
+// hover via <abbr title>. Keep labels descriptive (not acronyms) — maritime
+// users wanted "Spreadsheet" over "XLSX".
+const MIME_FRIENDLY_LABELS: Record<string, string> = {
+  "application/pdf": "PDF document",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word document",
+  "application/msword": "Word document (legacy)",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Spreadsheet",
+  "application/vnd.ms-excel": "Spreadsheet (legacy)",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "Presentation",
+  "application/vnd.ms-powerpoint": "Presentation (legacy)",
+  "application/vnd.oasis.opendocument.text": "OpenDocument text",
+  "application/vnd.oasis.opendocument.spreadsheet": "OpenDocument spreadsheet",
+  "application/vnd.oasis.opendocument.presentation": "OpenDocument presentation",
+  "text/csv": "CSV spreadsheet",
+  "text/html": "HTML page",
+  "text/plain": "Text file",
+  "text/rtf": "Rich-text document",
+  "application/rtf": "Rich-text document",
+  "application/zip": "ZIP archive",
+  "application/x-zip-compressed": "ZIP archive",
+  "application/x-zip": "ZIP archive",
+  "application/epub+zip": "EPUB book",
+  "application/json": "JSON data",
+  "application/octet-stream": "Binary file",
+  "message/rfc822": "Email message",
+  "image/png": "PNG image",
+  "image/x-png": "PNG image",
+  "image/jpeg": "JPEG image",
+  "image/jpg": "JPEG image",
+  "image/gif": "GIF image",
+  "image/webp": "WebP image",
+  "image/tiff": "TIFF image",
+  "image/bmp": "Bitmap image",
+  "image/svg+xml": "SVG image",
+};
+
+function friendlyMimeLabel(mime: string): string {
+  const trimmed = mime.trim();
+  const exact = MIME_FRIENDLY_LABELS[trimmed];
+  if (exact) return exact;
+  // Family fallbacks for unmapped MIMEs
+  if (trimmed.startsWith("image/")) return "Image";
+  if (trimmed.startsWith("audio/")) return "Audio";
+  if (trimmed.startsWith("video/")) return "Video";
+  if (trimmed.startsWith("text/")) return "Text file";
+  return trimmed;
+}
+
+/** Rewrite "**Type:** <mime>" lines in archive markdown to a friendly label
+ *  with the raw MIME on hover (<abbr title>). Idempotent — skips lines that
+ *  already contain an <abbr>. */
+function friendlifyTypeLine(content: string): string {
+  return content.replace(
+    /^(\*\*Type:\*\*\s+)(.+)$/gm,
+    (match, prefix, value) => {
+      if (value.includes("<abbr")) return match;
+      const mime = value.trim();
+      const label = friendlyMimeLabel(mime);
+      if (label === mime) return match;
+      const safeMime = mime.replace(/"/g, "&quot;");
+      return `${prefix}<abbr title="${safeMime}">${label}</abbr>`;
+    },
+  );
+}
 
 /** Strip leading /archive/ prefix to avoid doubling. */
 function stripArchivePrefix(uri: string): string {
@@ -98,6 +168,14 @@ interface CitationEntry {
   index: number;           // Document index (shared across all chunks from same doc)
   title: string;
   titleLoading?: boolean;
+  // Originating email subject so the accordion can show "from <email>" under
+  // each source. `undefined` = not fetched yet; `null` = fetched, no origin
+  // (e.g., the cite IS the email itself); string = subject.
+  originEmailSubject?: string | null;
+  // Discriminator so the accordion can badge emails with a mail icon and
+  // show an attachment-count subtitle. `undefined` = not fetched yet.
+  documentType?: string | null;
+  attachmentCount?: number | null;
   chunks: ChunkRef[];      // All chunks from this document
 }
 
@@ -105,6 +183,12 @@ interface CitationContextType {
   citations: Map<string, CitationEntry>;
   addCitation: (entry: CitationEntry) => void;
   updateCitationTitle: (id: string, title: string) => void;
+  updateCitationOriginEmail: (id: string, subject: string | null) => void;
+  updateCitationDocMeta: (
+    id: string,
+    documentType: string | null,
+    attachmentCount: number | null,
+  ) => void;
   clearCitations: () => void;
   onViewCitation: (id: string, linesToHighlight?: [number, number][]) => void;
 }
@@ -157,10 +241,52 @@ function CitationProviderImpl({ children, onViewCitation }: CitationProviderProp
     });
   }, []);
 
+  const updateCitationOriginEmail = useCallback((id: string, subject: string | null) => {
+    setCitations((prev) => {
+      // Match by primary id OR by any chunk id — CiteRenderer fetches per
+      // cite-tag chunk, but dedupe may have rolled that chunk into another
+      // entry's chunks[] under a different primary id.
+      const entry =
+        prev.get(id) ||
+        Array.from(prev.values()).find((e) => e.chunks.some((c) => c.chunkId === id));
+      if (!entry) return prev;
+      if (entry.originEmailSubject !== undefined) return prev;
+      const next = new Map(prev);
+      next.set(entry.id, { ...entry, originEmailSubject: subject });
+      return next;
+    });
+  }, []);
+
+  const updateCitationDocMeta = useCallback(
+    (id: string, documentType: string | null, attachmentCount: number | null) => {
+      setCitations((prev) => {
+        const entry =
+          prev.get(id) ||
+          Array.from(prev.values()).find((e) => e.chunks.some((c) => c.chunkId === id));
+        if (!entry) return prev;
+        if (entry.documentType !== undefined) return prev;
+        const next = new Map(prev);
+        next.set(entry.id, { ...entry, documentType, attachmentCount });
+        return next;
+      });
+    },
+    [],
+  );
+
   const clearCitations = useCallback(() => setCitations(new Map()), []);
 
   return (
-    <CitationContext.Provider value={{ citations, addCitation, updateCitationTitle, clearCitations, onViewCitation }}>
+    <CitationContext.Provider
+      value={{
+        citations,
+        addCitation,
+        updateCitationTitle,
+        updateCitationOriginEmail,
+        updateCitationDocMeta,
+        clearCitations,
+        onViewCitation,
+      }}
+    >
       {children}
     </CitationContext.Provider>
   );
@@ -255,8 +381,18 @@ function ImgCiteRenderer(props: ImgCiteProps) {
 
 function CiteRenderer(props: CiteProps) {
   const { id, doc, title, page, lines, download, children } = props;
-  const { citations, addCitation, updateCitationTitle, onViewCitation } = useCitationContext();
+  const {
+    citations,
+    addCitation,
+    updateCitationTitle,
+    updateCitationOriginEmail,
+    updateCitationDocMeta,
+    onViewCitation,
+  } = useCitationContext();
   const { session } = useAuth();
+  // Guard against duplicate fetches when CiteRenderer re-renders (e.g. highlight
+  // state, parent rerender). One detail fetch per chunk per mount.
+  const detailsFetchedRef = useRef(false);
 
   // Extract index from children - ReactMarkdown may pass string, number, or array
   let index = 0;
@@ -306,11 +442,15 @@ function CiteRenderer(props: CiteProps) {
     });
   }, [id, doc, index, title, page, parsedLines, download, addCitation, needsTitleFetch]);
 
-  // Fetch title from API if not provided in the cite tag
+  // Fetch citation details once per chunk: backfill title if the cite tag
+  // omitted it, and always populate the origin-email subject so the accordion
+  // can show "from <email>" under each source. Guarded by a ref so re-renders
+  // don't trigger duplicate requests.
   useEffect(() => {
-    if (!needsTitleFetch || !session?.access_token) return;
+    if (!session?.access_token || detailsFetchedRef.current) return;
+    detailsFetchedRef.current = true;
 
-    const fetchTitle = async () => {
+    const fetchDetails = async () => {
       try {
         const response = await fetch(`${getApiBaseUrl()}/citations/${id}`, {
           headers: {
@@ -319,17 +459,30 @@ function CiteRenderer(props: CiteProps) {
         });
         if (response.ok) {
           const data = await response.json();
-          if (data.source_title) {
+          if (needsTitleFetch && data.source_title) {
             updateCitationTitle(id, data.source_title);
           }
+          updateCitationOriginEmail(id, data.origin_email?.subject ?? null);
+          updateCitationDocMeta(
+            id,
+            typeof data.document_type === "string" ? data.document_type : null,
+            typeof data.attachment_count === "number" ? data.attachment_count : null,
+          );
         }
       } catch {
-        // Silently fail - "Source" fallback is acceptable
+        // Silently fail — title/origin-email are progressive enhancement.
       }
     };
 
-    fetchTitle();
-  }, [id, needsTitleFetch, session?.access_token, updateCitationTitle]);
+    fetchDetails();
+  }, [
+    id,
+    needsTitleFetch,
+    session?.access_token,
+    updateCitationTitle,
+    updateCitationOriginEmail,
+    updateCitationDocMeta,
+  ]);
 
   // Get title from context (updates when fetched) or fall back to prop/default
   const citationEntry = id ? citations.get(id) : undefined;
@@ -460,8 +613,10 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
     locationParts.push(`p.${pages.sort((a, b) => a - b).join(", ")}`);
   }
 
+  const isEmail = citation.documentType === "email";
+
   return (
-    <div className="flex items-center justify-between px-3 py-2 rounded-md hover:bg-MTSS-gray-light/30 group">
+    <div className="flex items-center px-3 py-2 rounded-md hover:bg-MTSS-gray-light/30 group">
       {/* Whole row (everything except the download button) is the dialog
           trigger — clicking the title is the natural move. `button` so
           keyboard users get focus + Enter/Space behavior for free. */}
@@ -478,9 +633,33 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
           {citation.titleLoading ? (
             <Skeleton className="h-4 w-48" />
           ) : (
-            <p className="text-sm font-medium text-MTSS-blue-dark truncate group-hover:underline">
-              {citation.title}
+            <div className="flex items-center gap-1.5 min-w-0">
+              {isEmail && (
+                <Mail
+                  className="h-3.5 w-3.5 flex-shrink-0 text-MTSS-blue"
+                  aria-hidden="true"
+                />
+              )}
+              <p className="text-sm font-medium text-MTSS-blue-dark truncate min-w-0 flex-1 group-hover:underline">
+                {citation.title}
+              </p>
+            </div>
+          )}
+          {isEmail && typeof citation.attachmentCount === "number" && (
+            <p className="text-xs text-MTSS-gray truncate">
+              {citation.attachmentCount === 0
+                ? "No attachments"
+                : `${citation.attachmentCount} attachment${citation.attachmentCount === 1 ? "" : "s"}`}
             </p>
+          )}
+          {!isEmail && citation.originEmailSubject && (
+            <div
+              className="flex items-center gap-1 min-w-0 text-xs text-MTSS-gray"
+              title={`From email: ${citation.originEmailSubject}`}
+            >
+              <Mail className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+              <span className="truncate min-w-0 flex-1">{citation.originEmailSubject}</span>
+            </div>
           )}
           {locationParts.length > 0 && (
             <p className="text-xs text-MTSS-gray">{locationParts.join(" | ")}</p>
@@ -488,27 +667,6 @@ function SourceItem({ citation, displayIndex, onView }: SourceItemProps) {
         </div>
       </button>
 
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onView}
-          className="h-8 px-2"
-          title="View source"
-        >
-          <ExternalLink className="h-4 w-4" />
-        </Button>
-        {citation.chunks[0]?.download && (
-          <a
-            href={`${getApiBaseUrl()}/archive/${stripArchivePrefix(citation.chunks[0].download)}`}
-            download
-            className="inline-flex items-center justify-center h-8 px-2 rounded-md text-sm font-medium hover:bg-MTSS-gray-light/20 transition-colors"
-            title="Download original"
-          >
-            <Download className="h-4 w-4" />
-          </a>
-        )}
-      </div>
     </div>
   );
 }
@@ -664,10 +822,13 @@ export function SourceViewDialog({ chunkId, open, onOpenChange, linesToHighlight
     locationParts.push(`Lines ${citation.lines[0]}-${citation.lines[1]}`);
   }
 
-  // Process content with highlights
-  const processedContent = citation?.content && activeHighlights
-    ? addLineHighlights(citation.content, activeHighlights)
+  // Process content: friendlify MIME in "**Type:**" line, then apply highlights.
+  const friendliedContent = citation?.content
+    ? friendlifyTypeLine(citation.content)
     : citation?.content;
+  const processedContent = friendliedContent && activeHighlights
+    ? addLineHighlights(friendliedContent, activeHighlights)
+    : friendliedContent;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

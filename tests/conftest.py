@@ -687,6 +687,9 @@ def app(comprehensive_mock_settings, test_user, mock_supabase_rest_client):
         self._pool = None  # Must be after _docs/_search/_domain (property setter)
         self._docs.get_chunk_by_id = MagicMock(return_value=None)
         self._docs.get_origin_email_for_document = MagicMock(return_value=None)
+        self._docs.get_citation_document_meta = MagicMock(
+            return_value={"document_type": None, "attachment_count": None}
+        )
         self._domain.get_vessel_summaries = AsyncMock(return_value=[])
         self._domain.get_unique_vessel_types = AsyncMock(return_value=[])
         self._domain.get_unique_vessel_classes = AsyncMock(return_value=[])
