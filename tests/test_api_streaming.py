@@ -45,6 +45,39 @@ class TestAgentRequestValidation:
         )
         assert response.status_code == 422
 
+    @pytest.mark.asyncio
+    async def test_streaming_accepts_replayed_data_progress_parts(
+        self, app, client, auth_headers
+    ):
+        """v6 clients replay assistant messages with persisted ``data-*`` parts.
+
+        Those parts carry no ``text`` field — only ``type`` + ``data``.
+        Regression: prior schema required ``text: str`` on every part, so the
+        second turn of any thread that had surfaced progress was rejected with
+        ``{"type":"missing","loc":["messages",1,"parts",0,"text"]}``.
+        """
+        app.state.agent_graph = _stub_graph([])
+
+        response = await client.post(
+            "/api/agent",
+            headers=auth_headers,
+            json={
+                "messages": [
+                    {"role": "user", "parts": [{"type": "text", "text": "broken cylinder"}]},
+                    {
+                        "role": "assistant",
+                        "parts": [
+                            {"type": "data-progress", "data": "Understanding your question"},
+                            {"type": "text", "text": "Which cylinder?"},
+                        ],
+                    },
+                    {"role": "user", "parts": [{"type": "text", "text": "main engine"}]},
+                ],
+                "thread_id": "123e4567-e89b-12d3-a456-426614174000",
+            },
+        )
+        assert response.status_code == 200, response.text
+
 
 def _stub_graph(events: list[dict]) -> MagicMock:
     """Build a fake agent graph that yields ``events`` from astream_events.

@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -53,10 +53,18 @@ class VesselFilters(BaseModel):
 
 
 class MessagePart(BaseModel):
-    """A single part of a Vercel AI SDK UIMessage."""
+    """A single part of a Vercel AI SDK UIMessage.
+
+    Only ``type == "text"`` parts are consumed server-side, but v6 clients
+    persist streamed ``data-*`` / ``tool-*`` / ``reasoning`` parts onto the
+    assistant message and replay the full history on every turn. Accept any
+    shape here; the ``content`` join on ``Message`` ignores non-text parts.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     type: str
-    text: str
+    text: Optional[str] = None
 
 
 class Message(BaseModel):
@@ -67,7 +75,7 @@ class Message(BaseModel):
 
     @property
     def content(self) -> str:
-        return "\n".join(p.text for p in self.parts if p.type == "text")
+        return "\n".join(p.text for p in self.parts if p.type == "text" and p.text)
 
 
 class AgentRequest(BaseModel):
