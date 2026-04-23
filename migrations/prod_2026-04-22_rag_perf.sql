@@ -118,7 +118,7 @@ RETURNS TABLE (
     similarity FLOAT
 )
 LANGUAGE SQL STABLE
-SET search_path = public, pg_temp
+SET search_path = public, extensions, pg_temp
 AS $$
     SELECT x.id, x.name, x.display_name, x.similarity
     FROM (
@@ -264,7 +264,7 @@ RETURNS TABLE (
     root_file_path TEXT
 )
 LANGUAGE plpgsql
-SET search_path = public, pg_temp
+SET search_path = public, extensions, pg_temp
 AS $$
 DECLARE
     topic_ids_filter TEXT[];

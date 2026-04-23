@@ -36,7 +36,7 @@ RETURNS TABLE (
     similarity FLOAT
 )
 LANGUAGE SQL STABLE
-SET search_path = public, pg_temp
+SET search_path = public, extensions, pg_temp
 AS $$
     SELECT x.id, x.name, x.display_name, x.similarity
     FROM (
