@@ -866,8 +866,16 @@ function remarkLineHighlights(lineRanges: [number, number][] | undefined) {
 
     visit(tree, "text", (node: MdastText, index, parent) => {
       if (!parent || index === undefined) return;
-      const startLine = node.position?.start.line;
-      const endLine = node.position?.end.line ?? startLine;
+      // Child text nodes inside setext headings and broken-paragraph
+      // runs (``remark-breaks`` splits) get no ``position`` field of
+      // their own — only the wrapping block carries it. Fall back to
+      // the parent's position range so those text nodes still get
+      // highlighted. Coarser than per-node but matches the granularity
+      // users ask for anyway (whole chunk range).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const parentPos = (parent as any)?.position;
+      const startLine = node.position?.start.line ?? parentPos?.start?.line;
+      const endLine = node.position?.end.line ?? parentPos?.end?.line;
       if (startLine === undefined || endLine === undefined) return;
       if (!overlaps(startLine, endLine)) return;
       replacements.push({
