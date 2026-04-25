@@ -86,3 +86,5 @@ web/dev-dist/
 PERF-PLAN.md
 UI-PROPOSALS.md
 .claude/scheduled_tasks.lock
+/data/archive
+data/ingest.db
