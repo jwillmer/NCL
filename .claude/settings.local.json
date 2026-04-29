@@ -167,7 +167,9 @@
       "Bash(tee tests/eval/runs/smoke-10-kick.log)",
       "Bash(tee tests/eval/runs/baseline-04-kick.log)",
       "Read(//c/Users/mail/AppData/Local/Temp/claude/C--Projects-GitHub-NCL/e27e40cb-2ae5-442a-9961-0cfb79568946/tasks/**)",
-      "Bash(tee tests/eval/runs/baseline-05-kick.log)"
+      "Bash(tee tests/eval/runs/baseline-05-kick.log)",
+      "Bash(npm test *)",
+      "Bash(git reset *)"
     ],
     "additionalDirectories": [
       "c:\\Projects\\GitHub\\MTSS\\web\\src\\app\\chat\\[threadId]"

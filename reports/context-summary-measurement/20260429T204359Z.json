@@ -1,0 +1,45 @@
+{
+  "config": {
+    "timestamp": "20260429T204359Z",
+    "questions_path": "(smoke fixture \u2014 REPLACE WITH REAL GOLDENS BEFORE PUBLISHING)",
+    "top_k": 20,
+    "rerank_top_n": 8,
+    "use_rerank": false,
+    "mode_source": "smoke fixture (no DB)"
+  },
+  "summary": {
+    "question_count": 1,
+    "tokens_full_total": 808,
+    "tokens_hybrid_total": 111,
+    "delta_total": 697,
+    "pct_saved_total": 0.8626237623762376,
+    "questions_with_savings": 1,
+    "pct_saved_mean": 0.8626237623762376,
+    "pct_saved_median": 0.8626237623762376,
+    "pct_saved_p95": 0.8626237623762376,
+    "delta_mean": 697.0,
+    "delta_median": 697,
+    "delta_p95": 697,
+    "summary_chunks_share": 0.3333333333333333
+  },
+  "metrics": [
+    {
+      "question_id": "smoke-q01",
+      "question": "Smoke fixture \u2014 what is the hull inspection status?",
+      "chunks_total": 3,
+      "chunks_summary_mode_count": 1,
+      "chunks_full_mode_count": 1,
+      "chunks_metadata_only_count": 1,
+      "chunks_unknown_mode_count": 0,
+      "tokens_full": 808,
+      "tokens_hybrid": 111,
+      "delta_tokens": 697,
+      "pct_saved": 0.8626237623762376,
+      "chunk_ids": [
+        "aaaaaaaaaaaa",
+        "bbbbbbbbbbbb",
+        "cccccccccccc"
+      ]
+    }
+  ]
+}

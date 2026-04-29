@@ -1,0 +1,123 @@
+detected_name,verdict,vessel_type,vessel_class,imo,confidence,evidence_url,notes
+ANTONIS L. ANGELICOUSSIS,REAL,VLCC,Angelicoussis,9930777,high,https://www.vesselfinder.com/vessels/details/9930777,Typo of ANTONIS I. ANGELICOUSSIS; dual-fuel LNG VLCC built 2022 by Samsung; flagship Angelicoussis Group sister to MARIA A. ANGELICOUSSIS
+PEGASUS VOYAGER,REAL,SUEZMAX,,9665736,high,https://www.vesselfinder.com/vessels/details/9665736,Suezmax crude tanker built 2014; Chevron Shipping; named like Voyager-class members in register
+POLARIS VOYAGER,REAL,SUEZMAX,,9665748,high,https://www.vesselfinder.com/vessels/details/9665748,Suezmax crude tanker built 2014; Chevron-owned sister of PEGASUS VOYAGER
+ARCTURUS VOYAGER,REAL,VLCC,Arcturus,9588299,high,https://www.myshiptracking.com/vessels/arcturus-voyager-mmsi-311027300-imo-9588299,Former name of MARAN ARCTURUS (in canonical register); same IMO renamed in 2018
+MARAN LOYALTY,REAL,BULK CARRIER,Newcastlemax,9724659,high,https://www.vesselfinder.com/vessels/details/9724659,Maran Dry Newcastlemax bulk carrier built 2017; Greek flag
+MARAN ENDEAVOUR,REAL,BULK CARRIER,Newcastlemax,9846419,high,https://www.vesselfinder.com/vessels/details/9846419,Maran Dry Newcastlemax bulk carrier built 2020
+MARAN MERCHANT,REAL,BULK CARRIER,Capesize,9458690,high,https://www.vesselfinder.com/vessels/details/9458690,Maran Dry Capesize bulk carrier built 2010
+MARAN SAILOR,REAL,BULK CARRIER,Capesize,9345764,high,https://www.myshiptracking.com/vessels/maran-sailor-mmsi-240589000-imo-9345764,Maran Dry Capesize bulk carrier built 2006
+ADVANTAGE AWARD,REAL,AFRAMAX,,9470131,high,https://www.vesselfinder.com/vessels/details/9470131,Aframax crude tanker built 2011; Marshall Islands flag; Advantage Tankers fleet
+EAGLE HATTERAS,REAL,AFRAMAX,LR2,9453975,high,https://www.vesselfinder.com/vessels/details/9453975,Aframax (LR2) crude tanker built 2010; UK flag; AET/Eagle fleet
+MARAN VISION,REAL,BULK CARRIER,Capesize,9332951,high,https://www.vesselfinder.com/vessels/details/9332951,Maran Dry Capesize bulk carrier built 2007
+MARAN GUARDIAN,REAL,BULK CARRIER,Capesize,9434369,high,https://www.vesselfinder.com/vessels/details/9434369,Maran Dry Capesize bulk carrier built 2010
+MARAN DYNASTY,REAL,BULK CARRIER,Capesize,9705134,high,https://www.vesselfinder.com/vessels/details/9705134,Maran Dry Capesize bulk carrier built 2016; ex-Courageous
+ANTARES VOYAGER,REAL,VLCC,Arcturus,9581203,high,https://www.shipspotting.com/photos/2200264,Former name of MARAN ANTARES (in canonical register); same IMO; Chevron-owned before 2018
+ETHANE SAPPHIRE,REAL,LPG/VLEC,,9752606,high,https://www.vesselfinder.com/vessels/details/9752606,Very Large Ethane Carrier built 2017; Reliance/MOL operated; not Maran group
+MONJASA REFORME,REAL,CHEMICAL/OIL TANKER,,9255878,high,https://www.vesselfinder.com/vessels/details/9255878,Truncated MONJASA REFORMER; same Monjasa bunker tanker built 2003
+MONJASA REFORMER,REAL,CHEMICAL/OIL TANKER,,9255878,high,https://www.vesselfinder.com/vessels/details/9255878,Monjasa bunker tanker built 2003; Liberia flag; subject of 2024 piracy incident
+MARAN GLORY,REAL,BULK CARRIER,Capesize,9434383,high,https://www.vesselfinder.com/vessels/details/9434383,Maran Dry Capesize bulk carrier built 2012; Greek flag
+MARAN CYGNUS,REAL,VLCC,,9227479,high,https://www.myshiptracking.com/vessels/maran-cygnus-mmsi-239831000-imo-9227479,Maran Tankers VLCC built 2001; 306k DWT
+MARAN GEMINI,REAL,VLCC,,9174218,high,https://www.vesselfinder.com/?imo=9174218,Maran Tankers VLCC built 1999; 310k DWT
+MARAN ANDROMEDA,REAL,VLCC,,9288875,high,https://www.vesseltracking.net/ship/maran-andromeda-9288875,Maran Tankers VLCC built 2005; 320k DWT
+MARAN CARINA,REAL,VLCC,,9240512,high,https://www.myshiptracking.com/vessels/maran-carina-mmsi-237951000-imo-9240512,Maran Tankers VLCC built 2003; 306k DWT; Greek flag
+MARAN CASTOR,REAL,VLCC,,9194127,high,https://www.marinetraffic.com/ais/details/ships/9194127/vessel:MARAN_CASTOR,Maran Tankers VLCC built 2001; 306k DWT; Greek flag Piraeus
+MARAN CALLISTO,REAL,VLCC,,9171448,high,https://www.marinerating.com/ships/9171448/MARAN%20CALLISTO,Maran Tankers VLCC built 1999; 299k DWT; sold 2019
+MARAN AQUARIUS,REAL,VLCC,,9289491,high,https://www.myshiptracking.com/vessels/maran-aquarius-mmsi-241661000-imo-9289491,Maran Tankers VLCC built 2005
+MARAN CORONA,REAL,VLCC,,9252333,high,https://myshiptracking.com/vessels/maran-corona-mmsi-240016000-imo-9252333,Maran Tankers VLCC built 2003; 306k DWT
+MARAN CASSIOPEIA,REAL,VLCC,,9257137,high,https://vesseljoin.com/vessel/maran-cassiopeia/,Maran Tankers VLCC built 2003; 158k GT
+MARAN SAGITTA,REAL,VLCC,,9414034,high,https://www.myshiptracking.com/vessels/maran-sagitta-mmsi-240892000-imo-9414034,Maran Tankers crude oil tanker built 2009; Greek flag
+MARAN REGULUS,REAL,VLCC,,9174220,high,https://www.fleetmon.com/vessels/maran-regulus_9174220_21973/,Maran Tankers VLCC built 2000; renamed LUNA PRIME in 2020
+MARAN TRITON,REAL,VLCC,,9237632,high,https://www.vesselfinder.com/vessels/MT-MARAN-TRITON-IMO-9237632-MMSI-241261000,Maran Tankers crude oil tanker built 2003
+MARAN HAPPINESS,REAL,BULK CARRIER,Capesize,9470923,high,https://www.vesselfinder.com/vessels/details/9470923,Maran Dry Capesize bulk carrier built 2008; 177k DWT
+MARAN ASTRONOMER,REAL,BULK CARRIER,Capesize,9581239,high,https://www.vesselfinder.com/vessels/details/9581239,Maran Dry Capesize bulk carrier built 2012; Greek flag
+MARAN VOYAGER,REAL,BULK CARRIER,Capesize,9458688,high,https://www.vesselfinder.com/vessels/ANANGEL-VOYAGER-IMO-9458688-MMSI-241032000,Former name of ANANGEL VOYAGER bulk carrier built 2010; Anangel Maritime Greek flag
+MARAN VIRTUE,REAL,BULK CARRIER,Capesize,9440332,high,https://www.vesselfinder.com/vessels/details/9440332,Maran Dry Capesize bulk carrier built 2012; ex-Anangel Virtue
+DALMA ABT,REAL,VLCC,,9322279,high,https://www.vesselfinder.com/vessels/details/9322279,DALMA VLCC built 2007; CMB Tech owned; trailing 'ABT' (=about) is extraction noise
+IOANNA ABT,REAL,VLCC,,9387566,high,https://www.marinetraffic.com/en/ais/details/ships/shipid:754036/mmsi:636013373/imo:9387566/vessel:IOANNA,IOANNA VLCC built 2008; Dynacom Tankers; trailing 'ABT' is extraction noise
+HIRADO ABT,REAL,CRUDE OIL TANKER,,9377420,high,https://www.marinetraffic.com/en/ais/details/ships/shipid:731531/mmsi:636026115/imo:9377420/vessel:HIRADO,HIRADO crude oil tanker built 2011 in Japan; trailing 'ABT' is extraction noise
+OCEANIC FORTUNE ABT,REAL,VLCC,,9424209,high,https://www.marinetraffic.com/en/ais/details/ships/shipid:754757/mmsi:636014465/imo:9424209/vessel:OCEANIC%20FORTUNE,OCEANIC FORTUNE VLCC built 2010; Hongkong Xiang An; trailing 'ABT' is extraction noise
+HAKONE ABT,REAL,VLCC,,9398084,high,https://maritimeoptima.com/public/vessels/pages/imo:9398084/mmsi:228456800/HAKONE.html,HAKONE VLCC built 2010; trailing 'ABT' is extraction noise
+LIBRA VOYAGER,REAL,VLCC,Cleo,9593206,high,https://www.myshiptracking.com/vessels/libra-voyager-mmsi-311000011-imo-9593206,Former name of MARAN LIBRA (already in canonical register); same IMO 9593206
+MARAN SPARTA,REAL,LNG CARRIER,,9650042,medium,https://www.balticshipping.com/vessel/imo/9650042,Likely refers to MARAN GAS SPARTA LNG carrier; no standalone MARAN SPARTA in any fleet
+SILVER HESSA,REAL,CHEMICAL/OIL TANKER,Medium Range,9718868,high,https://www.vesselfinder.com/vessels/details/9718868,MR product/chemical tanker built 2016; Hong Kong flag; Fleet Management Ltd HK
+ATLANTIC ORCHARD,REAL,FRUIT JUICE TANKER,,9638159,high,https://www.vesselfinder.com/vessels/details/9638159,Wisby Tankers fruit juice tanker built 2014; not Maran group
+MONJASA REFORMER LOCATION,REAL,CHEMICAL/OIL TANKER,,9255878,medium,https://www.vesselfinder.com/vessels/details/9255878,MONJASA REFORMER + extraction noise word 'location'
+MASESRK CLEVLAND REMARK,REAL,CONTAINER SHIP,,9936408,medium,https://www.vesselfinder.com/vessels/details/9936408,Typo of MAERSK CLEVELAND container ship built 2023; trailing 'REMARK' is extraction noise
+TORDIS KNUTSEN,REAL,SHUTTLE TANKER,Suezmax shuttle,9757711,high,https://www.vesselfinder.com/vessels/details/9757711,Knutsen NYK shuttle tanker built 2016; Norway flag
+WINDSDOR KUNTSEN,REAL,SHUTTLE TANKER,Suezmax shuttle,9316115,high,https://www.vesselfinder.com/vessels/details/9316115,Typo of WINDSOR KNUTSEN; Knutsen shuttle tanker built 2007; Norway flag
+MARAN MIM,UNCLEAR,,,,low,,No vessel matching this exact name found; possible OCR garble of MARAN MIRA or abbreviation
+MARAN LUA,UNCLEAR,,,,low,,No matching Maran vessel found; likely OCR/typo of MARAN LYRA or similar
+MARAN TAJROS,UNCLEAR,,,,low,,No matching vessel found; likely OCR/typo of MARAN TAURUS
+NEW DYNASTY ABT,UNCLEAR,,,,low,,No specific vessel called 'NEW DYNASTY' found; possible Anangel-related name; trailing 'ABT' is extraction noise
+NEW NAXOS ABT,UNCLEAR,,,,low,,No vessel called 'NEW NAXOS' found; possible nickname for an Anangel/Maran sister; trailing 'ABT' is extraction noise
+NEW TINOS ABT,UNCLEAR,,,,low,,Possible reference to TINOS bulk carrier (IMO 9597795) or sister; trailing 'ABT' is extraction noise
+MARAN TAUA,UNCLEAR,,,,low,,No matching vessel found; likely OCR/typo of MARAN TAURUS
+MARAN MTM,UNCLEAR,,,,low,,MTM is the abbreviation for Maran Tankers Management; not a vessel; could be extraction artifact
+MARAN TANUGR,UNCLEAR,,,,low,,No matching vessel found; likely OCR/typo of MARAN TAURUS or similar
+MORAM ARDEMS OWNER,UNCLEAR,,,,low,,Garbled OCR text; no matching vessel; trailing 'OWNER' is sentence fragment
+MORAN ARLENES OWNER,UNCLEAR,,,,low,,No matching Maran/Moran vessel; likely OCR garble; trailing 'OWNER' is fragment
+MARAN SOPHIA,NOT_VESSEL,,,,medium,,SOPHIA is in canonical register; 'MARAN SOPHIA' is extraction artifact concatenating 'Maran' with 'Sophia'
+LOAD LINE,NOT_VESSEL,,,,high,,Maritime safety concept (Plimsoll line); not a vessel
+WTI MIDLAND CRUDE,NOT_VESSEL,,,,high,https://en.wikipedia.org/wiki/West_Texas_Intermediate,Crude oil grade from Permian Basin; not a vessel
+MARAN PORTFOLIO,NOT_VESSEL,,,,high,,Refers to Maran's fleet portfolio; not a vessel
+SOPHIA FROM,NOT_VESSEL,,,,high,,Sentence fragment; SOPHIA is in canonical register but trailing 'FROM' makes this extraction noise
+MARAN DWT,NOT_VESSEL,,,,high,,DWT = deadweight tonnage; technical term not a vessel name
+ROB GRADE,NOT_VESSEL,,,,high,,ROB = Remaining On Board (bunker fuel term); not a vessel
+MARAN ACCORDINGLY,NOT_VESSEL,,,,high,,Sentence fragment 'Maran accordingly...'; not a vessel
+MARAN SIDE,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+MARAN SITE,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+LAST VOYAGER,NOT_VESSEL,,,,high,,Sentence fragment ('the last voyager...'); not a vessel
+VDC MIN,NOT_VESSEL,,,,high,,Voltage measurement abbreviation (Volts DC minimum); not a vessel
+WHILE SHIP,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+ROB SAMPLE ATTACHED,NOT_VESSEL,,,,high,,ROB sample = Remaining On Board fuel sample; not a vessel
+AND VISUAL INSPECTION,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+MARAN AND,NOT_VESSEL,,,,high,,Sentence fragment 'Maran and...'; not a vessel
+MARAN INSTRUCTIONS,NOT_VESSEL,,,,high,,Sentence fragment 'Maran instructions...'; not a vessel
+MARAN DAY,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+MARAN PURCHASING,NOT_VESSEL,,,,high,,Refers to Maran's purchasing department; not a vessel
+MARAN RETROFITS,NOT_VESSEL,,,,high,,Refers to Maran's retrofit programme; not a vessel
+INTERNATIONAL LOAD LINE,NOT_VESSEL,,,,high,,Maritime regulation term (ICLL); not a vessel
+ENDORSEMENT WHERE THE,NOT_VESSEL,,,,high,,Sentence fragment from certificate text; not a vessel
+MARAN ITEMS,NOT_VESSEL,,,,high,,Sentence fragment 'Maran items...'; not a vessel
+MARAN MAIL,NOT_VESSEL,,,,high,,Refers to Maran email/mail; not a vessel
+MARAN TANKERPS,NOT_VESSEL,,,,high,,Typo of 'Maran Tankers' company name; not a vessel
+MARAN ARCTURUSCONSIGNEE,NOT_VESSEL,,,,high,,Concatenation extraction artifact: MARAN ARCTURUS (in register) + 'consignee'
+MARAN CONFIRMATION,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+MARAN TYPE,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+WHILE CELL,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+SWL PEDESTAL MOUNTED,NOT_VESSEL,,,,high,,SWL = Safe Working Load (crane/lifting term); not a vessel
+SWL BOSUN STORE,NOT_VESSEL,,,,high,,SWL = Safe Working Load; bosun store is a ship compartment label; not a vessel
+SWL PUMP ROOM,NOT_VESSEL,,,,high,,SWL = Safe Working Load; pump room compartment label; not a vessel
+MARAN GLORY DOIRANIS,NOT_VESSEL,,,,high,,MARAN GLORY (real vessel) + 'Doiranis' (street where Maran Dry HQ sits in Athens); extraction noise
+MARAIN AJAX,NOT_VESSEL,,,,high,,Typo of MARAN AJAX (already in canonical register); extraction noise
+ESTIMATED PAL SCHEDULE,NOT_VESSEL,,,,high,,Schedule fragment; not a vessel
+ROB AFTER BUNKERING,NOT_VESSEL,,,,high,,Bunker terminology; not a vessel
+MARAN HERMESIMPORTANT,NOT_VESSEL,,,,high,,Concatenation: MARAN HERMES (in register) + 'important'; extraction noise
+MARAN HERMIONECONSIGNEE,NOT_VESSEL,,,,high,,Concatenation: MARAN HERMIONE (in register) + 'consignee'; extraction noise
+DRAUGHT LOADED,NOT_VESSEL,,,,high,,Loading-condition term; not a vessel
+SOPHIA CALLING ROTTERDAM,NOT_VESSEL,,,,high,,SOPHIA (in register) + sentence fragment; extraction noise
+SOPHIA BUNSCHOTENWEG,NOT_VESSEL,,,,high,,SOPHIA + Bunschotenweg (a Rotterdam street name); extraction noise
+MARAN ATALANTACONSIGNEE,NOT_VESSEL,,,,high,,Concatenation: MARAN ATALANTA (in register) + 'consignee'; extraction noise
+MARAN GOOD,NOT_VESSEL,,,,high,,Sentence fragment 'Maran good...'; not a vessel
+MARAN NON,NOT_VESSEL,,,,high,,Sentence fragment 'Maran non-...'; not a vessel
+MARAN HERCULESCONSIGNEE,NOT_VESSEL,,,,high,,Concatenation: MARAN HERCULES (in register) + 'consignee'; extraction noise
+BOG COMPRESSOR STOPPED,NOT_VESSEL,,,,high,,BOG = Boil-Off Gas (LNG carrier term); equipment status not a vessel
+MARAN STOCK,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+MARAN COMMERCIALLY,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+MARAN FOR,NOT_VESSEL,,,,high,,Sentence fragment 'Maran for...'; not a vessel
+INPSH LAT,NOT_VESSEL,,,,high,,Coordinate/abbreviation fragment (likely 'in position lat'); not a vessel
+THE METER,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+MARAN TENKERS,NOT_VESSEL,,,,high,,Typo of 'Maran Tankers' company name; not a vessel
+MARAN MANAGEMEM,NOT_VESSEL,,,,high,,Typo of 'Maran Management'; not a vessel
+MARAN POSSIBILITY,NOT_VESSEL,,,,high,,Sentence fragment; not a vessel
+MARAN ANTONIS,NOT_VESSEL,,,,high,,Truncated reference to ANTONIS I. ANGELICOUSSIS; extraction noise
+ROB GRADE ZJQCMQRYFPFPTBANNERSTART,NOT_VESSEL,,,,high,,ROB GRADE + tracking-pixel/banner gibberish; extraction noise
+ANODE AMP,NOT_VESSEL,,,,high,,Cathodic-protection measurement term; not a vessel
+MARAN MANAGEMENT,NOT_VESSEL,,,,high,,Refers to Maran management company; not a vessel
+CHIEF ENGINEER,NOT_VESSEL,,,,high,,Crew job title; not a vessel
+MARAN WAREHOUSE,NOT_VESSEL,,,,high,,Refers to Maran warehouse; not a vessel
+ORPHEUS DELIVERED,NOT_VESSEL,,,,high,,Truncated reference to MARAN ORPHEUS (in register) + verb; extraction noise
+SEAVISION WHICH,NOT_VESSEL,,,,high,,SeaVision is a software system; sentence fragment with trailing 'which'
+NMARAN CAPRICORN ASF,NOT_VESSEL,,,,high,,Concatenation noise around MARAN CAPRICORN (already in register); extraction artifact
+DMA MET THE,NOT_VESSEL,,,,high,,DMA = Distillate Marine A (fuel grade); sentence fragment; not a vessel
