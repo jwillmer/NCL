@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "lint": "eslint src --ext ts,tsx"
+    "lint": "eslint src --ext ts,tsx",
+    "test": "vitest"
   },
   "dependencies": {
     "@ai-sdk/react": "~3.0.118",
@@ -50,6 +51,7 @@
     "tailwindcss": "^3.4.6",
     "typescript": "^5.5.3",
     "vite": "^6.0.0",
-    "vite-plugin-pwa": "^1.2.0"
+    "vite-plugin-pwa": "^1.2.0",
+    "vitest": "^4.1.5"
   }
 }

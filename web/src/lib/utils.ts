@@ -1,6 +1,8 @@
 ﻿import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 
+import type { CitationsFrame } from "@/types/rag";
+
 /**
  * Merge Tailwind CSS classes with clsx.
  */
@@ -110,6 +112,73 @@ export function transformRawCitations(content: string): string {
     if (!indexMap.has(lower)) indexMap.set(lower, index++);
     return `<cite id="${lower}">${indexMap.get(lower)}</cite>`;
   });
+}
+
+/**
+ * Swap raw `[C:chunk_id]` markers for fully-attributed `<cite>` tags using
+ * the v1 `data-citations` wire payload. Mirrors the backend's
+ * `CitationProcessor.replace_citation_markers` — attribute set must stay
+ * aligned with `src/mtss/rag/citation_processor.py`.
+ *
+ * Behaviour:
+ * - `payload` null/undefined → fall back to {@link transformRawCitations}.
+ * - Markers for `chunk_id` in `payload.invalid_chunk_ids` are stripped.
+ * - Markers for `chunk_id` in `payload.citations` become `<cite>` tags.
+ * - Markers not in either set are left untouched (a subsequent re-render
+ *   that calls `transformRawCitations` will pick them up as placeholders).
+ */
+export function applyCitationsToMarkdown(
+  content: string,
+  payload: CitationsFrame | null | undefined,
+): string {
+  if (!payload) return transformRawCitations(content);
+
+  const invalidSet = new Set(payload.invalid_chunk_ids ?? []);
+  const byId = new Map<string, CitationsFrame["citations"][number]>();
+  for (const c of payload.citations ?? []) {
+    byId.set(c.chunk_id, c);
+  }
+
+  const citationPattern = /\[C:([a-f0-9]+)\]/gi;
+  let result = content.replace(citationPattern, (match, chunkId: string) => {
+    const lower = chunkId.toLowerCase();
+    if (invalidSet.has(chunkId) || invalidSet.has(lower)) {
+      // Strip the marker entirely; whitespace cleanup below collapses
+      // any double-space or space-before-newline left behind.
+      return "";
+    }
+    const cite = byId.get(chunkId) ?? byId.get(lower);
+    if (!cite) {
+      // Unknown chunk_id: leave the raw marker so a later
+      // transformRawCitations call can render a placeholder cite.
+      return match;
+    }
+    return buildCiteTag(cite);
+  });
+
+  // Whitespace cleanup for stripped markers — collapse runs of spaces and
+  // drop spaces immediately before a newline. Applied unconditionally;
+  // it's a no-op when nothing was stripped.
+  result = result.replace(/[ \t]+\n/g, "\n").replace(/ {2,}/g, " ");
+  return result;
+}
+
+function buildCiteTag(c: CitationsFrame["citations"][number]): string {
+  const attrs: string[] = [`id="${c.chunk_id}"`];
+  if (c.source_id) attrs.push(`doc="${c.source_id}"`);
+  if (c.source_title) {
+    const safeTitle = c.source_title.replace(/"/g, "&quot;");
+    attrs.push(`title="${safeTitle}"`);
+  }
+  if (c.page !== null && c.page !== undefined) attrs.push(`page="${c.page}"`);
+  if (c.lines) attrs.push(`lines="${c.lines[0]}-${c.lines[1]}"`);
+  if (c.archive_download_uri) {
+    const dl = c.archive_download_uri.startsWith("/archive/")
+      ? c.archive_download_uri.slice("/archive/".length)
+      : c.archive_download_uri;
+    attrs.push(`download="${dl}"`);
+  }
+  return `<cite ${attrs.join(" ")}>${c.index}</cite>`;
 }
 
 /**

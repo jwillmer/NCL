@@ -26,7 +26,8 @@ import {
   useCitationContext,
 } from "@/components/Sources";
 import { Button } from "@/components/ui";
-import { cn, transformRawCitations } from "@/lib/utils";
+import { cn, applyCitationsToMarkdown, transformRawCitations } from "@/lib/utils";
+import type { CitationsFrame } from "@/types/rag";
 import { initLangfuse, trackFeedback } from "@/lib/langfuse";
 import {
   Conversation,
@@ -163,13 +164,15 @@ function FilterDropdown({
 // Assistant Message (local subcomponent)
 // ============================================
 
-function AssistantMessage({ content, messageId, threadId, showFeedback, timestamp, durationMs }: {
+function AssistantMessage({ content, messageId, threadId, showFeedback, timestamp, durationMs, citationsPayload, fallbackToRaw }: {
   content: string;
   messageId: string;
   threadId: string;
   showFeedback: boolean;
   timestamp?: number;
   durationMs?: number;
+  citationsPayload?: CitationsFrame | null;
+  fallbackToRaw?: boolean;
 }) {
   const { onViewCitation } = useCitationContext();
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
@@ -187,6 +190,17 @@ function AssistantMessage({ content, messageId, threadId, showFeedback, timestam
     trackFeedback(threadId, messageId, value);
   };
 
+  // Citation rendering precedence:
+  //   1. Real payload from data-citations frame → fully-attributed <cite>s.
+  //   2. Fallback (3s timer fired without a frame) → minimal-tag path.
+  //   3. Otherwise leave [C:...] markers in place; ReactMarkdown renders
+  //      them as plain text until a payload or fallback resolves.
+  const rendered = citationsPayload
+    ? applyCitationsToMarkdown(content, citationsPayload)
+    : fallbackToRaw
+      ? transformRawCitations(content)
+      : content;
+
   return (
     <MessageCitationProvider onViewCitation={onViewCitation}>
       <div>
@@ -196,7 +210,7 @@ function AssistantMessage({ content, messageId, threadId, showFeedback, timestam
             rehypePlugins={[rehypeRaw as any, [rehypeSanitize, sanitizeSchema]]}
             components={sourceTagRenderers}
           >
-            {transformRawCitations(content)}
+            {rendered}
           </ReactMarkdown>
         </div>
         {showFeedback && content && (
@@ -311,12 +325,55 @@ function ChatPageContent() {
   const streamStartedAtRef = useRef<number | null>(null);
   const [lastAssistantDurationMs, setLastAssistantDurationMs] = useState<Record<string, number>>({});
 
+  // Async-citation streaming state. The backend emits a `data-citations`
+  // SSE frame after the LLM stream finishes; we cache it per message id and
+  // re-render the assistant bubble with fully-attributed <cite> tags. If
+  // the frame never arrives within 3s of `onFinish`, we flip the message
+  // into the `transformRawCitations` fallback path so the user still sees
+  // source cards. Setters from useState are referentially stable, so
+  // closures inside `useChat` callbacks can read these via the latest
+  // `messages` array at call time without re-creating the hook.
+  const [citationsByMessageId, setCitationsByMessageId] = useState<Record<string, CitationsFrame>>({});
+  const [citationsFallbackIds, setCitationsFallbackIds] = useState<Set<string>>(() => new Set());
+  // Latest snapshot of `citationsByMessageId` for the onFinish closure to
+  // check synchronously without forcing the useChat hook to re-create.
+  const citationsByMessageIdRef = useRef(citationsByMessageId);
+  useEffect(() => { citationsByMessageIdRef.current = citationsByMessageId; }, [citationsByMessageId]);
+  const fallbackTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  useEffect(() => {
+    return () => {
+      for (const t of Object.values(fallbackTimersRef.current)) clearTimeout(t);
+      fallbackTimersRef.current = {};
+    };
+  }, []);
+
+  // Ref to the latest `messages` array so `onData` can resolve the current
+  // streaming assistant id without re-creating the useChat hook.
+  const messagesRef = useRef<UIMessage[]>([]);
+
   const { messages, sendMessage, status, setMessages, error: chatError } = useChat({
     id: threadId,
     transport,
     onData: (part) => {
       if (part.type === "data-progress" && typeof part.data === "string") {
         setSearchProgress(part.data);
+        return;
+      }
+      if (part.type === "data-citations" && part.data) {
+        // Resolve the assistant message id this frame attaches to. The
+        // backend emits this frame after all text-deltas have flushed, so
+        // the last message in `messages` is the assistant we just streamed.
+        const msgs = messagesRef.current;
+        const lastId = msgs[msgs.length - 1]?.id;
+        if (lastId) {
+          setCitationsByMessageId((prev) => ({ ...prev, [lastId]: part.data as CitationsFrame }));
+          // Cancel any pending fallback timer — the real payload won.
+          const t = fallbackTimersRef.current[lastId];
+          if (t) {
+            clearTimeout(t);
+            delete fallbackTimersRef.current[lastId];
+          }
+        }
         return;
       }
       if (part.type === "data-filter" && part.data) {
@@ -348,6 +405,26 @@ function ChatPageContent() {
         setLastAssistantDurationMs((prev) => ({ ...prev, [message.id]: durationMs }));
         setMessageTimestamps((prev) => ({ ...prev, [message.id]: Date.now() }));
       }
+      // 3-second fallback: if no `data-citations` frame has been received
+      // for this message, flip it into the `transformRawCitations` minimal
+      // path so [C:...] markers render as source cards regardless.
+      if (message?.id) {
+        const id = message.id;
+        if (citationsByMessageIdRef.current[id]) return;
+        // Clear any prior pending timer for the same id (defensive).
+        const existing = fallbackTimersRef.current[id];
+        if (existing) clearTimeout(existing);
+        fallbackTimersRef.current[id] = setTimeout(() => {
+          delete fallbackTimersRef.current[id];
+          if (citationsByMessageIdRef.current[id]) return;
+          setCitationsFallbackIds((prev) => {
+            if (prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.add(id);
+            return next;
+          });
+        }, 3000);
+      }
     },
     onError: () => {
       setSearchProgress("");
@@ -360,6 +437,10 @@ function ChatPageContent() {
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  // Keep `messagesRef` aligned with the live `messages` array so `onData`
+  // can resolve the current assistant id without re-binding the hook.
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   // Stamp stream-start the moment the hook reports "submitted" so onFinish
   // can compute a real duration. Guarded to the first transition per stream.
@@ -574,6 +655,8 @@ function ChatPageContent() {
                       showFeedback={!isCurrentStreaming}
                       timestamp={timestamp}
                       durationMs={durationMs}
+                      citationsPayload={citationsByMessageId[msg.id] ?? null}
+                      fallbackToRaw={citationsFallbackIds.has(msg.id)}
                     />
                   ) : (
                     <p className="whitespace-pre-wrap leading-relaxed">{text}</p>

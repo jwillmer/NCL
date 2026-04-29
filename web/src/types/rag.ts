@@ -53,3 +53,31 @@ export interface CiteProps {
   download?: string;
   children?: React.ReactNode;
 }
+
+/**
+ * Single citation entry on the wire (v1 `data-citations` SSE frame).
+ * Mirrors `CitationProcessor.serialize_citations_payload` in
+ * `src/mtss/rag/citation_processor.py` — keep the field set in sync.
+ */
+export interface CitationPayload {
+  chunk_id: string;
+  index: number;
+  source_id: string | null;
+  source_title: string | null;
+  page: number | null;
+  lines: [number, number] | null;
+  archive_browse_uri: string | null;
+  archive_download_uri: string | null;
+  archive_verified: boolean;
+}
+
+/**
+ * Wire shape for the `data-citations` SSE frame emitted after the LLM
+ * stream completes. Consumed by `applyCitationsToMarkdown` in `lib/utils.ts`
+ * to swap raw `[C:chunk_id]` markers for fully-attributed `<cite>` tags.
+ */
+export interface CitationsFrame {
+  version: 1;
+  citations: CitationPayload[];
+  invalid_chunk_ids: string[];
+}
