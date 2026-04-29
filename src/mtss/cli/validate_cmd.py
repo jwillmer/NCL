@@ -1509,7 +1509,10 @@ def _check_unknown_vessel_mentions(
     register is curated separately from ingest — an unknown mention is a
     signal, not a data-integrity defect.
     """
-    from ..processing.vessel_mention_extractor import extract_vessel_mentions
+    from ..processing.vessel_mention_extractor import (
+        extract_vessel_mentions,
+        filter_canonical_concats,
+    )
 
     issues: List[str] = []
     warnings: List[str] = []
@@ -1519,6 +1522,12 @@ def _check_unknown_vessel_mentions(
             "skipping unknown-mention check"
         )
         return issues, warnings
+
+    # Pre-compute the 2-token canonical names once. Used by
+    # filter_canonical_concats to drop mentions like "MARAN APOLLO DURING"
+    # (the first two tokens are a known vessel; the trailing token is
+    # sentence-continuation noise from the M.[TV] regex).
+    canonical_two_token = {n for n in canonical_names if len(n.split()) == 2}
 
     doc_by_id = {d.get("id"): d for d in docs if d.get("id")}
 
@@ -1542,7 +1551,10 @@ def _check_unknown_vessel_mentions(
         return folder or "?", source_id or "?"
 
     def _scan(text: str, doc: Dict[str, Any]) -> None:
-        for mention in extract_vessel_mentions(text):
+        mentions = filter_canonical_concats(
+            extract_vessel_mentions(text), canonical_two_token
+        )
+        for mention in mentions:
             if mention in canonical_names:
                 continue
             entry = unknown.setdefault(

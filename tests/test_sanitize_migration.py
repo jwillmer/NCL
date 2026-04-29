@@ -654,3 +654,92 @@ class TestLlamaParseImageStripping:
         assert "image_1.png" not in result
         assert "image_2.png" not in result
         assert "a" in result and "b" in result and "c" in result
+
+
+# ---------------------------------------------------------------------------
+# Vessel mention extractor — noise/blocklist regression tests (#36)
+# ---------------------------------------------------------------------------
+
+
+class TestVesselMentionExtractor:
+    """Lock the false-positive suppression in vessel_mention_extractor.
+
+    Backed by the corpus in ``reports/vessel-mismatch/extractor_noise.txt``
+    — each entry there represents a confirmed false positive that this
+    module has to suppress at extract time.
+    """
+
+    def _extract(self, text: str):
+        from mtss.processing.vessel_mention_extractor import extract_vessel_mentions
+        return extract_vessel_mentions(text)
+
+    def _filter(self, mentions, canonical_two_token):
+        from mtss.processing.vessel_mention_extractor import filter_canonical_concats
+        return filter_canonical_concats(mentions, canonical_two_token)
+
+    @pytest.mark.unit
+    def test_biz_phrase_mt_total_lng_consumption_suppressed(self):
+        # "MT TOTAL LNG CONSUMPTION" — three blocklist tokens in a row.
+        assert self._extract("MT TOTAL LNG CONSUMPTION as per noon") == set()
+
+    @pytest.mark.unit
+    def test_biz_phrase_mt_best_regards_suppressed(self):
+        # Email sign-off; the M.[TV] regex used to grab this.
+        assert self._extract("Thanks. MT BEST REGARDS, Captain") == set()
+
+    @pytest.mark.unit
+    def test_biz_phrase_mv_port_lng_tank_suppressed(self):
+        assert self._extract("MV PORT LNG TANK readings nominal") == set()
+
+    @pytest.mark.unit
+    def test_hardcoded_noise_maran_has_suppressed(self):
+        assert self._extract("MARAN HAS confirmed the schedule") == set()
+
+    @pytest.mark.unit
+    def test_hardcoded_noise_maran_team_suppressed(self):
+        assert self._extract("MARAN TEAM will follow up") == set()
+
+    @pytest.mark.unit
+    def test_hardcoded_noise_maran_vessels_suppressed(self):
+        assert self._extract("MARAN VESSELS in port today") == set()
+
+    @pytest.mark.unit
+    def test_real_vessel_still_extracted(self):
+        # Sanity: tightening must not silence real vessels.
+        assert "MARAN APOLLO" in self._extract("Inspection on MARAN APOLLO")
+
+    @pytest.mark.unit
+    def test_real_typo_still_extracted(self):
+        # "MARAN HERCUES" (sic) — actionable typo must surface.
+        assert "MARAN HERCUES" in self._extract("Update MARAN HERCUES schedule")
+
+    @pytest.mark.unit
+    def test_filter_canonical_concats_drops_apollo_during(self):
+        canonical_two_token = {"MARAN APOLLO"}
+        result = self._filter({"MARAN APOLLO DURING"}, canonical_two_token)
+        assert result == set()
+
+    @pytest.mark.unit
+    def test_filter_canonical_concats_drops_helen_from(self):
+        canonical_two_token = {"MARAN HELEN"}
+        result = self._filter(
+            {"MARAN HELEN FROM", "MARAN HELEN"}, canonical_two_token
+        )
+        # The 3-token concat is dropped; the bare 2-token canonical name passes.
+        assert result == {"MARAN HELEN"}
+
+    @pytest.mark.unit
+    def test_filter_canonical_concats_keeps_unrelated_3_token(self):
+        # When the first two tokens aren't canonical, leave the mention alone
+        # — it might be a real 3-token vessel (Antonis I. Angelicoussis).
+        canonical_two_token = {"MARAN APOLLO"}
+        result = self._filter(
+            {"ANTONIS L. ANGELICOUSSIS"}, canonical_two_token
+        )
+        assert result == {"ANTONIS L. ANGELICOUSSIS"}
+
+    @pytest.mark.unit
+    def test_filter_canonical_concats_empty_register_passthrough(self):
+        # No canonical names → no filtering → input set returned as-is.
+        out = self._filter({"MARAN APOLLO DURING"}, set())
+        assert out == {"MARAN APOLLO DURING"}

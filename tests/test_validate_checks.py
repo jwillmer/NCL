@@ -1311,3 +1311,67 @@ def test_check_unknown_vessel_mentions_attributes_to_source_email():
     # First-seen attribution should point at the source email by name.
     joined = "\n".join(warnings)
     assert "incident-2024-08.eml" in joined
+
+
+@pytest.mark.unit
+def test_check_unknown_vessel_mentions_suppresses_canonical_concat():
+    """A canonical 2-token vessel followed by a sentence-continuation token
+    (e.g. ``MV MARAN APOLLO DURING ITS VOYAGE``) must NOT surface as unknown.
+
+    The M.[TV] regex captures up to 3 tokens after MV/MT, so it would
+    otherwise produce ``MARAN APOLLO DURING`` as a candidate — the
+    canonical-prefix-concat filter drops it.
+    """
+    canonical = {"MARAN APOLLO"}
+    email = _make_doc(doc_type="email")
+    chunk = _make_chunk(
+        email["id"],
+        content="MV MARAN APOLLO DURING ITS VOYAGE reported clean tanks.",
+    )
+    issues, warnings = _check_unknown_vessel_mentions(
+        [chunk], [email], canonical, {email["archive_path"]: email["source_id"]},
+    )
+    assert issues == []
+    joined = "\n".join(warnings)
+    assert "MARAN APOLLO DURING" not in joined
+    assert "MARAN APOLLO" not in joined  # canonical, never warned about
+
+
+@pytest.mark.unit
+def test_check_unknown_vessel_mentions_suppresses_biz_phrase():
+    """``MT TOTAL LNG CONSUMPTION`` is bunkering boilerplate, not a vessel.
+
+    The M.[TV] regex captures the trailing tokens, but post-filtering on
+    the BIZ phrase blocklist (``TOTAL``, ``LNG``, ``CONSUMPTION``) drops it.
+    """
+    canonical = {"MARAN APOLLO"}  # Non-empty so the check actually runs.
+    email = _make_doc(doc_type="email")
+    chunk = _make_chunk(
+        email["id"],
+        content="MT TOTAL LNG CONSUMPTION as per noon report.",
+    )
+    issues, warnings = _check_unknown_vessel_mentions(
+        [chunk], [email], canonical, {email["archive_path"]: email["source_id"]},
+    )
+    assert issues == []
+    joined = "\n".join(warnings)
+    assert "TOTAL LNG CONSUMPTION" not in joined
+
+
+@pytest.mark.unit
+def test_check_unknown_vessel_mentions_real_typo_still_surfaces():
+    """Tightening must not silence real typos — ``MARAN HERCUES`` (sic)
+    is a legitimate ``MARAN HERCULES`` typo and must keep surfacing.
+    """
+    canonical = {"MARAN HERCULES"}
+    email = _make_doc(doc_type="email")
+    chunk = _make_chunk(
+        email["id"],
+        content="Update on MARAN HERCUES departure scheduling.",
+    )
+    issues, warnings = _check_unknown_vessel_mentions(
+        [chunk], [email], canonical, {email["archive_path"]: email["source_id"]},
+    )
+    assert issues == []
+    joined = "\n".join(warnings)
+    assert "MARAN HERCUES" in joined
