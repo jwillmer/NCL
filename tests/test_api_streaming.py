@@ -211,6 +211,72 @@ class TestUIMessageStreamWireFormat:
         assert [d["delta"] for d in deltas] == ["ok"]
 
     @pytest.mark.asyncio
+    async def test_emit_citations_translates_to_data_citations(
+        self, app, client, auth_headers
+    ):
+        """emit_citations custom event → data-citations SSE frame.
+
+        Async-citations path: chat_node dispatches `emit_citations` after
+        validation, streaming.py forwards it to the v6 client as a
+        ``data-citations`` part for the frontend to swap raw [C:xxx]
+        markers for <cite> tags.
+        """
+        payload = {
+            "version": 1,
+            "citations": [
+                {
+                    "chunk_id": "aabbccddeeff",
+                    "index": 1,
+                    "source_id": "src001",
+                    "source_title": "Inspection Report",
+                    "page": 3,
+                    "lines": None,
+                    "archive_browse_uri": "/archive/abc/index.md",
+                    "archive_download_uri": "/archive/abc/file.pdf",
+                    "archive_verified": True,
+                }
+            ],
+            "invalid_chunk_ids": ["deadbeefdead"],
+        }
+
+        events = [
+            {
+                "event": "on_chat_model_stream",
+                "data": {"chunk": SimpleNamespace(content="The hull is OK [C:aabbccddeeff].")},
+            },
+            {
+                "event": "on_custom_event",
+                "name": "emit_citations",
+                "data": payload,
+            },
+        ]
+        app.state.agent_graph = _stub_graph(events)
+
+        response = await client.post(
+            "/api/agent",
+            headers=auth_headers,
+            json={
+                "messages": [{"role": "user", "parts": [{"type": "text", "text": "q"}]}],
+                "thread_id": "123e4567-e89b-12d3-a456-426614174000",
+            },
+        )
+        assert response.status_code == 200
+
+        parsed = _parse_sse(response.text)
+        types = [p.get("type") if isinstance(p, dict) else p for p in parsed]
+        # Citations frame must arrive after the last delta and before finish.
+        cite_idx = types.index("data-citations")
+        finish_idx = types.index("finish")
+        assert cite_idx < finish_idx
+        last_delta_idx = max(
+            i for i, t in enumerate(types) if t == "text-delta"
+        )
+        assert last_delta_idx < cite_idx
+
+        cite_part = parsed[cite_idx]
+        assert cite_part["data"] == payload
+
+    @pytest.mark.asyncio
     async def test_no_tokens_skips_text_bracket(self, app, client, auth_headers):
         """If the graph never emits a token, we must NOT bracket with text-start/end."""
         app.state.agent_graph = _stub_graph([])

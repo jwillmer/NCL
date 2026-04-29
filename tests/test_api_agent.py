@@ -9,7 +9,7 @@ served from the cached map after a single cache load.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -251,3 +251,210 @@ class TestEmitFilterUpdate:
             "vessel_type": None,
             "vessel_class": None,
         }
+
+
+class TestEmitCitations:
+    """``emit_citations`` dispatches the LangGraph custom event that
+    streaming.py converts into a `data-citations` part. Verifies the
+    wire shape v1: {version, citations, invalid_chunk_ids}."""
+
+    @pytest.mark.asyncio
+    async def test_dispatches_expected_payload(self):
+        payload = {
+            "version": 1,
+            "citations": [{"chunk_id": "aabbccddeeff", "index": 1}],
+            "invalid_chunk_ids": ["deadbeefdead"],
+        }
+        with patch.object(agent_module, "adispatch_custom_event") as dispatch:
+            dispatch.side_effect = AsyncMock()
+            await agent_module.emit_citations(
+                config={"callbacks": []}, payload=payload
+            )
+        dispatch.assert_called_once()
+        kwargs = dispatch.call_args.kwargs
+        assert kwargs["name"] == "emit_citations"
+        assert kwargs["data"] == payload
+
+
+class TestChatNodeCitationPaths:
+    """chat_node's final branch — after the LLM returns plain text and
+    citation_map is present from search_node — picks one of two paths
+    based on settings.async_citations_enabled.
+
+    Sync (default): full substitution to <cite> tags before returning.
+    Async (flag on): keep valid [C:xxx] markers; emit data-citations frame
+    so the frontend patches the markers post-stream."""
+
+    @staticmethod
+    def _build_state(response_content: str, citation_map_data):
+        from langchain_core.messages import HumanMessage
+
+        return {
+            "messages": [HumanMessage(content="why?")],
+            "search_progress": "",
+            "selected_vessel_id": None,
+            "selected_vessel_type": None,
+            "selected_vessel_class": None,
+            "citation_map": citation_map_data,
+            "filter_pending_search": False,
+        }
+
+    @staticmethod
+    def _make_retrieval_result(chunk_id: str):
+        from mtss.models.chunk import RetrievalResult
+
+        return RetrievalResult(
+            text="Sample text",
+            score=0.9,
+            chunk_id=chunk_id,
+            doc_id="doc001",
+            source_id="src001",
+            source_title="Inspection Report",
+            section_path=[],
+            page_number=3,
+            archive_browse_uri="/archive/abc/index.md",
+            archive_download_uri="/archive/abc/file.pdf",
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_path_keeps_valid_markers_and_emits_citations(
+        self, monkeypatch
+    ):
+        """Flag on: AIMessage keeps valid [C:xxx], invalid stripped,
+        emit_citations dispatched once with the v1 payload shape."""
+        from langchain_core.messages import AIMessage
+
+        valid_id = "aabbccddeeff"
+        invalid_id = "deadbeefdead"
+        valid_result = self._make_retrieval_result(valid_id)
+        citation_map_data = {valid_id: valid_result.to_dict()}
+
+        # LLM produces text with one valid + one invalid citation marker.
+        llm_text = (
+            f"The hull is OK [C:{valid_id}]. "
+            f"Some other detail [C:{invalid_id}]."
+        )
+
+        async def fake_call_chat_llm(**kwargs):
+            return AIMessage(content=llm_text)
+
+        monkeypatch.setattr(agent_module, "_call_chat_llm", fake_call_chat_llm)
+
+        # Patch settings to enable async citations.
+        from mtss import config as config_module
+
+        cur_settings = config_module.get_settings()
+        # Pydantic settings are immutable by default; build a copy.
+        new_settings = cur_settings.model_copy(
+            update={"async_citations_enabled": True}
+        )
+        monkeypatch.setattr(agent_module, "get_settings", lambda: new_settings)
+
+        # Patch CitationProcessor archive verification: skip network HEAD.
+        # Also stub ArchiveStorage so the constructor doesn't need a live
+        # Supabase URL/key at test time.
+        from mtss.rag import citation_processor as cp_module
+
+        monkeypatch.setattr(cp_module, "ArchiveStorage", MagicMock)
+
+        async def fake_verify_async(self, uris):
+            return {u: True for u in uris}
+
+        monkeypatch.setattr(
+            cp_module.CitationProcessor,
+            "verify_archives_async",
+            fake_verify_async,
+        )
+
+        emitted_citations: list = []
+        emitted_state: list = []
+
+        async def fake_emit_citations(config, payload):
+            emitted_citations.append(payload)
+
+        async def fake_emit_state(config, state):
+            emitted_state.append(dict(state))
+
+        monkeypatch.setattr(agent_module, "emit_citations", fake_emit_citations)
+        monkeypatch.setattr(agent_module, "emit_state", fake_emit_state)
+
+        state = self._build_state(llm_text, citation_map_data)
+        cmd = await agent_module.chat_node(state, config={"callbacks": []})
+
+        # END-bound Command with the rewired AIMessage.
+        out_msg = cmd.update["messages"][0]
+        assert isinstance(out_msg, AIMessage)
+        # Valid marker preserved verbatim — frontend patches it post-stream.
+        assert f"[C:{valid_id}]" in out_msg.content
+        # Invalid marker stripped.
+        assert f"[C:{invalid_id}]" not in out_msg.content
+        # No <cite> tags in async path; substitution happens client-side.
+        assert "<cite" not in out_msg.content
+
+        # emit_citations dispatched exactly once with the v1 wire shape.
+        assert len(emitted_citations) == 1
+        payload = emitted_citations[0]
+        assert payload["version"] == 1
+        assert isinstance(payload["citations"], list)
+        assert len(payload["citations"]) == 1
+        assert payload["citations"][0]["chunk_id"] == valid_id
+        assert payload["invalid_chunk_ids"] == [invalid_id]
+
+    @pytest.mark.asyncio
+    async def test_sync_path_substitutes_cite_tags(self, monkeypatch):
+        """Flag off (default): full substitution to <cite> tags;
+        no emit_citations dispatched. Backward-compatible behaviour."""
+        from langchain_core.messages import AIMessage
+
+        valid_id = "aabbccddeeff"
+        valid_result = self._make_retrieval_result(valid_id)
+        citation_map_data = {valid_id: valid_result.to_dict()}
+
+        llm_text = f"The hull is OK [C:{valid_id}]."
+
+        async def fake_call_chat_llm(**kwargs):
+            return AIMessage(content=llm_text)
+
+        monkeypatch.setattr(agent_module, "_call_chat_llm", fake_call_chat_llm)
+
+        from mtss import config as config_module
+
+        cur_settings = config_module.get_settings()
+        new_settings = cur_settings.model_copy(
+            update={"async_citations_enabled": False}
+        )
+        monkeypatch.setattr(agent_module, "get_settings", lambda: new_settings)
+
+        from mtss.rag import citation_processor as cp_module
+
+        # Stub ArchiveStorage to avoid needing live Supabase credentials.
+        monkeypatch.setattr(cp_module, "ArchiveStorage", MagicMock)
+        # Sync path uses verify_archive_exists — patch storage.file_exists.
+        monkeypatch.setattr(
+            cp_module.CitationProcessor,
+            "verify_archive_exists",
+            lambda self, uri: True,
+        )
+
+        emitted_citations: list = []
+
+        async def fake_emit_citations(config, payload):
+            emitted_citations.append(payload)
+
+        async def fake_emit_state(config, state):
+            return None
+
+        monkeypatch.setattr(agent_module, "emit_citations", fake_emit_citations)
+        monkeypatch.setattr(agent_module, "emit_state", fake_emit_state)
+
+        state = self._build_state(llm_text, citation_map_data)
+        cmd = await agent_module.chat_node(state, config={"callbacks": []})
+
+        out_msg = cmd.update["messages"][0]
+        assert isinstance(out_msg, AIMessage)
+        # Sync path produces a fully-rendered <cite> tag.
+        assert f"[C:{valid_id}]" not in out_msg.content
+        assert "<cite" in out_msg.content
+        assert f'id="{valid_id}"' in out_msg.content
+        # No emit_citations dispatched in sync path.
+        assert emitted_citations == []

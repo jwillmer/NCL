@@ -227,6 +227,25 @@ async def emit_filter_update(
     )
 
 
+# Wire shape v1: {"version": 1, "citations": [...], "invalid_chunk_ids": [...]}
+async def emit_citations(config: RunnableConfig, payload: Dict[str, Any]) -> None:
+    """Dispatch the data-citations SSE frame after async citation validation.
+
+    streaming.py converts this to a `data-citations` part on the UI message
+    stream. The frontend uses the payload to swap raw `[C:chunk_id]` markers
+    in the AIMessage content for fully-rendered `<cite>` tags.
+    """
+    await adispatch_custom_event(
+        name="emit_citations",
+        data={
+            "version": payload["version"],
+            "citations": payload["citations"],
+            "invalid_chunk_ids": payload["invalid_chunk_ids"],
+        },
+        config=config,
+    )
+
+
 def _load_system_prompt() -> str:
     """Load system prompt from file."""
     prompt_path = Path(__file__).parent / "prompts" / "system.md"
@@ -952,15 +971,37 @@ async def chat_node(
                 k: _deserialize_retrieval_result(v) for k, v in citation_map_data.items()
             }
             citation_processor = CitationProcessor()
-            async with record_step("validate_ms"):
-                validation = citation_processor.process_response(
-                    response.content, citation_map
+            if settings.async_citations_enabled:
+                # Async path: keep valid [C:xxx] markers in content; let the
+                # frontend patch in <cite> tags after receiving the
+                # data-citations SSE frame. Removes the synchronous
+                # archive-HEAD tail latency (~300-1000 ms) from the user-
+                # visible text-end frame.
+                async with record_step("validate_ms"):
+                    validation = await citation_processor.process_response_async(
+                        response.content, citation_map
+                    )
+                cleaned_content = CitationProcessor._clean_response_text(
+                    response.content, validation.invalid_citations
                 )
-                formatted = citation_processor.replace_citation_markers(
-                    validation.response, validation.citations
+                payload = CitationProcessor.serialize_citations_payload(validation)
+                logger.debug(
+                    "async citations: %d valid, %d invalid",
+                    len(payload["citations"]),
+                    len(payload["invalid_chunk_ids"]),
                 )
-            # Create new message with processed citations
-            response = AIMessage(content=formatted)
+                await emit_citations(config, payload)
+                response = AIMessage(content=cleaned_content)
+            else:
+                async with record_step("validate_ms"):
+                    validation = citation_processor.process_response(
+                        response.content, citation_map
+                    )
+                    formatted = citation_processor.replace_citation_markers(
+                        validation.response, validation.citations
+                    )
+                # Create new message with processed citations
+                response = AIMessage(content=formatted)
         except Exception as e:
             logger.error("Citation processing failed: %s", str(e), exc_info=True)
             # Continue with original response on error

@@ -215,6 +215,9 @@ async def _stream_agent(
             elif kind == "on_custom_event" and event["name"] == "emit_filter_update":
                 yield _sse({"type": "data-filter", "data": event["data"]})
 
+            elif kind == "on_custom_event" and event["name"] == "emit_citations":
+                yield _sse({"type": "data-citations", "data": event["data"]})
+
         if text_started:
             yield _sse({"type": "text-end", "id": text_id})
         yield _sse({"type": "finish"})
