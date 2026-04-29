@@ -1492,6 +1492,126 @@ def _check_stale_processing_entries(conn) -> Tuple[List[str], List[str]]:
     return issues, warnings
 
 
+def _check_unknown_vessel_mentions(
+    chunks: List[Dict[str, Any]],
+    docs: List[Dict[str, Any]],
+    canonical_names: Set[str],
+    folder_to_email: Dict[str, str],
+    *,
+    sample_limit: int = 15,
+) -> Tuple[List[str], List[str]]:
+    """Check #36: surface vessel-like names in chunk text/titles that don't
+    resolve to the canonical vessel register (data/vessel-list.csv on the
+    local ingest, or the ``vessels`` table on Supabase).
+
+    Read-only. Helps the user spot typos and genuinely-new vessels worth
+    adding to the register. Stays a *warning* (not an issue) because the
+    register is curated separately from ingest — an unknown mention is a
+    signal, not a data-integrity defect.
+    """
+    from ..processing.vessel_mention_extractor import extract_vessel_mentions
+
+    issues: List[str] = []
+    warnings: List[str] = []
+    if not canonical_names:
+        warnings.append(
+            "vessel register is empty (no data/vessel-list.csv?) — "
+            "skipping unknown-mention check"
+        )
+        return issues, warnings
+
+    doc_by_id = {d.get("id"): d for d in docs if d.get("id")}
+
+    # Aggregate {mention -> first attribution + count}. First-seen wins so the
+    # report points at one concrete email; total count tells the user how
+    # widespread the mention is.
+    unknown: Dict[str, Dict[str, Any]] = {}
+
+    def _attribute(doc: Dict[str, Any]) -> Tuple[str, str]:
+        """Return (folder_id, source_id) for a chunk's owning doc tree."""
+        root_id = doc.get("root_id") or doc.get("id")
+        root = doc_by_id.get(root_id, doc)
+        doc_id = root.get("doc_id") or ""
+        folder = root.get("archive_path") or (
+            compute_folder_id(doc_id) if doc_id else ""
+        )
+        source_id = (
+            root.get("source_id") or root.get("file_name")
+            or folder_to_email.get(folder, "?")
+        )
+        return folder or "?", source_id or "?"
+
+    def _scan(text: str, doc: Dict[str, Any]) -> None:
+        for mention in extract_vessel_mentions(text):
+            if mention in canonical_names:
+                continue
+            entry = unknown.setdefault(
+                mention,
+                {"count": 0, "folder": None, "source_id": None},
+            )
+            entry["count"] += 1
+            if entry["folder"] is None:
+                folder, source_id = _attribute(doc)
+                entry["folder"] = folder
+                entry["source_id"] = source_id
+
+    # Document-level scan: titles/file names/source_titles are short and
+    # high-signal — many vessel names appear in subjects but nowhere else.
+    for d in docs:
+        for field in ("title", "source_title", "file_name"):
+            value = d.get(field)
+            if value:
+                _scan(str(value), d)
+
+    # Chunk-level scan over chunk content. source_title is repeated across
+    # every chunk of a doc, so doc-level loop above already covers it.
+    for c in chunks:
+        body = c.get("content")
+        if not body:
+            continue
+        owning_doc = doc_by_id.get(c.get("document_id")) or {}
+        _scan(str(body), owning_doc)
+
+    if not unknown:
+        return issues, warnings
+
+    total_mentions = sum(e["count"] for e in unknown.values())
+    warnings.append(
+        f"{len(unknown)} vessel-like name(s) in content/titles not found in "
+        f"vessel register ({total_mentions} occurrence(s) — likely typos or "
+        "vessels missing from data/vessel-list.csv)"
+    )
+    # Show the most-frequent unknown mentions first; aids triage.
+    ranked = sorted(unknown.items(), key=lambda kv: kv[1]["count"], reverse=True)
+    for mention, info in ranked[:sample_limit]:
+        warnings.append(
+            f"    {mention!r} (×{info['count']}): "
+            f"{info['source_id']}  [{info['folder']}]"
+        )
+    if len(ranked) > sample_limit:
+        warnings.append(f"    ... and {len(ranked) - sample_limit} more")
+    return issues, warnings
+
+
+def _load_canonical_vessel_names() -> Set[str]:
+    """Load canonical names + aliases from the vessel CSV.
+
+    Local-only: CSV-minted UUIDs drift per load (see
+    src/mtss/storage/vessel_retag.py docstring), but the *names + aliases*
+    are stable, which is exactly what the unknown-mention check needs.
+    """
+    from ..models.vessel import load_vessels_from_csv
+
+    names: Set[str] = set()
+    for v in load_vessels_from_csv():
+        if v.name:
+            names.add(v.name.strip().upper())
+        for alias in v.aliases or []:
+            if alias and alias.strip():
+                names.add(alias.strip().upper())
+    return names
+
+
 def _run_ingest_validation(output_dir: Path, verbose: bool, *, check_storage: bool = False):
     if not output_dir.exists():
         console.print(f"[red]Output directory not found: {output_dir}[/red]")
@@ -1668,6 +1788,18 @@ def _run_ingest_validation_with_conn(
     if check_storage:
         _run(35, "remote_archive_uris",
              _check_remote_archive_uris(docs, chunks, verbose))
+
+    # Check #36: vessel-mention sanity. Surfaces vessel-like names in chunk
+    # content/titles that don't match any canonical name or alias from the
+    # CSV register — typos and missing-from-register vessels both show up.
+    canonical_vessel_names = _load_canonical_vessel_names()
+    folder_to_email = build_folder_to_email_map(docs)
+    _run(
+        36, "unknown_vessel_mentions",
+        _check_unknown_vessel_mentions(
+            chunks, docs, canonical_vessel_names, folder_to_email,
+        ),
+    )
 
     # === Display results ===
     summary = Table(title="Ingest Validation Summary")

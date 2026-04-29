@@ -54,6 +54,7 @@ from mtss.cli.validate_cmd import (
     _check_topic_count_accuracy,
     _check_topic_health,
     _check_trailing_dot_filenames,
+    _check_unknown_vessel_mentions,
 )
 
 
@@ -1251,3 +1252,62 @@ def test_check_stale_processing_entries_clean(tmp_path):
         assert _check_stale_processing_entries(conn) == ([], [])
     finally:
         conn.close()
+
+
+# --- Check 36: unknown vessel mentions --------------------------------------
+
+
+@pytest.mark.unit
+def test_check_unknown_vessel_mentions_flags_typo():
+    canonical = {"MARAN CANOPUS", "MARAN APOLLO"}
+    email = _make_doc(doc_type="email")
+    chunk = _make_chunk(
+        email["id"],
+        content="Update on MARAN CANNOPUS arrival; MARAN APOLLO already departed.",
+    )
+    issues, warnings = _check_unknown_vessel_mentions(
+        [chunk], [email], canonical, {email["archive_path"]: email["source_id"]},
+    )
+    assert issues == []
+    # The typo "MARAN CANNOPUS" should be surfaced; the valid "MARAN APOLLO" should not.
+    joined = "\n".join(warnings)
+    assert "MARAN CANNOPUS" in joined
+    assert "MARAN APOLLO" not in joined
+
+
+@pytest.mark.unit
+def test_check_unknown_vessel_mentions_clean():
+    canonical = {"MARAN CANOPUS"}
+    email = _make_doc(doc_type="email")
+    chunk = _make_chunk(email["id"], content="Routine status update for MARAN CANOPUS.")
+    assert _check_unknown_vessel_mentions(
+        [chunk], [email], canonical, {},
+    ) == ([], [])
+
+
+@pytest.mark.unit
+def test_check_unknown_vessel_mentions_empty_register_warns_once():
+    email = _make_doc(doc_type="email")
+    chunk = _make_chunk(email["id"], content="MARAN CANOPUS sailing")
+    issues, warnings = _check_unknown_vessel_mentions(
+        [chunk], [email], set(), {},
+    )
+    # Empty register skips the body of the check entirely — just emit one
+    # advisory warning so the caller sees why no findings were produced.
+    assert issues == []
+    assert len(warnings) == 1
+    assert "vessel register is empty" in warnings[0]
+
+
+@pytest.mark.unit
+def test_check_unknown_vessel_mentions_attributes_to_source_email():
+    canonical = {"MARAN APOLLO"}  # Non-empty so the check actually runs.
+    email = _make_doc(doc_type="email", source_id="incident-2024-08.eml")
+    chunk = _make_chunk(email["id"], content="M.T. NEW DISCOVERY visible on AIS")
+    folder_to_email = {email["archive_path"]: email["source_id"]}
+    _, warnings = _check_unknown_vessel_mentions(
+        [chunk], [email], canonical, folder_to_email,
+    )
+    # First-seen attribution should point at the source email by name.
+    joined = "\n".join(warnings)
+    assert "incident-2024-08.eml" in joined
