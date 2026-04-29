@@ -21,7 +21,7 @@ reproducible generator and an env-aware playbook.
 | `untracked_parking.txt` | Raw mentions to stamp on `unknown_vessel_names` | (see "Park untracked" below) |
 | `extractor_noise.txt` | False-positive mentions to suppress at extraction time | Manual review → `src/mtss/processing/vessel_mention_extractor.py` `HARDCODED_NOISE` |
 | `mismatch_report.md` | Human-readable categorisation report | Reading only |
-| `generate.py` | Reproducible script that produces the three lists above | `uv run python reports/vessel-mismatch/generate.py` |
+| `generate.py` | Reproducible script that produces the three lists above | `uv run python wip/vessel-mismatch/generate.py` |
 
 ## Re-generating the lists on another workstation
 
@@ -29,7 +29,7 @@ The lists are derived from a local `data/ingest.db`. To refresh:
 
 ```bash
 cd <repo-root>
-OPENROUTER_API_KEY=test-key uv run python reports/vessel-mismatch/generate.py
+OPENROUTER_API_KEY=test-key uv run python wip/vessel-mismatch/generate.py
 ```
 
 `OPENROUTER_API_KEY` only needs to be set so `Settings()` constructs; the
@@ -62,12 +62,12 @@ set -a; source .env.test; set +a
 
 # 1. Apply typo mapping — DRY RUN first
 uv run python scripts/apply_vessel_name_mapping.py \
-    --mapping reports/vessel-mismatch/typo_mapping.csv \
+    --mapping wip/vessel-mismatch/typo_mapping.csv \
     --dry-run
 
 # Review the planned changes, then commit:
 uv run python scripts/apply_vessel_name_mapping.py \
-    --mapping reports/vessel-mismatch/typo_mapping.csv \
+    --mapping wip/vessel-mismatch/typo_mapping.csv \
     --apply
 
 # 2. Park untracked vessels — DRY RUN first
@@ -101,7 +101,7 @@ uv run python scripts/snapshot_vessel_uuids.py > /tmp/vessels_before_prod.json
 
 # Repeat steps 1–4 from above against prod
 uv run python scripts/apply_vessel_name_mapping.py \
-    --mapping reports/vessel-mismatch/typo_mapping.csv \
+    --mapping wip/vessel-mismatch/typo_mapping.csv \
     --apply
 uv run python scripts/annotate_unknown_vessel_mentions.py --apply
 uv run python scripts/retag_vessel_ids_from_db.py --apply

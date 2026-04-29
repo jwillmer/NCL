@@ -79,7 +79,7 @@ avoid. Common patterns the user may want to harden the extractor against:
 6. `MARAN TANKERPS` / `MARAN TENKERS` / `MARAIN AJAX` / `MARAN MANAGEMEM` /
    `WINDSDOR KUNTSEN` / `MASESRK CLEVLAND` - OCR-typo variants of company / vessel
    names already in scope. A typo-mapping table (already present at
-   `reports/vessel-mismatch/typo_mapping.csv`) handles the worst of these.
+   `wip/vessel-mismatch/typo_mapping.csv`) handles the worst of these.
 
 ## Methodology notes
 

@@ -664,7 +664,7 @@ class TestLlamaParseImageStripping:
 class TestVesselMentionExtractor:
     """Lock the false-positive suppression in vessel_mention_extractor.
 
-    Backed by the corpus in ``reports/vessel-mismatch/extractor_noise.txt``
+    Backed by the corpus in ``wip/vessel-mismatch/extractor_noise.txt``
     — each entry there represents a confirmed false positive that this
     module has to suppress at extract time.
     """

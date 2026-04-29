@@ -9,7 +9,7 @@ Reproducible companion to the files in this folder:
 Re-run this on a fresh workstation to refresh the lists from the local ingest:
 
     cd <repo-root>
-    OPENROUTER_API_KEY=test-key uv run python reports/vessel-mismatch/generate.py
+    OPENROUTER_API_KEY=test-key uv run python wip/vessel-mismatch/generate.py
 
 (`OPENROUTER_API_KEY` only needs to satisfy `Settings()` — the value is not used
 on this code path.)

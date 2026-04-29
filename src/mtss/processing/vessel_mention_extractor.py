@@ -38,8 +38,8 @@ CITY_PREFIX_VOYAGERS = frozenset({
 
 # Confirmed-noise candidates. Suppressed from output.
 #
-# Sourced from ``reports/vessel-mismatch/extractor_noise.txt`` (regenerate
-# via ``uv run python reports/vessel-mismatch/generate.py``). Includes every
+# Sourced from ``wip/vessel-mismatch/extractor_noise.txt`` (regenerate
+# via ``uv run python wip/vessel-mismatch/generate.py``). Includes every
 # raw mention starting with "MARAN " in that report — both 2-token org names
 # (MARAN HAS, MARAN VESSELS, MARAN TEAM, ...) and 3-token canonical-prefix
 # concatenations leaked in via the M.[TV] pattern (MARAN APOLLO DURING,
@@ -166,7 +166,7 @@ HARDCODED_NOISE = frozenset({
 # Tokens that, when present anywhere in an M.[TV]-pattern capture, mean
 # the match is a business-phrase / boilerplate, not a vessel name.
 #
-# Sourced from ``reports/vessel-mismatch/extractor_noise.txt`` — see
+# Sourced from ``wip/vessel-mismatch/extractor_noise.txt`` — see
 # entries like "PORT LNG TANK", "BEST REGARDS", "TOTAL LNG CONSUMPTION",
 # "CALCULATED WEIGHT", "LOW SULPHUR", "SUMMER DRAFT", "HSFO PRICE",
 # "ADDITIONAL PLEASE NOTE", "SEA WATER" — each of these decomposes into
