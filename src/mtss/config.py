@@ -395,6 +395,14 @@ class Settings(BaseSettings):
         default=67_108_864, validation_alias="MTSS_SQLITE_JOURNAL_SIZE_LIMIT_BYTES"
     )
 
+    # Async citation processing — emits a separate data-citations SSE frame
+    # after the LLM stream so the user sees raw [C:xxx] markers immediately
+    # and the frontend patches in <cite> tags when validation completes.
+    # Off by default during rollout; flip to true once the frontend ships.
+    async_citations_enabled: bool = Field(
+        default=False, validation_alias="ASYNC_CITATIONS_ENABLED"
+    )
+
     @field_validator(
         "data_dir",
         "data_source_dir",

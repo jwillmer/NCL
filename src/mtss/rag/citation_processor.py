@@ -6,9 +6,10 @@ and formats final output with verified source links.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from ..models.chunk import (
     CitationValidationResult,
@@ -154,87 +155,82 @@ Example response:
         self._archive_exists_cache[archive_uri] = exists
         return exists
 
-    def process_response(
+    @staticmethod
+    def _clean_response_text(response: str, invalid_citations: List[str]) -> str:
+        """Strip invalid markers and collapse whitespace. Pure, no I/O."""
+        cleaned = response
+        for invalid_id in invalid_citations:
+            cleaned = cleaned.replace(f"[C:{invalid_id}]", "")
+        # Collapse runs of horizontal whitespace; preserve newlines.
+        cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
+        # Drop trailing horizontal whitespace before a newline.
+        cleaned = re.sub(r" +\n", "\n", cleaned)
+        return cleaned.strip()
+
+    def _collect_citations(
         self,
         response: str,
         citation_map: Dict[str, RetrievalResult],
-    ) -> CitationValidationResult:
-        """Validate citations in LLM response and build validation result.
+    ) -> Dict[str, Any]:
+        """Build provisional citations + validity bookkeeping with no I/O.
 
-        Args:
-            response: Raw LLM response text.
-            citation_map: Mapping from chunk_id to RetrievalResult.
-
-        Returns:
-            CitationValidationResult with validated citations and cleaned response.
+        Returns a dict with keys: ``citations`` (list of ValidatedCitation
+        with ``archive_verified=False``), ``invalid_citations`` (list of bad
+        chunk_ids), ``found`` (list of every chunk_id seen in the text),
+        and ``unique_uris`` (set of distinct archive_browse_uris that need
+        verification). Archive existence is *not* checked here — callers
+        run :meth:`verify_archives_async` (or :meth:`verify_archive_exists`
+        per-uri) and patch the ``archive_verified`` field afterwards.
         """
-        # Find all citations in response
         found_citations = self.CITATION_PATTERN.findall(response)
-
         if not found_citations:
-            return CitationValidationResult(
-                response=response,
-                citations=[],
-                invalid_citations=[],
-                missing_archives=[],
-                needs_retry=False,
-            )
+            return {
+                "citations": [],
+                "invalid_citations": [],
+                "found": [],
+                "unique_uris": set(),
+            }
 
-        valid_citations: List[ValidatedCitation] = []
+        provisional: List[ValidatedCitation] = []
         invalid_citations: List[str] = []
-        missing_archives: List[str] = []
         seen_chunk_ids: Set[str] = set()
-
-        # Track document indices by source_title for consolidation
-        # All citations from the same document share the same display index
+        unique_uris: Set[str] = set()
         document_indices: Dict[str, int] = {}
         next_document_index = 1
 
-        # Process each citation
         for chunk_id in found_citations:
-            # Skip duplicate chunk_ids (same chunk cited multiple times)
             if chunk_id in seen_chunk_ids:
                 continue
             seen_chunk_ids.add(chunk_id)
 
-            # Strict validation: chunk_id must be exactly 12 hex chars
             if len(chunk_id) != CHUNK_ID_LENGTH:
                 logger.warning(
                     "Rejecting invalid chunk_id: '%s' (%d chars, expected %d)",
-                    chunk_id,
-                    len(chunk_id),
-                    CHUNK_ID_LENGTH,
+                    chunk_id, len(chunk_id), CHUNK_ID_LENGTH,
                 )
                 invalid_citations.append(chunk_id)
                 continue
-
-            # Check if chunk_id exists in retrieved results
             if chunk_id not in citation_map:
                 invalid_citations.append(chunk_id)
                 continue
 
             result = citation_map[chunk_id]
-
-            # Check if archive exists
-            archive_verified = self.verify_archive_exists(result.archive_browse_uri)
-            if result.archive_browse_uri and not archive_verified:
-                missing_archives.append(chunk_id)
-
-            # Assign document index - same document gets same index
             source_title = result.source_title or "Unknown Source"
             if source_title not in document_indices:
                 document_indices[source_title] = next_document_index
                 next_document_index += 1
             doc_index = document_indices[source_title]
 
-            # Build validated citation
             lines = None
             if result.line_from is not None and result.line_to is not None:
                 lines = (result.line_from, result.line_to)
 
-            valid_citations.append(
+            if result.archive_browse_uri:
+                unique_uris.add(result.archive_browse_uri)
+
+            provisional.append(
                 ValidatedCitation(
-                    index=doc_index,  # Shared index per document
+                    index=doc_index,
                     chunk_id=chunk_id,
                     source_title=result.source_title,
                     source_id=result.source_id or None,
@@ -242,36 +238,185 @@ Example response:
                     lines=lines,
                     archive_browse_uri=result.archive_browse_uri,
                     archive_download_uri=result.archive_download_uri,
-                    archive_verified=archive_verified,
+                    archive_verified=False,
                 )
             )
 
-        # Remove invalid citations from response text
-        cleaned_response = response
-        for invalid_id in invalid_citations:
-            cleaned_response = cleaned_response.replace(f"[C:{invalid_id}]", "")
+        return {
+            "citations": provisional,
+            "invalid_citations": invalid_citations,
+            "found": found_citations,
+            "unique_uris": unique_uris,
+        }
 
-        # Clean up any double spaces (but preserve newlines for formatting)
-        cleaned_response = re.sub(r"[^\S\n]+", " ", cleaned_response)
-        cleaned_response = re.sub(r" +\n", "\n", cleaned_response)  # Remove trailing spaces before newlines
-        cleaned_response = cleaned_response.strip()
+    async def verify_archives_async(self, uris: List[str]) -> Dict[str, bool]:
+        """Verify N archive URIs in parallel via ``asyncio.to_thread``.
 
-        # Determine if retry is needed
-        total_citations = len(found_citations)
+        Each unique URI is checked once and the result populates the per-
+        instance cache, so subsequent sync calls to
+        :meth:`verify_archive_exists` for the same URI return immediately.
+        Network HEAD calls dominate the wall-clock cost; running them
+        concurrently turns N×~100 ms into ~max(times) instead of sum.
+        """
+        results: Dict[str, bool] = {}
+        if not uris:
+            return results
+        # Reuse cached entries; only fetch the rest.
+        uncached: List[str] = []
+        for uri in uris:
+            cached = self._archive_exists_cache.get(uri)
+            if cached is None:
+                uncached.append(uri)
+            else:
+                results[uri] = cached
+        if uncached:
+            fetched = await asyncio.gather(
+                *(asyncio.to_thread(self.storage.file_exists, u) for u in uncached),
+                return_exceptions=True,
+            )
+            for uri, val in zip(uncached, fetched):
+                if isinstance(val, Exception):
+                    logger.warning("verify_archives_async: %s failed (%s)", uri, val)
+                    val = False
+                self._archive_exists_cache[uri] = val
+                results[uri] = val
+        return results
+
+    def _build_validation_result(
+        self,
+        response: str,
+        collected: Dict[str, Any],
+        archive_verified_by_uri: Dict[str, bool],
+    ) -> CitationValidationResult:
+        """Combine collected citations + archive-verification map into a
+        :class:`CitationValidationResult`. Pure.
+        """
+        verified_citations: List[ValidatedCitation] = []
+        missing_archives: List[str] = []
+        for c in collected["citations"]:
+            verified = (
+                archive_verified_by_uri.get(c.archive_browse_uri, False)
+                if c.archive_browse_uri else False
+            )
+            if c.archive_browse_uri and not verified:
+                missing_archives.append(c.chunk_id)
+            verified_citations.append(
+                ValidatedCitation(
+                    index=c.index,
+                    chunk_id=c.chunk_id,
+                    source_title=c.source_title,
+                    source_id=c.source_id,
+                    page=c.page,
+                    lines=c.lines,
+                    archive_browse_uri=c.archive_browse_uri,
+                    archive_download_uri=c.archive_download_uri,
+                    archive_verified=verified,
+                )
+            )
+
+        invalid_citations = collected["invalid_citations"]
+        cleaned_response = self._clean_response_text(response, invalid_citations)
+
+        total_citations = len(collected["found"])
         invalid_count = len(invalid_citations)
         needs_retry = (
             invalid_count > 0
             and total_citations > 0
             and (invalid_count / total_citations) > self.MAX_INVALID_RATIO
         )
-
         return CitationValidationResult(
             response=cleaned_response,
-            citations=valid_citations,
+            citations=verified_citations,
             invalid_citations=invalid_citations,
             missing_archives=missing_archives,
             needs_retry=needs_retry,
         )
+
+    async def process_response_async(
+        self,
+        response: str,
+        citation_map: Dict[str, RetrievalResult],
+    ) -> CitationValidationResult:
+        """Async variant of :meth:`process_response`.
+
+        Verifies archive existence in parallel rather than sequentially.
+        Use this on the user-reply hot path; the sync method is retained
+        for callers that don't have an event loop handy.
+        """
+        collected = self._collect_citations(response, citation_map)
+        if not collected["found"]:
+            return CitationValidationResult(
+                response=response,
+                citations=[],
+                invalid_citations=[],
+                missing_archives=[],
+                needs_retry=False,
+            )
+        archive_verified_by_uri = await self.verify_archives_async(
+            sorted(collected["unique_uris"])
+        )
+        return self._build_validation_result(
+            response, collected, archive_verified_by_uri
+        )
+
+    def process_response(
+        self,
+        response: str,
+        citation_map: Dict[str, RetrievalResult],
+    ) -> CitationValidationResult:
+        """Validate citations in LLM response and build validation result.
+
+        Sync variant; verifies archives serially. For the streaming RAG
+        reply path, prefer :meth:`process_response_async` — same contract,
+        ~N× faster on responses citing several documents.
+        """
+        collected = self._collect_citations(response, citation_map)
+        if not collected["found"]:
+            return CitationValidationResult(
+                response=response,
+                citations=[],
+                invalid_citations=[],
+                missing_archives=[],
+                needs_retry=False,
+            )
+        archive_verified_by_uri = {
+            uri: self.verify_archive_exists(uri) for uri in collected["unique_uris"]
+        }
+        return self._build_validation_result(
+            response, collected, archive_verified_by_uri
+        )
+
+    @staticmethod
+    def serialize_citations_payload(
+        validation: CitationValidationResult,
+    ) -> Dict[str, Any]:
+        """Build the v1 wire payload for the ``data-citations`` SSE frame.
+
+        The frontend uses this to swap ``[C:chunk_id]`` markers for full
+        ``<cite>`` tags after the LLM stream completes. Field set must
+        stay aligned with :meth:`replace_citation_markers` — the frontend
+        builds the same tag attributes from this dict.
+        """
+        citations: List[Dict[str, Any]] = []
+        for c in validation.citations:
+            citations.append(
+                {
+                    "chunk_id": c.chunk_id,
+                    "index": c.index,
+                    "source_id": c.source_id,
+                    "source_title": c.source_title,
+                    "page": c.page,
+                    "lines": list(c.lines) if c.lines else None,
+                    "archive_browse_uri": c.archive_browse_uri,
+                    "archive_download_uri": c.archive_download_uri,
+                    "archive_verified": c.archive_verified,
+                }
+            )
+        return {
+            "version": 1,
+            "citations": citations,
+            "invalid_chunk_ids": list(validation.invalid_citations),
+        }
 
     def replace_citation_markers(
         self,
