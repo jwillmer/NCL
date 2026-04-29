@@ -105,6 +105,12 @@ class RetrievalResult:
     # Context summary (LLM-generated document summary)
     context_summary: Optional[str] = None
 
+    # Embedding mode inherited from parent document (full / summary /
+    # metadata_only). Optional so existing callers that don't yet hydrate
+    # the field stay valid; consumers that need to branch on it should
+    # check for None and treat that as "unknown -> behave like full".
+    embedding_mode: Optional[str] = None
+
     # Additional context
     document_type: Optional[str] = None
     email_subject: Optional[str] = None
@@ -132,6 +138,7 @@ class RetrievalResult:
             "archive_download_uri": self.archive_download_uri,
             "image_uri": self.image_uri,
             "context_summary": self.context_summary,
+            "embedding_mode": self.embedding_mode,
             "document_type": self.document_type,
             "email_subject": self.email_subject,
             "email_initiator": self.email_initiator,

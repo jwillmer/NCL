@@ -125,6 +125,13 @@ def _convert_to_retrieval_results(
                 archive_download_uri=result.get("archive_download_uri"),
                 image_uri=image_uri,
                 context_summary=result.get("context_summary"),
+                # NOTE: ``match_chunks`` (migrations/000_schema.sql) does
+                # not currently RETURN ``embedding_mode``. The column
+                # exists on ``chunks``; bump the SQL function to surface
+                # it and this populates automatically. Until then this
+                # stays None and downstream consumers must treat None as
+                # "unknown -> behave like full".
+                embedding_mode=result.get("embedding_mode"),
                 document_type=result.get("document_type"),
                 email_subject=result.get("email_subject"),
                 email_initiator=result.get("email_initiator"),

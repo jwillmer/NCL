@@ -77,6 +77,39 @@ Example response:
 
         return "\n\n---\n\n".join(context_blocks)
 
+    def build_context_hybrid(self, results: List[RetrievalResult]) -> str:
+        """Like :meth:`build_context`, but skips full-text for summary-mode chunks.
+
+        Phase-1 measurement candidate (see ``scripts/measure_context_summary_swap.py``).
+        For chunks whose ``embedding_mode == "summary"`` AND that carry a
+        ``context_summary``, emit only ``[Context: <summary>]`` for that
+        block — the full text is sensor-log / dense-tabular noise that
+        the synthesizer cannot use anyway. All other modes (``full``,
+        ``metadata_only``, or unknown/None) behave exactly like
+        :meth:`build_context`.
+
+        This method is NOT wired into the production agent; both builders
+        coexist until the measurement harness produces numbers that
+        justify a swap.
+        """
+        context_blocks = []
+
+        for result in results:
+            header = self._build_citation_header(result)
+            mode = result.embedding_mode
+            if mode == "summary" and result.context_summary:
+                # Summary mode: only the synthesized summary is meaningful;
+                # skip ``result.text`` entirely.
+                text = f"[Context: {result.context_summary}]"
+            else:
+                text = result.text
+                if result.context_summary:
+                    text = f"[Context: {result.context_summary}]\n{text}"
+            block = f"{header}\n{text}"
+            context_blocks.append(block)
+
+        return "\n\n---\n\n".join(context_blocks)
+
     def _build_citation_header(self, result: RetrievalResult) -> str:
         """Generate citation header for a retrieval result.
 

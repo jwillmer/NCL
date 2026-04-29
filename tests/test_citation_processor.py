@@ -150,6 +150,127 @@ def test_build_context_from_results(processor: CitationProcessor):
 
 
 # ---------------------------------------------------------------------------
+# 3b. test_build_context_hybrid_*  (Phase-1 measurement candidate)
+# ---------------------------------------------------------------------------
+
+
+def test_build_context_hybrid_summary_chunk_skips_full_text(processor: CitationProcessor):
+    """Summary-mode chunk emits only the [Context: ...] block; full text dropped."""
+    sentinel_full_text = "RAW SENSOR DUMP " * 50  # would dominate the context
+    summary_chunk = _make_result(
+        chunk_id="aabbccddeeff",
+        text=sentinel_full_text,
+        embedding_mode="summary",
+        # context_summary is the only kwarg not on _make_result's allowlist
+        # so we pass it via **kwargs (RetrievalResult accepts it).
+        context_summary="One-line LLM summary of 24 hours of engine sensors.",
+    )
+
+    context = processor.build_context_hybrid([summary_chunk])
+
+    assert "[Context: One-line LLM summary of 24 hours of engine sensors.]" in context
+    # Full-text MUST NOT leak into hybrid output for summary chunks.
+    assert "RAW SENSOR DUMP" not in context
+    # Header is still present so citations still resolve.
+    assert "CITE:aabbccddeeff" in context
+
+
+def test_build_context_hybrid_full_chunk_matches_build_context(processor: CitationProcessor):
+    """For embedding_mode=='full', hybrid output equals the legacy builder output."""
+    chunk = _make_result(
+        chunk_id="112233445566",
+        text="Detailed prose paragraph about hull inspection findings.",
+        embedding_mode="full",
+        context_summary="Hull inspection 2025-04-01.",
+    )
+
+    legacy = processor.build_context([chunk])
+    hybrid = processor.build_context_hybrid([chunk])
+
+    assert legacy == hybrid
+
+
+def test_build_context_hybrid_metadata_only_chunk_matches_build_context(
+    processor: CitationProcessor,
+):
+    """metadata_only chunks are tiny — leave them alone (lower-risk default)."""
+    chunk = _make_result(
+        chunk_id="ddeeff001122",
+        text="filename: empty_attachment.pdf",
+        embedding_mode="metadata_only",
+        context_summary=None,
+    )
+
+    legacy = processor.build_context([chunk])
+    hybrid = processor.build_context_hybrid([chunk])
+
+    assert legacy == hybrid
+
+
+def test_build_context_hybrid_summary_without_context_summary_falls_back(
+    processor: CitationProcessor,
+):
+    """If embedding_mode=='summary' but context_summary is missing, retain full text.
+
+    Defensive: skipping full text when there's no summary would leave the
+    LLM with literally nothing for that chunk.
+    """
+    chunk = _make_result(
+        chunk_id="334455667788",
+        text="The only available text for this chunk.",
+        embedding_mode="summary",
+        context_summary=None,
+    )
+
+    hybrid = processor.build_context_hybrid([chunk])
+
+    assert "The only available text for this chunk." in hybrid
+
+
+def test_build_context_hybrid_unknown_mode_matches_build_context(
+    processor: CitationProcessor,
+):
+    """embedding_mode=None (legacy/un-hydrated) behaves like full mode."""
+    chunk = _make_result(
+        chunk_id="445566778899",
+        text="Body text.",
+        embedding_mode=None,
+        context_summary="Existing context summary.",
+    )
+
+    legacy = processor.build_context([chunk])
+    hybrid = processor.build_context_hybrid([chunk])
+
+    assert legacy == hybrid
+
+
+def test_build_context_hybrid_mixed_results_savings_realised(
+    processor: CitationProcessor,
+):
+    """Mixed batch: only summary-mode chunks are trimmed; others untouched."""
+    full_chunk = _make_result(
+        chunk_id="aaaaaaaaaaaa",
+        text="Full prose chunk content.",
+        embedding_mode="full",
+    )
+    summary_chunk = _make_result(
+        chunk_id="bbbbbbbbbbbb",
+        text="LARGE TABULAR DUMP " * 100,
+        embedding_mode="summary",
+        context_summary="Tabular log summary.",
+    )
+
+    hybrid = processor.build_context_hybrid([full_chunk, summary_chunk])
+
+    assert "Full prose chunk content." in hybrid
+    assert "[Context: Tabular log summary.]" in hybrid
+    assert "LARGE TABULAR DUMP" not in hybrid
+    # Both citation headers still present — both chunks remain citeable.
+    assert "CITE:aaaaaaaaaaaa" in hybrid
+    assert "CITE:bbbbbbbbbbbb" in hybrid
+
+
+# ---------------------------------------------------------------------------
 # 4. test_get_citation_map
 # ---------------------------------------------------------------------------
 
