@@ -121,6 +121,45 @@ def test_wal_and_fk_pragmas(tmp_client: SqliteStorageClient):
     assert fk == 1
 
 
+def test_perf_pragmas_applied_on_main_client(tmp_client: SqliteStorageClient):
+    """cache_size, mmap_size, journal_size_limit must be set on the main
+    ingest connection. Default 2 MB cache thrashes on a ~100 GB ingest.db;
+    this guards against accidental regression to the SQLite default.
+    """
+    from mtss.storage.sqlite_client import _resolve_pragma_values
+
+    cache_kib, mmap_bytes, journal_limit_bytes = _resolve_pragma_values()
+    cache_size = tmp_client._conn.execute("PRAGMA cache_size").fetchone()[0]
+    # Negative cache_size encodes KiB.
+    assert cache_size == -cache_kib
+    mmap_size = tmp_client._conn.execute("PRAGMA mmap_size").fetchone()[0]
+    assert mmap_size == mmap_bytes
+    journal_limit = tmp_client._conn.execute(
+        "PRAGMA journal_size_limit"
+    ).fetchone()[0]
+    assert journal_limit == journal_limit_bytes
+
+
+def test_perf_pragmas_reduced_on_progress_tracker(tmp_path: Path):
+    """Tracker connection should run at 1/8 of the main client's cache+mmap
+    budget — keeps total per-process memory bounded when both are open.
+    Regression guard against accidentally unifying the budgets, which would
+    inflate per-process resident set by ~500 MB on production.
+    """
+    from mtss.storage.sqlite_client import _resolve_pragma_values
+    from mtss.storage.sqlite_progress_tracker import SqliteProgressTracker
+
+    cache_kib, mmap_bytes, _ = _resolve_pragma_values()
+    tracker = SqliteProgressTracker(tmp_path)
+    try:
+        cache_size = tracker._conn.execute("PRAGMA cache_size").fetchone()[0]
+        assert cache_size == -max(cache_kib // 8, 2_000)
+        mmap_size = tracker._conn.execute("PRAGMA mmap_size").fetchone()[0]
+        assert mmap_size == mmap_bytes // 8
+    finally:
+        tracker.close()
+
+
 def test_schema_version_seeded(tmp_client: SqliteStorageClient):
     val = tmp_client._conn.execute(
         "SELECT value FROM manifest WHERE key = 'schema_version'"

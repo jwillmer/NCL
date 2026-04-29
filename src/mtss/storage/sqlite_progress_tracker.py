@@ -35,17 +35,28 @@ class SqliteProgressTracker:
         self._db_path = self.output_dir / db_filename
         self._conn = sqlite3.connect(str(self._db_path), isolation_level=None)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.execute("PRAGMA busy_timeout=30000")
+        # Tracker queries one indexed table; full-size cache/mmap would just
+        # waste RAM. Use 1/8 of the main client's budget — keeps total
+        # per-process resident under ~600 MB even with both connections open.
+        from .sqlite_client import (
+            PROCESSING_LOG_SCHEMA_SQL,
+            _apply_connection_pragmas,
+            _resolve_pragma_values,
+        )
+
+        cache_kib, mmap_bytes, journal_limit_bytes = _resolve_pragma_values()
+        _apply_connection_pragmas(
+            self._conn,
+            cache_kib=max(cache_kib // 8, 2_000),
+            mmap_bytes=max(mmap_bytes // 8, 0),
+            journal_limit_bytes=journal_limit_bytes,
+        )
         # Ensure table exists even if tracker is instantiated before the
         # ingest client (e.g. ``mtss reset-stale`` on a fresh install).
         # Schema is owned by ``sqlite_client.PROCESSING_LOG_SCHEMA_SQL`` so
         # both classes produce identical columns + indexes — drift previously
         # caused the tracker version to omit ``ingest_version``, silently
         # discarding any writes routed through it.
-        from .sqlite_client import PROCESSING_LOG_SCHEMA_SQL
         self._conn.executescript(PROCESSING_LOG_SCHEMA_SQL)
 
     def close(self) -> None:

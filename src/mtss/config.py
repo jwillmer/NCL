@@ -381,6 +381,20 @@ class Settings(BaseSettings):
         default=30, validation_alias="FAILURE_REPORTS_KEEP_COUNT"
     )
 
+    # SQLite performance pragmas (per-connection). Defaults sized for the
+    # ~100 GB ingest.db at production scale — the SQLite default 2 MB cache
+    # thrashes on a corpus this size. The progress tracker connection uses
+    # 1/8 of these values (see SqliteProgressTracker).
+    sqlite_cache_size_kib: int = Field(
+        default=64_000, validation_alias="MTSS_SQLITE_CACHE_SIZE_KIB"
+    )
+    sqlite_mmap_size_bytes: int = Field(
+        default=268_435_456, validation_alias="MTSS_SQLITE_MMAP_SIZE_BYTES"
+    )
+    sqlite_journal_size_limit_bytes: int = Field(
+        default=67_108_864, validation_alias="MTSS_SQLITE_JOURNAL_SIZE_LIMIT_BYTES"
+    )
+
     @field_validator(
         "data_dir",
         "data_source_dir",

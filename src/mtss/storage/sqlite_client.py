@@ -48,6 +48,79 @@ from ..utils import compute_folder_id
 logger = logging.getLogger(__name__)
 
 
+# Defaults mirror Settings.sqlite_* fields. Kept here so the client can be
+# instantiated without a fully-configured Settings (e.g. unit tests that don't
+# set OPENROUTER_API_KEY). Production callers pass the settings-derived values
+# explicitly; tests rely on these defaults staying in sync.
+_DEFAULT_CACHE_KIB = 64_000
+_DEFAULT_MMAP_BYTES = 268_435_456
+_DEFAULT_JOURNAL_LIMIT_BYTES = 67_108_864
+
+
+def _resolve_pragma_values(
+    cache_kib: Optional[int] = None,
+    mmap_bytes: Optional[int] = None,
+    journal_limit_bytes: Optional[int] = None,
+) -> tuple[int, int, int]:
+    """Resolve pragma values from explicit args, then Settings, then defaults.
+
+    Skipping Settings on failure keeps the storage layer usable in tests
+    that don't bootstrap env vars (Settings demands ``OPENROUTER_API_KEY``).
+    """
+    if cache_kib is not None and mmap_bytes is not None and journal_limit_bytes is not None:
+        return cache_kib, mmap_bytes, journal_limit_bytes
+    try:
+        from ..config import get_settings
+
+        settings = get_settings()
+        return (
+            cache_kib if cache_kib is not None else settings.sqlite_cache_size_kib,
+            mmap_bytes if mmap_bytes is not None else settings.sqlite_mmap_size_bytes,
+            journal_limit_bytes
+            if journal_limit_bytes is not None
+            else settings.sqlite_journal_size_limit_bytes,
+        )
+    except Exception:
+        return (
+            cache_kib if cache_kib is not None else _DEFAULT_CACHE_KIB,
+            mmap_bytes if mmap_bytes is not None else _DEFAULT_MMAP_BYTES,
+            journal_limit_bytes
+            if journal_limit_bytes is not None
+            else _DEFAULT_JOURNAL_LIMIT_BYTES,
+        )
+
+
+def _apply_connection_pragmas(
+    conn: sqlite3.Connection,
+    *,
+    cache_kib: Optional[int] = None,
+    mmap_bytes: Optional[int] = None,
+    journal_limit_bytes: Optional[int] = None,
+) -> None:
+    """Apply the standard set of MTSS pragmas to a fresh SQLite connection.
+
+    Order matters: ``journal_mode`` first (persistent), then per-connection
+    tunables. Run outside any transaction — callers must use autocommit
+    (``isolation_level=None``).
+
+    The cache/mmap sizes are sized for the ~100 GB ingest.db at production
+    scale; SQLite's 2 MB default thrashes badly on a corpus this large.
+    Pass any subset of the kwargs to override; missing values fall back to
+    Settings, then to module-level defaults.
+    """
+    cache_kib, mmap_bytes, journal_limit_bytes = _resolve_pragma_values(
+        cache_kib, mmap_bytes, journal_limit_bytes
+    )
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    # Negative cache_size = KiB, positive = pages. Use KiB for unit clarity.
+    conn.execute(f"PRAGMA cache_size=-{int(cache_kib)}")
+    conn.execute(f"PRAGMA mmap_size={int(mmap_bytes)}")
+    conn.execute(f"PRAGMA journal_size_limit={int(journal_limit_bytes)}")
+
+
 # ── Schema ────────────────────────────────────────────────────────────
 # Versioned so future migrations can check what they are upgrading.
 SCHEMA_VERSION = 1
@@ -306,10 +379,9 @@ class SqliteStorageClient:
         self._conn.row_factory = sqlite3.Row
         # Pragmas must run outside an implicit transaction; ``isolation_level=None``
         # gives us autocommit by default. Explicit ``BEGIN`` used for batches.
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.execute("PRAGMA busy_timeout=30000")
+        # Helper resolves cache/mmap/journal_limit from Settings if env-loaded,
+        # otherwise falls back to module defaults — keeps tests env-agnostic.
+        _apply_connection_pragmas(self._conn)
         self._conn.executescript(_SCHEMA_SQL)
         self._ensure_manifest_version()
         self._rehydrate_caches()
